@@ -403,7 +403,7 @@ function codexHooks(config: PluginConfig): GeneratedFile {
 						hooks: [
 							{
 								type: "command",
-								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event SessionStart --plugin-version ${config.version}`,
+								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event SessionStart --plugin-version ${config.version} # x-release-please-version`,
 								timeout: 10,
 								statusMessage: "Running portable plugin hook",
 							},
@@ -415,7 +415,7 @@ function codexHooks(config: PluginConfig): GeneratedFile {
 						hooks: [
 							{
 								type: "command",
-								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event Stop --plugin-version ${config.version}`,
+								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event Stop --plugin-version ${config.version} # x-release-please-version`,
 								timeout: 10,
 							},
 						],

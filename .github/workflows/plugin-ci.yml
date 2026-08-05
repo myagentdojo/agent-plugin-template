@@ -69,7 +69,7 @@ jobs:
           name: agent-plugin-${{ github.sha }}
           path: |
             dist/*.tar.gz
-            dist/*.provenance.json
+            dist/*.checksums.json
           if-no-files-found: error
 
   attest:

@@ -357,8 +357,20 @@ test("initialized repository packages the configured plugin identity", () => {
 	expect(packaged.exitCode, packaged.stderr.toString()).toBe(0)
 	const result = JSON.parse(packaged.stdout.toString().trim().split("\n").at(-1) ?? "")
 	expect(basename(result.archive)).toBe(`dojo-hello-${templateVersion}.tar.gz`)
-	const provenance = JSON.parse(readFileSync(result.provenance, "utf8"))
-	expect(provenance).toMatchObject({ plugin: "dojo-hello", version: templateVersion })
+	expect(basename(result.checksums)).toBe(`dojo-hello-${templateVersion}.checksums.json`)
+	const checksums = JSON.parse(readFileSync(result.checksums, "utf8"))
+	expect(checksums).toMatchObject({
+		repository: "https://github.com/myagentdojo/dojo-hello",
+		sourceCommit: "unknown",
+		tag: `v${templateVersion}`,
+		plugin: "dojo-hello",
+		version: templateVersion,
+		archive: `dojo-hello-${templateVersion}.tar.gz`,
+		archiveBytes: expect.any(Number),
+		archiveSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+		evidence:
+			"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
+	})
 })
 
 test("initialized repository development plan uses configured plugin identity", () => {

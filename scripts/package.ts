@@ -21,6 +21,18 @@ const packageName = `${pluginConfig.name}-${version}`
 const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
 
+function resolveSourceCommit(): string {
+	const configured = process.env.SOURCE_COMMIT || process.env.GITHUB_SHA
+	if (configured) return configured
+	const git = Bun.spawnSync({
+		cmd: ["git", "rev-parse", "HEAD"],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	return git.exitCode === 0 ? git.stdout.toString().trim() : "unknown"
+}
+
 try {
 	mkdirSync(outputRoot, { recursive: true })
 	const inventory = copyPluginPayload(root, packageRoot)
@@ -93,22 +105,27 @@ try {
 	const archiveDigest = new Bun.CryptoHasher("sha256")
 		.update(readFileSync(archive))
 		.digest("hex")
-	const provenance = join(outputRoot, `${packageName}.provenance.json`)
+	const checksums = join(outputRoot, `${packageName}.checksums.json`)
 	writeFileSync(
-		provenance,
+		checksums,
 		`${JSON.stringify(
 			{
+				repository: pluginConfig.repository,
+				sourceCommit: resolveSourceCommit(),
+				tag: `v${version}`,
 				plugin: pluginConfig.name,
 				version,
 				archive: `${packageName}.tar.gz`,
 				archiveBytes,
 				archiveSha256: archiveDigest,
+				evidence:
+					"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
 			},
 			null,
 			2,
 		)}\n`,
 	)
-	console.log(JSON.stringify({ archive, provenance, archiveBytes, archiveDigest }))
+	console.log(JSON.stringify({ archive, checksums, archiveBytes, archiveDigest }))
 } finally {
 	rmSync(stagingRoot, { recursive: true, force: true })
 }

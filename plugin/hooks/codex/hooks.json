@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/bin/hello-world\" hook --harness codex --event SessionStart --plugin-version 0.1.0",
+            "command": "\"${PLUGIN_ROOT}/bin/hello-world\" hook --harness codex --event SessionStart --plugin-version 0.1.0 # x-release-please-version",
             "timeout": 10,
             "statusMessage": "Running portable plugin hook"
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/bin/hello-world\" hook --harness codex --event Stop --plugin-version 0.1.0",
+            "command": "\"${PLUGIN_ROOT}/bin/hello-world\" hook --harness codex --event Stop --plugin-version 0.1.0 # x-release-please-version",
             "timeout": 10
           }
         ]

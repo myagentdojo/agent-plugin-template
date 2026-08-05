@@ -17,7 +17,7 @@ const inventory = pluginPayloadInventory(root)
 
 interface PackageResult {
 	archive: string
-	provenance: string
+	checksums: string
 	archiveBytes: number
 	archiveDigest: string
 }
@@ -144,9 +144,9 @@ for (const asset of Object.values(assetManifest.assets) as Array<{
 	if (digest !== asset.sha256) throw new Error(`${asset.file} digest mismatch`)
 }
 
-const provenance = JSON.parse(readFileSync(second.provenance, "utf8"))
-if (provenance.archiveSha256 !== second.archiveDigest) {
-	throw new Error("provenance digest does not match the packaged archive")
+const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
+if (checksums.archiveSha256 !== second.archiveDigest) {
+	throw new Error("checksum digest does not match the packaged archive")
 }
 
 console.log(
