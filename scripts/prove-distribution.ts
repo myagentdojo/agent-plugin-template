@@ -6,8 +6,11 @@ import {
 } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { loadPluginConfig } from "./plugin-config"
+
 const root = resolve(import.meta.dir, "..")
-const packageName = "harness-native-plugin-prototype-0.1.0"
+const pluginConfig = loadPluginConfig(root)
+const packageName = `${pluginConfig.name}-${pluginConfig.version}`
 
 interface PackageResult {
 	archive: string
@@ -100,6 +103,10 @@ if (extract.exitCode !== 0) process.exit(extract.exitCode)
 
 const installedRoot = join(extractedRoot, packageName)
 const launcher = join(installedRoot, "bin", "hello-world")
+const version = runPackaged(launcher, ["--version"])
+if (version.exitCode !== 0 || version.stdout.trim() !== pluginConfig.version) {
+	throw new Error("packaged launcher version does not match plugin.config.json")
+}
 const hello = runPackaged(launcher, ["hello", "--name", "packaged", "--json"])
 if (hello.exitCode !== 0) throw new Error(hello.stderr)
 const helloResult = JSON.parse(hello.stdout)

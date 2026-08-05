@@ -12,11 +12,13 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { copyPluginPayload } from "./plugin-files"
+import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
-const version = readFileSync(join(root, "runtime", "version.txt"), "utf8").trim()
+const pluginConfig = loadPluginConfig(root)
+const version = pluginConfig.version
 const outputRoot = join(root, "dist")
-const packageName = `harness-native-plugin-prototype-${version}`
+const packageName = `${pluginConfig.name}-${version}`
 const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
 
@@ -111,7 +113,7 @@ try {
 		provenance,
 		`${JSON.stringify(
 			{
-				plugin: "harness-native-plugin-prototype",
+				plugin: pluginConfig.name,
 				version,
 				archive: `${packageName}.tar.gz`,
 				archiveBytes,

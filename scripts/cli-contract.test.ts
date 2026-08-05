@@ -1,0 +1,43 @@
+import { expect, test } from "bun:test"
+
+const root = new URL("..", import.meta.url).pathname
+
+function run(arguments_: string[]): ReturnType<typeof Bun.spawnSync> {
+	return Bun.spawnSync({
+		cmd: [process.execPath, "run", ...arguments_],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+}
+
+test("template CLI discovery and rendered help expose the same public commands", async () => {
+	const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json()
+	expect(packageJson.scripts).toMatchObject({
+		init: "bun run scripts/init.ts",
+		"ship:canary": "bun run scripts/ship-canary.ts",
+	})
+
+	const initHelp = run(["init", "--", "--help"])
+	expect(initHelp.exitCode).toBe(0)
+	expect(initHelp.stdout.toString()).toContain("--dry-run")
+	expect(initHelp.stdout.toString()).toContain("Side effects:")
+
+	const canaryHelp = run(["ship:canary", "--", "--help"])
+	expect(canaryHelp.exitCode).toBe(0)
+	expect(canaryHelp.stdout.toString()).toContain("--execute")
+	expect(canaryHelp.stdout.toString()).toContain("never force-pushes")
+})
+
+test("init usage failure is structured for scripts and agents", () => {
+	const result = run(["init", "--", "--unknown", "--json"])
+	expect(result.exitCode).toBe(2)
+	const failure = JSON.parse(result.stdout.toString().trim())
+	expect(failure).toMatchObject({
+		ok: false,
+		category: "usage",
+		retrySafe: true,
+		nextAction: "bun run init -- --help",
+	})
+	expect(failure.runId).toBeString()
+})

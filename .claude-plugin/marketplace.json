@@ -4,13 +4,13 @@
     "name": "Prototype"
   },
   "metadata": {
-    "description": "Local marketplace for the harness-native plugin prototype",
+    "description": "Marketplace for Harness Native Plugin Prototype",
     "version": "0.1.0"
   },
   "plugins": [
     {
       "name": "harness-native-plugin-prototype",
-      "description": "Bun-authored hello world with an offline portable runtime",
+      "description": "Prove native plugin distribution with a Bun-authored portable runtime",
       "author": {
         "name": "Prototype"
       },

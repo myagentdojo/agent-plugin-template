@@ -5,6 +5,8 @@ export interface CommandResult {
 	stderr: string
 }
 
+declare const PLUGIN_VERSION: string
+
 function success(stdout = "", stderr = ""): CommandResult {
 	return { exitCode: 0, stdout, stderr }
 }
@@ -24,7 +26,7 @@ function optionValue(arguments_: string[], option: string): string | undefined {
 }
 
 function help(): string {
-	return `hello-world 0.1.0
+	return `hello-world ${PLUGIN_VERSION}
 
 Usage:
   hello-world hello [--name <name>] [--json]
@@ -60,7 +62,7 @@ export function executeCommand(
 	if (command === undefined || command === "--help" || command === "-h") {
 		return success(help())
 	}
-	if (command === "--version" || command === "-v") return success("0.1.0\n")
+	if (command === "--version" || command === "-v") return success(`${PLUGIN_VERSION}\n`)
 
 	if (command === "hello") {
 		const name = optionValue(commandArguments, "--name") ?? "world"

@@ -9,7 +9,8 @@ Use `plugin/` as the sole installable subtree.
 - Share skills, launcher, QuickJS executables, and generated JavaScript.
 - Keep Claude Code and Codex manifests separate.
 - Keep hook declarations at explicit host-specific paths. Never use the shared
-  `hooks/hooks.json` default because both hosts auto-discover it.
+  `hooks/hooks.json` default because live dual-harness proof found Claude also
+  loaded it.
 - Route both declarations into the same pure command implementation.
 - Point both marketplace catalogs at `./plugin`.
 - Package only `plugin/`.
@@ -17,6 +18,8 @@ Use `plugin/` as the sole installable subtree.
 ## Why
 
 Claude Code and Codex overlap on Agent Skills, command-hook stdin, and MCP. They differ on manifest schema, hook types, event coverage, trust, matching, and reload behavior. Sharing hook code removes real duplication. Sharing hook configuration would hide host semantics and weaken proof.
+
+Current Codex documentation supports manifest hook paths. The bundled plugin-creator validator in this snapshot still rejects the documented field, but Codex `0.146.0` and live installation accept it. Preserve the proven loader behavior until that validator catches up.
 
 The four vendored QuickJS executables total about 7.7 MB in Git and compress to about 3.46 MB in the distribution archive. Runtime execution is offline and does not require Bun, Node.js, Python, npm, `curl`, or `unzip`.
 

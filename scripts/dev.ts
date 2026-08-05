@@ -8,15 +8,17 @@ import {
 import { join, resolve } from "node:path"
 
 import { copyPluginPayload } from "./plugin-files"
+import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
 const pluginRoot = join(root, "plugin")
-const pluginName = "harness-native-plugin-prototype"
+const pluginConfig = loadPluginConfig(root)
+const pluginName = pluginConfig.name
 const productionPluginId = `${pluginName}@${pluginName}`
 const claudeSessionSettings = JSON.stringify({
 	enabledPlugins: { [productionPluginId]: false },
 })
-const developmentMarketplaceName = "harness-native-plugin-dev"
+const developmentMarketplaceName = `${pluginName}-dev`
 const developmentRoot = join(root, ".dev", "codex-marketplace")
 const stagedPluginRoot = join(developmentRoot, "plugins", pluginName)
 
@@ -116,7 +118,7 @@ function stageCodexPlugin(): string {
 
 	const marketplace = {
 		name: developmentMarketplaceName,
-		interface: { displayName: "Harness Native Plugin Development" },
+		interface: { displayName: `${pluginConfig.displayName} Development` },
 		plugins: [
 			{
 				name: pluginName,

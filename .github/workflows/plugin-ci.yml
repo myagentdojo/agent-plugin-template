@@ -5,7 +5,7 @@ on:
     paths:
       - "plugin/**"
       - "runtime/src/**"
-      - "runtime/version.txt"
+      - "plugin.config.json"
       - "scripts/**"
       - "package.json"
       - ".agents/plugins/marketplace.json"
@@ -61,10 +61,10 @@ jobs:
         run: git diff --exit-code -- plugin/runtime/hello-world.js
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: harness-native-plugin-${{ github.sha }}
+          name: agent-plugin-${{ github.sha }}
           path: |
-            dist/harness-native-plugin-prototype-*.tar.gz
-            dist/harness-native-plugin-prototype-*.provenance.json
+            dist/*.tar.gz
+            dist/*.provenance.json
           if-no-files-found: error
 
   attest:
@@ -80,7 +80,7 @@ jobs:
       - name: Download packaged artifact
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --name "harness-native-plugin-${GITHUB_SHA}" --dir dist
+        run: gh run download "$GITHUB_RUN_ID" --name "agent-plugin-${GITHUB_SHA}" --dir dist
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: dist/harness-native-plugin-prototype-*.tar.gz
+          subject-path: dist/*.tar.gz

@@ -1,8 +1,20 @@
-# Harness-native plugin prototype
+# Agent plugin repository template
 
-One Git-distributed plugin. Shared skills and runtime. Native Claude Code and Codex adapters. No skill syncing, symlinks, npm publication, or runtime dependency on Bun, Node.js, or Python.
+One Git-distributed plugin per repository. Shared skills and runtime. Native Claude Code and Codex adapters. No skill syncing, symlinks, npm publication, or runtime dependency on Bun, Node.js, or Python.
 
-Run:
+After creating a repository from this GitHub template, initialize its identity once:
+
+```sh
+bun run init -- \
+  --name dojo-hello \
+  --display-name "Dojo Hello" \
+  --author "My Agent Dojo" \
+  --repository https://github.com/myagentdojo/dojo-hello
+```
+
+`plugin.config.json` is the only plugin metadata source. `bun run generate` derives both native manifests and both marketplace catalogs. CI fails when a generated file drifts.
+
+Then run:
 
 ```sh
 bun run prove:all
@@ -77,14 +89,14 @@ This copies the exact canonical plugin into ignored staging, changes only the st
 
 ## Marketplace install proof
 
-The public Git repository is directly installable in both hosts:
+The Git repository is directly installable in both hosts. Substitute the repository and plugin name written to `plugin.config.json`:
 
 ```sh
-claude plugin marketplace add myagentdojo/agent-plugin-template
-claude plugin install harness-native-plugin-prototype@harness-native-plugin-prototype
+claude plugin marketplace add OWNER/REPOSITORY
+claude plugin install PLUGIN_NAME@PLUGIN_NAME
 
-codex plugin marketplace add myagentdojo/agent-plugin-template --ref main
-codex plugin add harness-native-plugin-prototype@harness-native-plugin-prototype
+codex plugin marketplace add OWNER/REPOSITORY --ref main
+codex plugin add PLUGIN_NAME@PLUGIN_NAME
 ```
 
 See `docs/prototypes/0001-marketplace-install-and-dev-mode.md` for the live install and edit-reload evidence.
@@ -98,6 +110,8 @@ bun run dev -- codex --check
 
 ## Proofs
 
+- `bun test`: prove init, generated metadata, CLI discovery, development identity, and canary orchestration.
+- `bun run generate:check`: prove checked-in manifests match `plugin.config.json`.
 - `bun run build`: regenerate portable JavaScript.
 - `bun run spike:quickjs`: compare Bun and QuickJS behavior on the host.
 - `bun run prove:distribution`: package twice, prove deterministic bytes, extract offline, verify every interpreter digest, and run both hook adapters.
@@ -106,6 +120,17 @@ bun run dev -- codex --check
 - `bun run prove:all`: run the complete local gate.
 
 `.github/workflows/plugin-ci.yml` runs the compatibility matrix, packages the exact plugin, and uploads a PR/main artifact. Public repositories also attest the main artifact. GitHub does not offer artifact attestations to user-owned private repositories, so private template instances skip that job and retain the generated provenance JSON.
+
+## Public and private canaries
+
+After the implementation is merged, use a clean checkout of `origin/main`:
+
+```sh
+bun run ship:canary -- --dry-run
+bun run ship:canary -- --execute
+```
+
+The command verifies the active GitHub identity, target visibility, clean source commit, and generated manifests. Execute mode creates missing canary repositories, performs fast-forward-only pushes, and waits for both hosted workflows. It never force-pushes.
 
 ## Boundaries
 
