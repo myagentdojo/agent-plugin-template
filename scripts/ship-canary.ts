@@ -790,7 +790,7 @@ function classify(options: ClassifyOptions): void {
 		"git",
 		"diff",
 		"--name-only",
-		"--diff-filter=ACMR",
+		"--diff-filter=ACMRD",
 		`${options.base}...${options.head}`,
 	])
 	const changedPaths = output ? output.split("\n").filter(Boolean) : []

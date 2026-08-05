@@ -94,6 +94,11 @@ exit 1
 if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo "\${FAKE_ORIGIN:-git@github-myagentdojo:myagentdojo/dojo-hello.git}"; exit 0; fi
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
 if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then exit 0; fi
+if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
+	if [ "$3" != "--diff-filter=ACMRD" ]; then exit 92; fi
+	printf '%s\n' "\${FAKE_DIFF_PATH:-}"
+	exit 0
+fi
 if [ "$1" = "credential" ] && [ "$2" = "fill" ]; then printf 'protocol=https\nhost=github.com\nusername=%s\npassword=fake\n' "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}"; exit 0; fi
 if [ "$1" = "ls-remote" ]; then
 	if [ "$FAKE_EXISTING_CANDIDATE" = "same" ]; then printf '0123456789abcdef0123456789abcdef01234567\t%s\n' "$4"; fi
@@ -204,6 +209,38 @@ test("recipient payload-only paths keep hosted canaries optional", () => {
 			"runtime/src/hello-world.ts",
 		]),
 	).toEqual({ required: false, triggeringPaths: [] })
+})
+
+test("classify includes deleted publishing-system paths", () => {
+	const fixture = canaryFixture()
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"ship:canary",
+			"--",
+			"--classify",
+			"--base",
+			"base",
+			"--head",
+			"head",
+			"--json",
+		],
+		cwd: fixture.temporaryRoot,
+		env: {
+			...process.env,
+			FAKE_DIFF_PATH: "scripts/package.ts",
+			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+		},
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString().trim())).toMatchObject({
+		changedPaths: ["scripts/package.ts"],
+		canaries: { required: true, triggeringPaths: ["scripts/package.ts"] },
+	})
 })
 
 test("divergent PR heads receive distinct immutable candidate refs", () => {

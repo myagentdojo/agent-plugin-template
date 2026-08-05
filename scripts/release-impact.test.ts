@@ -89,6 +89,11 @@ describe("release impact", () => {
 		const result = classifyReleaseImpact({
 			title: "chore(main): release 1.2.3",
 			changedFiles: projection,
+			pullRequestIdentity: {
+				headRef: "release-please--branches--main",
+				authorLogin: "github-actions[bot]",
+				expectedAutomationLogin: "github-actions[bot]",
+			},
 		})
 
 		expect(result).toMatchObject({
@@ -115,12 +120,46 @@ describe("release impact", () => {
 		const result = classifyReleaseImpact({
 			title: "chore(main): release 0.2.0",
 			changedFiles: projection,
+			pullRequestIdentity: {
+				headRef: "release-please--branches--main",
+				authorLogin: "github-actions[bot]",
+				expectedAutomationLogin: "github-actions[bot]",
+			},
 		})
 
 		expect(result).toMatchObject({
 			isReleasePleaseProjection: true,
 			ok: true,
 		})
+	})
+
+	test("rejects a manual version projection without trusted Release Please identity", () => {
+		const projection = [
+			{ path: "plugin.config.json", versionOnly: true },
+			{ path: "CHANGELOG.md", versionOnly: true },
+		]
+
+		for (const pullRequestIdentity of [
+			undefined,
+			{
+				headRef: "manual-version-bump",
+				authorLogin: "github-actions[bot]",
+				expectedAutomationLogin: "github-actions[bot]",
+			},
+			{
+				headRef: "release-please--branches--main",
+				authorLogin: "octocat",
+				expectedAutomationLogin: "github-actions[bot]",
+			},
+		]) {
+			expect(
+				classifyReleaseImpact({
+					title: "chore(main): release 1.2.3",
+					changedFiles: projection,
+					pullRequestIdentity,
+				}),
+			).toMatchObject({ isReleasePleaseProjection: false, ok: false })
+		}
 	})
 
 	test("removes the projection exemption for an unrelated payload change", () => {
@@ -247,6 +286,71 @@ describe("release impact", () => {
 		expect(failure.runId).toBeString()
 	})
 
+	test("CLI accepts a trusted Release Please projection identity", () => {
+		const result = Bun.spawnSync({
+			cmd: [
+				process.execPath,
+				"run",
+				"scripts/release-impact.ts",
+				"--pr-head-ref",
+				"release-please--branches--main",
+				"--pr-author-login",
+				"github-actions[bot]",
+				"--expected-release-please-login",
+				"github-actions[bot]",
+			],
+			cwd: new URL("..", import.meta.url).pathname,
+			env: {
+				...process.env,
+				PR_TITLE: "chore(main): release 1.2.3",
+				CHANGED_FILES_JSON: JSON.stringify([
+					{ path: "plugin.config.json", versionOnly: true },
+					{ path: "CHANGELOG.md", versionOnly: true },
+				]),
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(0)
+		expect(JSON.parse(result.stdout.toString())).toMatchObject({
+			isReleasePleaseProjection: true,
+			ok: true,
+			sideEffects: "none",
+		})
+		expect(result.stderr.toString()).toBe("")
+	})
+
+	test("CLI fails closed when Release Please identity options are incomplete", () => {
+		const result = Bun.spawnSync({
+			cmd: [
+				process.execPath,
+				"run",
+				"scripts/release-impact.ts",
+				"--pr-head-ref",
+				"release-please--branches--main",
+			],
+			cwd: new URL("..", import.meta.url).pathname,
+			env: {
+				...process.env,
+				PR_TITLE: "chore(main): release 1.2.3",
+				CHANGED_FILES_JSON: JSON.stringify([
+					{ path: "plugin.config.json", versionOnly: true },
+				]),
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(1)
+		expect(JSON.parse(result.stdout.toString())).toMatchObject({
+			isReleasePleaseProjection: false,
+			ok: false,
+			category: "release_impact",
+		})
+		expect(result.stderr.toString()).toContain("release-impact:")
+	})
+
 	test("CLI help exposes inputs, output, and side-effect posture", () => {
 		const result = Bun.spawnSync({
 			cmd: [process.execPath, "run", "scripts/release-impact.ts", "--help"],
@@ -257,6 +361,10 @@ describe("release impact", () => {
 
 		expect(result.exitCode).toBe(0)
 		expect(result.stdout.toString()).toContain("--base <git-ref>")
+		expect(result.stdout.toString()).toContain("--pr-head-ref <branch>")
+		expect(result.stdout.toString()).toContain("--pr-author-login <login>")
+		expect(result.stdout.toString()).toContain("--expected-release-please-login <login>")
+		expect(result.stdout.toString()).toContain("Missing or mismatched identity disables")
 		expect(result.stdout.toString()).toContain("one JSON result on stdout")
 		expect(result.stdout.toString()).toContain("Side effects: none")
 	})

@@ -60,6 +60,7 @@ function releasePullRequest(overrides: Record<string, unknown> = {}) {
 		mergeCommit: "a".repeat(40),
 		mergeMode: "merge" as const,
 		changedFiles: allowedProjection,
+		changedFileStatuses: allowedProjection.map(() => "modified"),
 		projectionDigest: "b".repeat(64),
 		...overrides,
 	}
@@ -206,6 +207,9 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("merge_commit_sha")
 	expect(workflow).toContain("EXPECTED_RELEASE_PLEASE_LOGIN")
 	expect(workflow).toContain("ALLOWED_RELEASE_PATHS")
+	expect(workflow).toContain("'$changed - $allowed'")
+	expect(workflow).toContain('select(.status != "modified")')
+	expect(workflow).not.toContain("missing_paths")
 	expect(workflow).toContain("parent_count")
 	expect(workflow).toContain("compare_json_except_version")
 	expect(workflow).toContain('expectedTagState:"absent"')
@@ -293,12 +297,32 @@ test("publication candidate admission rejects paths outside the release projecti
 	).toThrow("allowed release projection")
 })
 
-test("publication candidate admission rejects an incomplete release projection", () => {
+test("publication candidate admission accepts the bootstrap manifest and changelog subset", () => {
+	const changedFiles = [".github/.release-please-manifest.json", "CHANGELOG.md"]
+	expect(
+		admitPublicationCandidate(
+			admissionInput([
+				releasePullRequest({
+					changedFiles,
+					changedFileStatuses: changedFiles.map(() => "modified"),
+				}),
+			]),
+		),
+	).toMatchObject({ version: "0.1.0", tag: "v0.1.0" })
+})
+
+test("publication candidate admission rejects an unsupported file status", () => {
 	expect(() =>
 		admitPublicationCandidate(
-			admissionInput([releasePullRequest({ changedFiles: allowedProjection.slice(1) })]),
+			admissionInput([
+				releasePullRequest({
+					changedFileStatuses: allowedProjection.map((_, index) =>
+						index === 0 ? "added" : "modified",
+					),
+				}),
+			]),
 		),
-	).toThrow("allowed release projection")
+	).toThrow("unsupported file status")
 })
 
 test("publication candidate admission rejects a rebound candidate record", () => {

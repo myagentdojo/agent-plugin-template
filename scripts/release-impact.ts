@@ -32,12 +32,24 @@ export interface ReleaseImpactChangedFile {
 	versionOnly?: boolean
 }
 
+/** Trusted pull request identity used to recognize Release Please automation. */
+export interface ReleaseImpactPullRequestIdentity {
+	/** Pull request head branch reported by GitHub. */
+	headRef?: string
+	/** Pull request author login reported by GitHub. */
+	authorLogin?: string
+	/** Repository-configured Release Please automation login. */
+	expectedAutomationLogin?: string
+}
+
 /** Inputs needed to decide whether a pull request title can carry its payload diff. */
 export interface ReleaseImpactInput {
 	/** Pull request title evaluated as the future squash-merge commit. */
 	title: string
 	/** Base-to-head files, with version-only evidence where applicable. */
 	changedFiles: readonly ReleaseImpactChangedFile[]
+	/** Trusted GitHub identity; absent or incomplete identity disables the release exemption. */
+	pullRequestIdentity?: ReleaseImpactPullRequestIdentity
 }
 
 /** Stable policy result emitted by the release-impact gate. */
@@ -59,6 +71,9 @@ export interface ReleaseImpactResult {
 interface CliOptions {
 	base?: string
 	head?: string
+	prHeadRef?: string
+	prAuthorLogin?: string
+	expectedReleasePleaseLogin?: string
 	help: boolean
 }
 
@@ -79,9 +94,16 @@ Usage:
   PR_TITLE="fix: repair the hook" bun run scripts/release-impact.ts --base <sha> --head <sha>
 
 Options:
-  --base <git-ref>   Pull request base commit; defaults to BASE_SHA
-  --head <git-ref>   Pull request head commit; defaults to HEAD_SHA
-  -h, --help         Show this help
+  --base <git-ref>                        Pull request base commit; defaults to BASE_SHA
+  --head <git-ref>                        Pull request head commit; defaults to HEAD_SHA
+  --pr-head-ref <branch>                  Trusted pull request head branch
+  --pr-author-login <login>               Trusted pull request author login
+  --expected-release-please-login <login> Expected Release Please automation login
+  -h, --help                              Show this help
+
+Release Please exemption:
+  Requires all three identity options and a release-please--branches-- head ref.
+  Missing or mismatched identity disables the exemption.
 
 Test input:
   CHANGED_FILES_JSON may provide [{"path":"...","versionOnly":true}] instead of git refs.
@@ -176,7 +198,13 @@ export function classifyReleaseImpact(input: ReleaseImpactInput): ReleaseImpactR
 		.filter((file) => isPayloadPath(file.path))
 		.map((file) => file.path)
 	const payloadChanged = changedPayloadPaths.length > 0
+	const identity = input.pullRequestIdentity
+	const isReleasePleasePullRequest =
+		Boolean(identity?.expectedAutomationLogin) &&
+		identity?.authorLogin === identity?.expectedAutomationLogin &&
+		identity?.headRef?.startsWith("release-please--branches--") === true
 	const isReleasePleaseProjection =
+		isReleasePleasePullRequest &&
 		payloadChanged &&
 		input.changedFiles.length > 0 &&
 		input.changedFiles.every(
@@ -201,7 +229,7 @@ function optionValue(arguments_: string[], name: string): string | undefined {
 	if (!value || value.startsWith("--")) {
 		throw new ReleaseImpactError(
 			"usage",
-			`${name} requires a git ref`,
+			`${name} requires a value`,
 			"bun run scripts/release-impact.ts --help",
 		)
 	}
@@ -214,7 +242,13 @@ function parseOptions(arguments_: string[]): CliOptions {
 	}
 	for (let index = 0; index < arguments_.length; index += 1) {
 		const argument = arguments_[index]
-		if (argument === "--base" || argument === "--head") {
+		if (
+			argument === "--base" ||
+			argument === "--head" ||
+			argument === "--pr-head-ref" ||
+			argument === "--pr-author-login" ||
+			argument === "--expected-release-please-login"
+		) {
 			index += 1
 			continue
 		}
@@ -227,6 +261,9 @@ function parseOptions(arguments_: string[]): CliOptions {
 	return {
 		base: optionValue(arguments_, "--base") ?? process.env.BASE_SHA,
 		head: optionValue(arguments_, "--head") ?? process.env.HEAD_SHA,
+		prHeadRef: optionValue(arguments_, "--pr-head-ref"),
+		prAuthorLogin: optionValue(arguments_, "--pr-author-login"),
+		expectedReleasePleaseLogin: optionValue(arguments_, "--expected-release-please-login"),
 		help: false,
 	}
 }
@@ -358,7 +395,15 @@ function main(arguments_: string[]): void {
 				"set PR_TITLE to the pull request title and rerun the gate",
 			)
 		}
-		const result = classifyReleaseImpact({ title, changedFiles: changedFiles(options) })
+		const result = classifyReleaseImpact({
+			title,
+			changedFiles: changedFiles(options),
+			pullRequestIdentity: {
+				headRef: options.prHeadRef,
+				authorLogin: options.prAuthorLogin,
+				expectedAutomationLogin: options.expectedReleasePleaseLogin,
+			},
+		})
 		if (!result.ok) {
 			emitFailure(gateFailure(result), runId, result)
 			process.exitCode = 1

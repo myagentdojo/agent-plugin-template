@@ -49,6 +49,8 @@ export interface ReleasePullRequestCandidate {
 	mergeMode: "merge" | "squash" | "rebase"
 	/** Repository-relative paths changed by the pull request. */
 	changedFiles: string[]
+	/** GitHub file status parallel to each changed path. */
+	changedFileStatuses: string[]
 	/** SHA-256 over the canonical pull-request projection. */
 	projectionDigest: string
 }
@@ -180,11 +182,17 @@ export function admitPublicationCandidate(
 		throw new Error(`publication candidate merge mode ${candidate.mergeMode} is unsupported`)
 	}
 	if (
-		candidate.changedFiles.length !== ALLOWED_RELEASE_PROJECTION.size ||
-		new Set(candidate.changedFiles).size !== ALLOWED_RELEASE_PROJECTION.size ||
+		candidate.changedFiles.length === 0 ||
+		new Set(candidate.changedFiles).size !== candidate.changedFiles.length ||
 		candidate.changedFiles.some((path) => !ALLOWED_RELEASE_PROJECTION.has(path))
 	) {
-		throw new Error("publication candidate does not exactly match the allowed release projection")
+		throw new Error("publication candidate changed files outside the allowed release projection")
+	}
+	if (
+		candidate.changedFileStatuses.length !== candidate.changedFiles.length ||
+		candidate.changedFileStatuses.some((status) => status !== "modified")
+	) {
+		throw new Error("publication candidate used an unsupported file status")
 	}
 	if (!/^[a-f0-9]{64}$/.test(candidate.projectionDigest)) {
 		throw new Error("publication candidate projection digest must be a SHA-256")

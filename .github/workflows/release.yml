@@ -116,10 +116,8 @@ jobs:
           changed_paths=$(jq -c '[.[].filename] | sort' <<< "$projection")
           unexpected_paths=$(jq -cn --argjson changed "$changed_paths" --argjson allowed "$ALLOWED_RELEASE_PATHS" \
             '$changed - $allowed')
-          missing_paths=$(jq -cn --argjson changed "$changed_paths" --argjson allowed "$ALLOWED_RELEASE_PATHS" \
-            '$allowed - $changed')
           unsupported_statuses=$(jq -c '[.[] | select(.status != "modified")]' <<< "$projection")
-          if [[ "$unexpected_paths" != "[]" || "$missing_paths" != "[]" || "$unsupported_statuses" != "[]" ]]; then
+          if [[ "$changed_paths" == "[]" || "$unexpected_paths" != "[]" || "$unsupported_statuses" != "[]" ]]; then
             echo "Release Please candidate changed files outside the allowed projection or used an unsupported file status." >&2
             exit 1
           fi

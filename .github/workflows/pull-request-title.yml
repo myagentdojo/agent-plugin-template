@@ -33,6 +33,9 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+      EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,4 +44,8 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Gate payload changes on release intent
-        run: bun run scripts/release-impact.ts
+        run: >-
+          bun run scripts/release-impact.ts
+          --pr-head-ref "$PR_HEAD_REF"
+          --pr-author-login "$PR_AUTHOR_LOGIN"
+          --expected-release-please-login "$EXPECTED_RELEASE_PLEASE_LOGIN"
