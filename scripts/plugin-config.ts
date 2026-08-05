@@ -208,7 +208,41 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 	}
 }
 
-/** Render native Claude and Codex manifests from canonical metadata. */
+function codexHooks(config: PluginConfig): GeneratedFile {
+	return {
+		path: "plugin/hooks/codex/hooks.json",
+		contents: serialize({
+			hooks: {
+				SessionStart: [
+					{
+						matcher: "*",
+						hooks: [
+							{
+								type: "command",
+								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event SessionStart --plugin-version ${config.version}`,
+								timeout: 10,
+								statusMessage: "Running portable plugin hook",
+							},
+						],
+					},
+				],
+				Stop: [
+					{
+						hooks: [
+							{
+								type: "command",
+								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event Stop --plugin-version ${config.version}`,
+								timeout: 10,
+							},
+						],
+					},
+				],
+			},
+		}),
+	}
+}
+
+/** Render native Claude and Codex files from canonical metadata. */
 export function renderGeneratedFiles(config: PluginConfig): GeneratedFile[] {
 	validateConfig(config)
 	return [
@@ -216,6 +250,7 @@ export function renderGeneratedFiles(config: PluginConfig): GeneratedFile[] {
 		codexMarketplace(config),
 		claudeManifest(config),
 		codexManifest(config),
+		codexHooks(config),
 	]
 }
 

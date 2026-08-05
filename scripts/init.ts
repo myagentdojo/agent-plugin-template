@@ -5,6 +5,7 @@ import { type PluginConfig, loadPluginConfig, renderGeneratedFiles, writeGenerat
 
 const root = resolve(import.meta.dir, "..")
 const runId = crypto.randomUUID()
+const initialVersion = "0.1.0"
 const help = `Initialize an agent plugin repository from the template metadata.
 
 Usage:
@@ -27,7 +28,7 @@ Examples:
   bun run init -- --name dojo-hello --display-name "Dojo Hello" --author "My Agent Dojo" --repository https://github.com/myagentdojo/dojo-hello
   bun run init -- --name private-dojo --repository https://github.com/myagentdojo/private-dojo --dry-run --json
 
-Side effects: writes plugin.config.json and four generated manifest files.
+Side effects: writes plugin metadata, generated files, and reset release state.
 `
 
 interface Options {
@@ -115,6 +116,33 @@ function githubRepository(url: string): { owner: string; repository: string } | 
 	return { owner: match[1], repository: match[2] }
 }
 
+function releaseResetFiles(root: string, name: string): Array<{ path: string; contents: string }> {
+	const releaseConfig = JSON.parse(
+		readFileSync(resolve(root, ".github/release-please-config.json"), "utf8"),
+	)
+	releaseConfig.packages["."]["package-name"] = name
+
+	const runtimePath = "plugin/runtime/hello-world.js"
+	const runtime = readFileSync(resolve(root, runtimePath), "utf8")
+	const startMarker = "// x-release-please-start-version"
+	const endMarker = "// x-release-please-end"
+	const start = runtime.indexOf(startMarker)
+	const end = runtime.indexOf(endMarker, start + startMarker.length)
+	if (start === -1 || end === -1) throw new Error("generated runtime is missing release version markers")
+	const versionBlock = `${startMarker}\nconst PLUGIN_VERSION = ${JSON.stringify(initialVersion)};\n${endMarker}`
+	const resetRuntime = `${runtime.slice(0, start)}${versionBlock}${runtime.slice(end + endMarker.length)}`
+
+	return [
+		{
+			path: ".github/release-please-config.json",
+			contents: `${JSON.stringify(releaseConfig, null, 2)}\n`,
+		},
+		{ path: ".github/.release-please-manifest.json", contents: "{}\n" },
+		{ path: "CHANGELOG.md", contents: "" },
+		{ path: runtimePath, contents: resetRuntime },
+	]
+}
+
 const options = parseOptions(process.argv.slice(2))
 if (!options) process.exit(0)
 
@@ -128,6 +156,7 @@ const config: PluginConfig = {
 	template: false,
 	name: options.name,
 	displayName: options.displayName ?? displayName(options.name),
+	version: initialVersion,
 	description: options.description ?? current.description,
 	author: { name: options.author ?? current.author.name },
 	repository,
@@ -139,10 +168,12 @@ const config: PluginConfig = {
 			}
 		: current.canary,
 }
-const files = renderGeneratedFiles(config)
+const generatedFiles = renderGeneratedFiles(config)
+const resetFiles = releaseResetFiles(root, config.name)
 if (!options.dryRun) {
 	writeFileSync(resolve(root, "plugin.config.json"), `${JSON.stringify(config, null, 2)}\n`)
 	writeGeneratedFiles(root, config)
+	for (const file of resetFiles) writeFileSync(resolve(root, file.path), file.contents)
 }
 
 const result = {
@@ -151,7 +182,11 @@ const result = {
 	runId,
 	sideEffects: options.dryRun ? "none" : "repository-files-written",
 	plugin: { name: config.name, version: config.version },
-	files: ["plugin.config.json", ...files.map((file) => file.path)],
+	files: [
+		"plugin.config.json",
+		...generatedFiles.map((file) => file.path),
+		...resetFiles.map((file) => file.path),
+	],
 	nextAction: options.dryRun ? "rerun without --dry-run" : "bun run prove:all",
 }
 if (options.json) console.log(JSON.stringify(result))
