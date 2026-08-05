@@ -110,8 +110,22 @@ test("release validation rejects unexpected manifest packages", () => {
 	expect(result.stderr.toString()).toContain("bootstrap release-please manifest must be empty")
 })
 
+test("release validation rejects a pre-seeded bootstrap changelog heading", () => {
+	const temporaryRoot = copyRepository()
+	writeFileSync(join(temporaryRoot, "CHANGELOG.md"), "# Changelog\n")
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("bootstrap CHANGELOG.md must be empty")
+})
+
 test("release validation rejects a duplicate changelog heading", () => {
 	const temporaryRoot = copyRepository()
+	const pluginConfig = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
+	writeFileSync(
+		join(temporaryRoot, ".github", ".release-please-manifest.json"),
+		`${JSON.stringify({ ".": pluginConfig.version }, null, 2)}\n`,
+	)
 	writeFileSync(
 		join(temporaryRoot, "CHANGELOG.md"),
 		"# Changelog\n\n## 0.1.0\n\nInitial release.\n\n## Changelog\n",

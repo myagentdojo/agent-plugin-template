@@ -73,11 +73,10 @@ if (releaseState === "bootstrap") {
 	fail("release-please manifest must contain only the root package version")
 }
 
-if (/^## Changelog$/m.test(changelog)) {
+if (releaseState === "bootstrap") {
+	if (changelog !== "") fail("bootstrap CHANGELOG.md must be empty")
+} else if (/^## Changelog$/m.test(changelog)) {
 	fail("CHANGELOG.md must not contain a duplicate Changelog heading")
-}
-if (releaseState === "bootstrap" && changelog.trim() !== "# Changelog") {
-	fail("bootstrap CHANGELOG.md must contain only its top-level heading")
 }
 
 if (packageJson.private !== true || "publish" in (packageJson.scripts ?? {})) {
