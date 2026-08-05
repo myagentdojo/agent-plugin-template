@@ -138,7 +138,7 @@ Do not symlink or sync only `skills/` into harness-global directories. That bypa
 
 ## Add plugin behavior
 
-Keep portable command logic under `runtime/src/`. Keep the QuickJS I/O adapter small. Add host behavior through the native manifest or hook file for that host.
+Keep portable command logic under `runtime/src/`. Keep the QuickJS I/O adapter small. Add harness behavior through the native manifest or hook file for that Harness.
 
 ```text
 plugin/
@@ -165,21 +165,16 @@ arguments + complete stdin + invocation identity
     -> stdout + stderr + exit code
 ```
 
-Share:
+| Area | Shared | Claude Code | Codex |
+| --- | --- | --- | --- |
+| Skills | Portable Agent Skills content | `/PLUGIN:SKILL` invocation and Claude extensions | `$SKILL` invocation and Codex extensions |
+| Runtime | Generated JavaScript, launcher, and QuickJS assets | Executes the shared launcher | Executes the shared launcher |
+| Manifest | Plugin identity only | Claude-native manifest | Codex-native manifest |
+| Hooks | Command implementation only | Claude-native declarations, matching, and handlers | Codex-native declarations, matching, and trust |
+| Development refresh | Source and payload | Direct checkout plus `/reload-plugins` | Staged reinstall plus a fresh task |
+| Harness-only features | Nothing by default | Keep Claude-only components native | Keep Codex-only components native |
 
-- Cross-harness Agent Skills content.
-- Portable TypeScript behavior and generated JavaScript.
-- Launcher and checksum-pinned QuickJS assets.
-- Standards-based protocol implementations validated in both hosts.
-
-Keep native:
-
-- Claude and Codex manifests.
-- Hook declarations and root variables.
-- Trust, matchers, handler types, and reload behavior.
-- Features supported by only one host.
-
-See the [architecture learning](docs/solutions/architecture-patterns/portable-dual-harness-plugin-distribution.md) and [compatibility matrix](docs/research/claude-code-vs-codex-plugins.md).
+Use [CONTEXT.md](CONTEXT.md) for canonical language. The architecture rationale lives in the ADRs for [one payload with native adapters](docs/adr/0001-one-payload-native-harness-adapters.md) and [Bun-authored QuickJS execution](docs/adr/0002-bun-authoring-quickjs-runtime.md).
 
 ## Pull requests and CI
 
@@ -263,14 +258,14 @@ gh attestation verify dist/PLUGIN_NAME-X.Y.Z.tar.gz --repo OWNER/REPOSITORY
 
 For a private user-owned repository, compare the SHA-256 value in the attached provenance JSON with the downloaded archive.
 
-Release machinery is based on [Release Please](https://github.com/googleapis/release-please), with a human-reviewed standing PR like Every's compound-engineering workflow. This single-plugin template additionally generates a committed changelog, validates every version surface, pins Actions to full commit SHAs, proves the payload before tagging, and attaches the deterministic package. See the [versioned release workflow learning](docs/solutions/workflow/versioned-plugin-releases-with-release-please.md) for rationale and recovery behavior.
+Release machinery is based on [Release Please](https://github.com/googleapis/release-please), with a human-reviewed standing PR like Every's compound-engineering workflow. This single-plugin template additionally generates a committed changelog, validates every version surface, pins Actions to full commit SHAs, proves the payload before tagging, and attaches the deterministic package. See the [reviewed versioned release ADR](docs/adr/0003-reviewed-versioned-releases.md) for the publication boundary.
 
 ## Proof commands
 
 - `bun test`: initializer, metadata, CLI, release, development, and canary contracts.
 - `bun run generate:check`: generated manifests match `plugin.config.json`.
 - `bun run build`: regenerate portable JavaScript.
-- `bun run spike:quickjs`: compare Bun and QuickJS behavior on the current host.
+- `bun run spike:quickjs`: compare Bun and QuickJS behavior on the current platform.
 - `bun run prove:distribution`: build twice, compare bytes, extract offline, verify interpreter digests, and run both harness command contracts.
 - `bun run prove:dx`: verify canonical marketplace paths and native development boundaries.
 - `bun run prove:quickjs-ci`: reproduce runtime, distribution, matrix, pinning, and attestation CI checks.
@@ -293,5 +288,5 @@ The command verifies GitHub identity, target visibility and lineage, no tracked 
 - QuickJS NG `0.16.1` is checksum-pinned in the payload.
 - A future dependency on `Bun.*`, `node:*`, native addons, or unsupported Web APIs requires a fresh runtime decision and compatibility proof.
 - Claude reloads a direct development plugin in the existing session. Codex needs a staged reinstall and fresh task.
-- Hook declarations stay physically separate. A shared default `hooks/hooks.json` previously caused cross-host auto-discovery.
+- Hook declarations stay physically separate. A shared default `hooks/hooks.json` previously caused cross-harness auto-discovery.
 - Vendor plugin specifications change. Recheck the linked official documentation when manifests, hooks, trust, or reload behavior changes.

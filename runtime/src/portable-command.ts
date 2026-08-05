@@ -1,4 +1,4 @@
-/** Complete process result emitted by a host adapter. */
+/** Complete process result emitted by a harness adapter. */
 export interface CommandResult {
 	exitCode: number
 	stdout: string
