@@ -69,7 +69,7 @@ jobs:
 
   attest:
     name: Attest main artifact
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.private == false
     needs: package
     runs-on: ubuntu-24.04
     permissions:

@@ -87,10 +87,10 @@ bun run dev -- codex --check
 - `bun run spike:quickjs`: compare Bun and QuickJS behavior on the host.
 - `bun run prove:distribution`: package twice, prove deterministic bytes, extract offline, verify every interpreter digest, and run both hook adapters.
 - `bun run prove:dx`: verify canonical marketplace paths and native reload contracts.
-- `bun run prove:quickjs-ci`: verify runtime equivalence, distribution, four-host CI, pinned actions, and main attestation configuration.
+- `bun run prove:quickjs-ci`: verify runtime equivalence, distribution, four-host CI, pinned actions, and public-repository attestation configuration.
 - `bun run prove:all`: run the complete local gate.
 
-`.github/workflows/plugin-ci.yml` runs the compatibility matrix, packages the exact plugin, uploads a PR/main artifact, and attests the main artifact.
+`.github/workflows/plugin-ci.yml` runs the compatibility matrix, packages the exact plugin, and uploads a PR/main artifact. Public repositories also attest the main artifact. GitHub does not offer artifact attestations to user-owned private repositories, so private template instances skip that job and retain the generated provenance JSON.
 
 ## Boundaries
 
