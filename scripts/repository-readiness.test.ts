@@ -76,13 +76,20 @@ describe("immutable version tag ruleset", () => {
 	})
 })
 
-test("fails closed distinctly when a safeguard API is unauthorized or unavailable", () => {
+test("fails closed distinctly when a safeguard API is missing, unauthorized, or unavailable", () => {
 	const repair = "Settings > Rules > Rulesets: verify the immutable v* tag ruleset"
+	const missingByStatus = classifyApiFailure("tag-ruleset", 404, "HTTP 404", repair)
+	const missingByMessage = classifyApiFailure("tag-ruleset", 1, "resource not found", repair)
+	const unauthorized401 = classifyApiFailure("tag-ruleset", 401, "HTTP 401", repair)
 	const unauthorized = classifyApiFailure("tag-ruleset", 403, "HTTP 403: Resource not accessible", repair)
 	const unavailable = classifyApiFailure("tag-ruleset", 1, "network unreachable", repair)
 
+	expect(missingByStatus).toMatchObject({ status: "missing", repair })
+	expect(missingByMessage).toMatchObject({ status: "missing", repair })
+	expect(unauthorized401).toMatchObject({ status: "unauthorized", repair })
 	expect(unauthorized).toMatchObject({ status: "unauthorized", repair })
 	expect(unavailable).toMatchObject({ status: "unavailable", repair })
+	expect(summarizeReadiness([missingByStatus]).ok).toBe(false)
 	expect(summarizeReadiness([unauthorized]).ok).toBe(false)
 	expect(summarizeReadiness([unavailable]).ok).toBe(false)
 })

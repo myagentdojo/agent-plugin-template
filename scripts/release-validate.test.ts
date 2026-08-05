@@ -267,6 +267,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("sha256sum")
 	expect(workflow).toContain("bun run release:validate -- --repair")
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
+	expect(finalReleaseJob).toContain("    needs:\n      - resolve\n      - package\n")
+	expect(finalReleaseJob).toContain("    permissions:\n      actions: read\n")
 	expect(finalReleaseJob).toContain("PUBLICATION_CANDIDATE_PATH=persisted-candidate.json")
 	expect(finalReleaseJob).toContain('--repository "$GITHUB_REPOSITORY"')
 	expect(compareStepStart).toBeGreaterThan(-1)

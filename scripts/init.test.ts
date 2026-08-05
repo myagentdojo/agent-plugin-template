@@ -22,6 +22,7 @@ const resetPaths = [
 	"plugin/.codex-plugin/plugin.json",
 	"plugin/hooks/codex/hooks.json",
 	".github/release-please-config.json",
+	"package.json",
 	".github/.release-please-manifest.json",
 	"CHANGELOG.md",
 	"plugin/runtime/hello-world.js",
@@ -93,6 +94,11 @@ function packageWithSource(
 
 function createReleasedTemplate(prefix: string): string {
 	const temporaryRoot = copyTemplate(prefix)
+	const packagePath = join(temporaryRoot, "package.json")
+	const packageJson = JSON.parse(readFileSync(packagePath, "utf8"))
+	packageJson.version = "9.9.9"
+	writeJson(packagePath, packageJson)
+
 	const configPath = join(temporaryRoot, "plugin.config.json")
 	const config = JSON.parse(readFileSync(configPath, "utf8"))
 	config.version = "9.9.9"
@@ -251,6 +257,8 @@ test("initialization resets recipient release lineage to 0.1.0", () => {
 
 	const config = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
 	expect(config.version).toBe("0.1.0")
+	const packageJson = JSON.parse(readFileSync(join(temporaryRoot, "package.json"), "utf8"))
+	expect(packageJson.version).toBe("0.1.0")
 	const claudeManifest = JSON.parse(
 		readFileSync(join(temporaryRoot, "plugin", ".claude-plugin", "plugin.json"), "utf8"),
 	)
@@ -365,6 +373,39 @@ test("invalid metadata is rejected before initialization writes generated files"
 
 	expect(result.exitCode).not.toBe(0)
 	expect(result.stderr.toString()).toContain("repository must not contain embedded credentials")
+	expect(readResetTargets(temporaryRoot)).toEqual(before)
+})
+
+test.each([
+	["supplied", "dojo-hello", ["--display-name", "x".repeat(31)]],
+	["derived", "very-long-plugin-name-with-over-thirty-chars", []],
+] as const)("invalid %s display name returns structured usage without writes", (_source, name, options) => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-invalid-display-name-")
+	const before = readResetTargets(temporaryRoot)
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"init",
+			"--",
+			"--name",
+			name,
+			"--force",
+			"--json",
+			...options,
+		],
+		cwd: temporaryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).toBe(2)
+	expect(JSON.parse(result.stdout.toString().trim())).toMatchObject({
+		ok: false,
+		category: "usage",
+		message: "--display-name must be non-empty, single-line text of at most 30 characters",
+		retrySafe: true,
+	})
 	expect(readResetTargets(temporaryRoot)).toEqual(before)
 })
 

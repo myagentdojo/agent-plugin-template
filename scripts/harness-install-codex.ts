@@ -97,22 +97,21 @@ export function proveCodexNative(
 		throw new Error("Codex rollback did not restore the prior enabled state")
 	}
 	dependencies.remove(codexExecutable, pluginId, marketplaceName, environment, project)
-	let failureRestored = false
-	try {
-		throw new Error("injected Codex failure after marketplace removal")
-	} catch {
-		restored = dependencies.install(
-			codexExecutable,
-			fixture.base.checkoutRoot,
-			pluginId,
-			environment,
-			project,
-		)
-		failureRestored =
-			restored.add.version === fixture.base.manifestVersion &&
-			restored.plugin.enabled === initial.plugin.enabled
+	restored = dependencies.install(
+		codexExecutable,
+		fixture.base.checkoutRoot,
+		pluginId,
+		environment,
+		project,
+	)
+	const recoveredInventory = dependencies.comparePayload(fixture.base, restored.add.installedPath)
+	const failureRestored =
+		restored.add.version === fixture.base.manifestVersion &&
+		restored.plugin.enabled === initial.plugin.enabled &&
+		recoveredInventory.join("\n") === restoredInventory.join("\n")
+	if (!failureRestored) {
+		throw new Error("Codex interrupted-state restoration did not recover version, enablement, and payload")
 	}
-	if (!failureRestored) throw new Error("Codex injected-failure restoration did not recover state")
 	const marketplaceState = restored.marketplace.marketplaces.find(
 		(entry: { name?: string }) => entry.name === marketplaceName,
 	)
@@ -131,7 +130,7 @@ export function proveCodexNative(
 		mode: "native-local-marketplace",
 		version: restored.add.version,
 		installedPath: restored.add.installedPath,
-		inventory: restoredInventory,
+		inventory: recoveredInventory,
 		requestedRef: fixture.base.requestedRef,
 		resolvedSha: fixture.base.resolvedSha,
 		marketplaceIdentity: marketplaceName,

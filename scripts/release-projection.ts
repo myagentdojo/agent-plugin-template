@@ -16,6 +16,9 @@ export const RELEASE_PROJECTION_PATHS = [
 
 export const RELEASE_PROJECTION_PATH_SET = new Set<string>(RELEASE_PROJECTION_PATHS)
 
+const CHANGELOG_HEADER = "# Changelog\n\n"
+const SEMANTIC_VERSION = "[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?"
+
 const jsonVersionPaths = new Set([
 	"package.json",
 	"plugin.config.json",
@@ -47,9 +50,24 @@ export function isReleaseProjectionVersionOnlyChange(
 	path: string,
 	before: string,
 	after: string,
+	expectedVersion?: string,
 ): boolean {
 	if (!RELEASE_PROJECTION_PATH_SET.has(path)) return false
-	if (path === "CHANGELOG.md") return true
+	if (path === "CHANGELOG.md") {
+		const beforeBody = before === "" ? "" : before.startsWith(CHANGELOG_HEADER) ? before.slice(CHANGELOG_HEADER.length) : undefined
+		if (beforeBody === undefined || !after.startsWith(CHANGELOG_HEADER)) return false
+		const afterBody = after.slice(CHANGELOG_HEADER.length)
+		if (!afterBody.endsWith(beforeBody)) return false
+		const added = beforeBody === "" ? afterBody : afterBody.slice(0, -beforeBody.length)
+		const headings = added.match(/^## .+$/gm) ?? []
+		if (headings.length !== 1) return false
+		if (!added.startsWith(`${headings[0]}\n`) || /^# [^#]/m.test(added)) return false
+		const match = headings[0].match(
+			new RegExp(`^## (?:\\[(${SEMANTIC_VERSION})\\]\\([^\\n)]+\\)|(${SEMANTIC_VERSION}))(?: \\(\\d{4}-\\d{2}-\\d{2}\\))?$`),
+		)
+		const version = match?.[1] ?? match?.[2]
+		return version !== undefined && (expectedVersion === undefined || version === expectedVersion)
+	}
 	if (path === "plugin/hooks/codex/hooks.json") {
 		const normalize = (contents: string): string =>
 			contents.replace(/--plugin-version\s+[^"\s]+/g, "--plugin-version VERSION")
@@ -77,6 +95,18 @@ export function validateReleaseProjection(
 	readVersions: (path: string) => { before: string; after: string },
 ): { changedFiles: string[]; projectionDigest: string } {
 	const sorted = [...files].sort((left, right) => left.filename.localeCompare(right.filename))
+	let expectedVersion: string | undefined
+	if (sorted.some((file) => file.filename === "CHANGELOG.md")) {
+		try {
+			const manifest = JSON.parse(
+				readVersions(".github/.release-please-manifest.json").after,
+			) as Record<string, unknown>
+			expectedVersion = typeof manifest["."] === "string" ? manifest["."] : undefined
+		} catch {
+			expectedVersion = undefined
+		}
+		if (!expectedVersion) throw new Error("release projection cannot resolve the current changelog version")
+	}
 	if (sorted.length === 0) throw new Error("release projection is empty")
 	if (new Set(sorted.map((file) => file.filename)).size !== sorted.length) {
 		throw new Error("release projection contains duplicate paths")
@@ -89,7 +119,7 @@ export function validateReleaseProjection(
 			throw new Error(`release projection contains unsupported status: ${file.filename} ${file.status}`)
 		}
 		const versions = readVersions(file.filename)
-		if (!isReleaseProjectionVersionOnlyChange(file.filename, versions.before, versions.after)) {
+		if (!isReleaseProjectionVersionOnlyChange(file.filename, versions.before, versions.after, expectedVersion)) {
 			throw new Error(`release projection changed non-version behavior: ${file.filename}`)
 		}
 	}

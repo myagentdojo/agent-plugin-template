@@ -31,6 +31,51 @@ test("one projection policy accepts version-only changes and rejects behavioral 
 	).toThrow("unsupported path")
 })
 
+test("changelog projection prepends exactly one current-version section", () => {
+	const manifest = {
+		before: '{".":"0.1.0"}',
+		after: '{".":"0.2.0"}',
+	}
+	const before = "# Changelog\n\n## [0.1.0](https://example.invalid/v0.1.0) (2026-08-01)\n\nOld bytes.\n"
+	const current = "## [0.2.0](https://example.invalid/v0.2.0) (2026-08-06)\n\n### Features\n\n* Added.\n\n"
+	const validateChangelog = (after: string): ReturnType<typeof validateReleaseProjection> =>
+		validateReleaseProjection(
+			[{ filename: "CHANGELOG.md", status: "modified" }],
+			(path) => path === "CHANGELOG.md" ? { before, after } : manifest,
+		)
+
+	expect(validateChangelog(`# Changelog\n\n${current}${before.slice("# Changelog\n\n".length)}`).changedFiles).toEqual([
+		"CHANGELOG.md",
+	])
+	expect(() => validateChangelog(`${before}${current}`)).toThrow("non-version behavior")
+	expect(() =>
+		validateChangelog(`# Changelog\n\nUnrelated prefix.\n\n${current}${before.slice("# Changelog\n\n".length)}`),
+	).toThrow("non-version behavior")
+	expect(() =>
+		validateChangelog(`# Changelog\n\n${current}${before.slice("# Changelog\n\n".length).replace("Old bytes.", "Rewritten.")}`),
+	).toThrow("non-version behavior")
+	expect(() =>
+		validateChangelog(`# Changelog\n\n${current}## Unrelated\n\nExtra.\n\n${before.slice("# Changelog\n\n".length)}`),
+	).toThrow("non-version behavior")
+	expect(() =>
+		validateChangelog(`# Changelog\n\n${current.replaceAll("0.2.0", "0.3.0")}${before.slice("# Changelog\n\n".length)}`),
+	).toThrow("non-version behavior")
+})
+
+test("bootstrap changelog projection accepts one initial current-version section", () => {
+	const result = validateReleaseProjection(
+		[{ filename: "CHANGELOG.md", status: "modified" }],
+		(path) => path === "CHANGELOG.md"
+			? {
+				before: "",
+				after: "# Changelog\n\n## 0.1.0 (2026-08-06)\n\nInitial release.\n",
+			}
+			: { before: "{}", after: '{".":"0.1.0"}' },
+	)
+
+	expect(result.changedFiles).toEqual(["CHANGELOG.md"])
+})
+
 test("projection CLI executes the same policy against Git refs", () => {
 	const repository = mkdtempSync(join(tmpdir(), "release-projection-cli-"))
 	const run = (arguments_: string[]) =>

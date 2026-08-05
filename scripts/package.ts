@@ -1,6 +1,8 @@
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -20,6 +22,20 @@ const outputRoot = join(root, "dist")
 const packageName = `${pluginConfig.name}-${version}`
 const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
+
+function archiveEntries(directory: string, prefix: string): string[] {
+	const entries = [prefix]
+	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+		left.name.localeCompare(right.name),
+	)) {
+		const relativePath = `${prefix}/${entry.name}`
+		entries.push(relativePath)
+		if (entry.isDirectory()) {
+			entries.push(...archiveEntries(join(directory, entry.name), relativePath).slice(1))
+		}
+	}
+	return entries
+}
 
 function resolveSourceCommit(): string {
 	const sourceCommit = process.env.SOURCE_COMMIT
@@ -60,11 +76,16 @@ function validateSourceCommit(value: string, source: string): string {
 try {
 	const sourceCommit = resolveSourceCommit()
 	mkdirSync(outputRoot, { recursive: true })
-	const inventory = copyPluginPayload(root, packageRoot)
+	copyPluginPayload(root, packageRoot)
 
-	const entries = inventory.map((relativePath) => `${packageName}/${relativePath}`)
+	const entries = archiveEntries(packageRoot, packageName)
 	const epoch = new Date(0)
-	for (const relativePath of entries) utimesSync(join(stagingRoot, relativePath), epoch, epoch)
+	for (const relativePath of entries) {
+		const absolutePath = join(stagingRoot, relativePath)
+		const status = statSync(absolutePath)
+		chmodSync(absolutePath, status.isDirectory() ? 0o755 : status.mode & 0o111 ? 0o755 : 0o644)
+		utimesSync(absolutePath, epoch, epoch)
+	}
 
 	const fileList = join(stagingRoot, "entries.txt")
 	writeFileSync(fileList, `${entries.join("\n")}\n`)

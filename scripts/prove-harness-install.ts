@@ -631,38 +631,39 @@ function proveClaudeNative(
 			[claudeExecutable, "plugin", "marketplace", "remove", marketplaceName, "--scope", scope],
 			{ cwd: project, env: environment },
 		)
-		let failureRestored = false
-		try {
-			throw new Error("injected Claude failure after marketplace removal")
-		} catch {
-			addClaudeMarketplace(
-				claudeExecutable,
-				fixture.base.checkoutRoot,
-				scope,
-				environment,
-				project,
+		addClaudeMarketplace(
+			claudeExecutable,
+			fixture.base.checkoutRoot,
+			scope,
+			environment,
+			project,
+		)
+		command([claudeExecutable, "plugin", "install", pluginId, "--scope", scope], {
+			cwd: project,
+			env: environment,
+		})
+		command([claudeExecutable, "plugin", "enable", pluginId, "--scope", scope], {
+			cwd: project,
+			env: environment,
+		})
+		const restoredAfterFailure = findClaudeInstall(
+			claudeExecutable,
+			environment,
+			project,
+			pluginId,
+			scope,
+		)
+		const recoveredInventory = comparePayload(fixture.base, restoredAfterFailure.activeCachePath)
+		const failureRestored =
+			restoredAfterFailure.version === fixture.base.manifestVersion &&
+			restoredAfterFailure.enabled &&
+			readFileSync(markerPath, "utf8") === `${scope} marker\n` &&
+			recoveredInventory.join("\n") === fixture.base.inventory.join("\n")
+		if (!failureRestored) {
+			throw new Error(
+				`Claude ${scope} interrupted-state restoration did not recover version, enablement, marker, and payload`,
 			)
-			command([claudeExecutable, "plugin", "install", pluginId, "--scope", scope], {
-				cwd: project,
-				env: environment,
-			})
-			command([claudeExecutable, "plugin", "enable", pluginId, "--scope", scope], {
-				cwd: project,
-				env: environment,
-			})
-			const restoredAfterFailure = findClaudeInstall(
-				claudeExecutable,
-				environment,
-				project,
-				pluginId,
-				scope,
-			)
-			failureRestored =
-				restoredAfterFailure.version === fixture.base.manifestVersion &&
-				restoredAfterFailure.enabled &&
-				readFileSync(markerPath, "utf8") === `${scope} marker\n`
 		}
-		if (!failureRestored) throw new Error(`Claude ${scope} failure restoration did not recover state`)
 		const activeAfterFailure = findClaudeInstall(
 			claudeExecutable,
 			environment,

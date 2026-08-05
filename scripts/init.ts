@@ -110,6 +110,13 @@ function displayName(name: string): string {
 		.join(" ")
 }
 
+function validateDisplayName(value: string): string {
+	if (!value.trim() || value.length > 30 || /[\u0000-\u001F\u007F]/.test(value)) {
+		fail("--display-name must be non-empty, single-line text of at most 30 characters")
+	}
+	return value
+}
+
 function githubRepository(url: string): { owner: string; repository: string } | undefined {
 	const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(url)
 	if (!match) return undefined
@@ -121,6 +128,8 @@ function releaseResetFiles(root: string, name: string): Array<{ path: string; co
 		readFileSync(resolve(root, ".github/release-please-config.json"), "utf8"),
 	)
 	releaseConfig.packages["."]["package-name"] = name
+	const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"))
+	packageJson.version = initialVersion
 
 	const runtimePath = "plugin/runtime/hello-world.js"
 	const runtime = readFileSync(resolve(root, runtimePath), "utf8")
@@ -137,6 +146,7 @@ function releaseResetFiles(root: string, name: string): Array<{ path: string; co
 			path: ".github/release-please-config.json",
 			contents: `${JSON.stringify(releaseConfig, null, 2)}\n`,
 		},
+		{ path: "package.json", contents: `${JSON.stringify(packageJson, null, 2)}\n` },
 		{ path: ".github/.release-please-manifest.json", contents: "{}\n" },
 		{ path: "CHANGELOG.md", contents: "" },
 		{ path: runtimePath, contents: resetRuntime },
@@ -151,11 +161,14 @@ if (!current.template && !options.force) fail("repository is already initialized
 
 const repository = options.repository ?? current.repository
 const github = githubRepository(repository)
+const configuredDisplayName = validateDisplayName(
+	options.displayName ?? displayName(options.name),
+)
 const config: PluginConfig = {
 	...current,
 	template: false,
 	name: options.name,
-	displayName: options.displayName ?? displayName(options.name),
+	displayName: configuredDisplayName,
 	version: initialVersion,
 	description: options.description ?? current.description,
 	author: { name: options.author ?? current.author.name },

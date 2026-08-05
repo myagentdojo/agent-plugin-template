@@ -468,6 +468,13 @@ function validateRepository(repositoryRoot: string) {
 	]) {
 		if (!releaseWorkflow.includes(required)) throw new Error(`release workflow is missing ${required}`)
 	}
+	const releaseJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  release:\n"))
+	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
+		throw new Error("release workflow publish job must depend on package")
+	}
+	if (!releaseJob.includes("    permissions:\n      actions: read\n")) {
+		throw new Error("release workflow publish job must grant actions: read")
+	}
 
 	return {
 		ok: true,

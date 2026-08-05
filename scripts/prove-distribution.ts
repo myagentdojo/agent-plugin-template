@@ -70,7 +70,32 @@ const archiveEntries = Bun.spawnSync({
 })
 if (archiveEntries.exitCode !== 0) process.exit(archiveEntries.exitCode)
 const entries = archiveEntries.stdout.toString().trim().split("\n").filter(Boolean)
-const expectedEntries = inventory.map((relativePath) => `${packageName}/${relativePath}`)
+for (const required of [
+	`${packageName}/.claude-plugin/plugin.json`,
+	`${packageName}/.codex-plugin/plugin.json`,
+	`${packageName}/skills/hello-world/SKILL.md`,
+	`${packageName}/hooks/claude/hooks.json`,
+	`${packageName}/hooks/codex/hooks.json`,
+	`${packageName}/bin/hello-world`,
+	`${packageName}/runtime/hello-world.js`,
+	`${packageName}/runtime/qjs-darwin-arm64`,
+	`${packageName}/runtime/qjs-darwin-x86_64`,
+	`${packageName}/runtime/qjs-linux-aarch64`,
+	`${packageName}/runtime/qjs-linux-x86_64`,
+	`${packageName}/runtime/quickjs-assets.json`,
+	`${packageName}/QUICKJS-LICENSE`,
+]) {
+	if (!entries.includes(required)) throw new Error(`package is missing ${required}`)
+}
+const expectedEntrySet = new Set([`${packageName}/`])
+for (const relativePath of inventory) {
+	const segments = relativePath.split("/")
+	for (let index = 1; index < segments.length; index += 1) {
+		expectedEntrySet.add(`${packageName}/${segments.slice(0, index).join("/")}/`)
+	}
+	expectedEntrySet.add(`${packageName}/${relativePath}`)
+}
+const expectedEntries = [...expectedEntrySet].sort((left, right) => left.localeCompare(right))
 if (JSON.stringify(entries) !== JSON.stringify(expectedEntries)) {
 	throw new Error(
 		`package entries do not match plugin inventory:\nexpected ${JSON.stringify(expectedEntries)}\nreceived ${JSON.stringify(entries)}`,
@@ -94,6 +119,25 @@ const extract = Bun.spawnSync({
 if (extract.exitCode !== 0) process.exit(extract.exitCode)
 
 const installedRoot = join(extractedRoot, packageName)
+for (const entry of expectedEntries) {
+	const installedPath = join(extractedRoot, entry)
+	const status = lstatSync(installedPath)
+	const isDirectory = entry.endsWith("/")
+	if (status.isDirectory() !== isDirectory) {
+		throw new Error(`extracted archive entry has the wrong type: ${entry}`)
+	}
+	let expectedMode = 0o755
+	if (!isDirectory) {
+		const sourcePath = join(root, PLUGIN_DIRECTORY, entry.slice(packageName.length + 1))
+		expectedMode = (statSync(sourcePath).mode & 0o111) !== 0 ? 0o755 : 0o644
+	}
+	if ((status.mode & 0o777) !== expectedMode) {
+		throw new Error(`extracted archive entry has the wrong mode: ${entry}`)
+	}
+	if (Math.trunc(status.mtimeMs / 1000) !== 0) {
+		throw new Error(`extracted archive entry has the wrong mtime: ${entry}`)
+	}
+}
 for (const relativePath of inventory) {
 	const sourcePath = join(root, PLUGIN_DIRECTORY, relativePath)
 	const installedPath = join(installedRoot, relativePath)

@@ -333,7 +333,7 @@ export function classifyWorkflowAdminPermissions(workflows: WorkflowSource[]): R
  * @param exitCode - Process or HTTP status when available
  * @param stderr - Sanitized gh error text
  * @param repair - Human-owned settings repair path
- * @returns Unauthorized or unavailable safeguard classification
+ * @returns Missing, unauthorized, or unavailable safeguard classification
  *
  * @example
  * ```typescript
@@ -347,7 +347,16 @@ export function classifyApiFailure(
 	repair: string,
 ): ReadinessCheck {
 	const unauthorized =
-		[401, 403, 404].includes(exitCode) || /\b(?:401|403|404)\b|unauthori[sz]ed|forbidden|not found/i.test(stderr)
+		[401, 403].includes(exitCode) || /\b(?:401|403)\b|unauthori[sz]ed|forbidden/i.test(stderr)
+	const notFound = exitCode === 404 || /\b404\b|not found/i.test(stderr)
+	if (!unauthorized && notFound) {
+		return {
+			name,
+			status: "missing",
+			detail: "The GitHub API reports that this safeguard is not configured",
+			repair,
+		}
+	}
 	return {
 		name,
 		status: unauthorized ? "unauthorized" : "unavailable",
@@ -485,7 +494,12 @@ function apiFailure(name: string, failure: ApiFailure, settingsRepair: string): 
 	const classified = classifyApiFailure(name, failure.exitCode, failure.stderr, settingsRepair)
 	return {
 		...classified,
-		repair: classified.status === "unauthorized" ? authorizationRepair : availabilityRepair,
+		repair:
+			classified.status === "unauthorized"
+				? authorizationRepair
+				: classified.status === "missing"
+					? settingsRepair
+					: availabilityRepair,
 	}
 }
 
