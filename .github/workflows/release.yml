@@ -249,6 +249,19 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pin only the first release to v0.1.0
+        id: bootstrap-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_as=""
+          if [[ "$(jq 'length' .github/.release-please-manifest.json)" == "0" ]]; then
+            release_as="0.1.0"
+          fi
+          echo "release_as=${release_as}" >> "$GITHUB_OUTPUT"
       # skip-github-release is set in release-please config. The action may maintain PRs but cannot tag or create a GitHub Release.
       - name: Maintain release pull request
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -256,6 +269,7 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
+          release-as: ${{ steps.bootstrap-version.outputs.release_as }}
 
   compatibility:
     name: Release compatibility (${{ matrix.target }})

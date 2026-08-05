@@ -468,6 +468,21 @@ function validateRepository(repositoryRoot: string) {
 	]) {
 		if (!releaseWorkflow.includes(required)) throw new Error(`release workflow is missing ${required}`)
 	}
+	const maintainJob = releaseWorkflow.slice(
+		releaseWorkflow.indexOf("\n  maintain:\n"),
+		releaseWorkflow.indexOf("\n  compatibility:\n"),
+	)
+	for (const required of [
+		"persist-credentials: false",
+		"id: bootstrap-version",
+		"jq 'length' .github/.release-please-manifest.json",
+		'release_as="0.1.0"',
+		"release-as: ${{ steps.bootstrap-version.outputs.release_as }}",
+	]) {
+		if (!maintainJob.includes(required)) {
+			throw new Error(`release workflow maintenance job is missing ${required}`)
+		}
+	}
 	const releaseJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  release:\n"))
 	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
 		throw new Error("release workflow publish job must depend on package")

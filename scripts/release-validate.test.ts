@@ -266,6 +266,15 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("gh release download")
 	expect(workflow).toContain("sha256sum")
 	expect(workflow).toContain("bun run release:validate -- --repair")
+	const maintainJob = workflow.slice(
+		workflow.indexOf("\n  maintain:\n"),
+		workflow.indexOf("\n  compatibility:\n"),
+	)
+	expect(maintainJob).toContain("persist-credentials: false")
+	expect(maintainJob).toContain("id: bootstrap-version")
+	expect(maintainJob).toContain("jq 'length' .github/.release-please-manifest.json")
+	expect(maintainJob).toContain('release_as="0.1.0"')
+	expect(maintainJob).toContain("release-as: ${{ steps.bootstrap-version.outputs.release_as }}")
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(finalReleaseJob).toContain("    needs:\n      - resolve\n      - package\n")
 	expect(finalReleaseJob).toContain("    permissions:\n      actions: read\n")

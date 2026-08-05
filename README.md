@@ -436,7 +436,7 @@ gh workflow run Release \
 
 Required reviewers on the protected `release` environment authorize that same-tag replacement. The workflow uses `--clobber` only in this approved repair state. A missing public attestation is added after the archive matches.
 
-Before the first release, `.github/.release-please-manifest.json` stays empty so Release Please bootstraps `v0.1.0`. After that release, the release configuration synchronizes:
+Before the first release, `.github/.release-please-manifest.json` stays empty. The maintenance job detects that bootstrap state and passes `release-as: 0.1.0` for that run only. Once the first release PR records the root package version, later maintenance runs leave `release-as` empty and return to Conventional Commit versioning. After that release, the release configuration synchronizes:
 
 - `package.json`
 - `plugin.config.json`
