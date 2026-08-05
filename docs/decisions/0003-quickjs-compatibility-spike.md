@@ -34,7 +34,7 @@ CI=true bun run prove:quickjs-ci
 - full commit-SHA pins for every GitHub Action;
 - deterministic packaging after the compatibility matrix passes;
 - SHA-named workflow artifact plus provenance JSON;
-- GitHub artifact attestation only for a push to `main`.
+- GitHub artifact attestation only for a push to `main` in a public repository; user-owned private repositories keep the provenance JSON and skip the unsupported attestation job.
 
 Local CI Testbed reproduction passed from a fresh temporary Git worktree with `CI=true` and a frozen Bun install. Hosted execution remains unproven until the repository has a commit and remote.
 

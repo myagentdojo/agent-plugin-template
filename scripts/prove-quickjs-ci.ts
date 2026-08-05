@@ -27,6 +27,7 @@ for (const required of [
 	"bun run spike:quickjs:ci",
 	"bun run prove:distribution",
 	"actions/attest",
+	"github.event.repository.private == false",
 ]) {
 	if (!workflow.includes(required)) throw new Error(`plugin workflow is missing ${required}`)
 }
@@ -43,6 +44,6 @@ console.log(
 		ok: true,
 		matrix: ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"],
 		deterministicPackage: true,
-		attestation: "configured for main after the compatibility matrix passes",
+		attestation: "configured for public main repositories after the compatibility matrix passes",
 	}),
 )
