@@ -135,8 +135,8 @@ test.each([
 
 test.each([
 	"https://github.com/myagentdojo/agent-plugin-template",
-	"https://git.example.com:8443/team/plugin.git?ref=main#source",
-] as const)("accepts the valid HTTPS repository URL %s", (repository) => {
+	"https://github.com/myagentdojo/agent-plugin-template.git",
+] as const)("accepts the canonical GitHub HTTPS repository URL %s", (repository) => {
 	const valid = structuredClone(config)
 	valid.repository = repository
 	expect(() => renderGeneratedFiles(valid)).not.toThrow()
@@ -177,6 +177,8 @@ test.each([
 	["non-HTTPS repository", (value: PluginConfig) => (value.repository = "http://example.com/plugin.git"), "repository"],
 	["repository without host", (value: PluginConfig) => (value.repository = "https://"), "repository"],
 	["repository credentials", (value: PluginConfig) => (value.repository = "https://user:secret@example.com/plugin.git"), "repository"],
+	["non-GitHub repository", (value: PluginConfig) => (value.repository = "https://git.example.com/team/plugin.git"), "canonical GitHub"],
+	["repository query", (value: PluginConfig) => (value.repository = "https://github.com/team/plugin.git?ref=main"), "canonical GitHub"],
 	["repository unsupported text", (value: PluginConfig) => (value.repository = "https://example.com/plugin name.git"), "repository"],
 	["canary owner", (value: PluginConfig) => (value.canary.owner = "not_valid"), "canary.owner"],
 	["prompt count", (value: PluginConfig) => (value.defaultPrompts = Array(4).fill("Run")), "defaultPrompts"],

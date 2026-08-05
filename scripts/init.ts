@@ -18,7 +18,7 @@ Options:
   --display-name <text>   Human-readable name; derived from --name by default
   --description <text>    Shared plugin description
   --author <text>         Publisher name
-  --repository <url>      Absolute HTTPS source repository
+  --repository <url>      Canonical GitHub HTTPS source repository
   --dry-run               Preview metadata and generated files without writes
   --force                 Reinitialize an already initialized repository
   --json                  Emit one JSON result on stdout

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -427,6 +427,16 @@ describe("release impact", () => {
 		expect(JSON.parse(result.stdout.toString())).toMatchObject({
 			changedPayloadPaths: ["plugin/skills/hello-world/SKILL.md"],
 		})
+	})
+
+	test("pull request gate executes trusted base code against the fetched head", () => {
+		const workflow = readFileSync(join(root, ".github", "workflows", "pull-request-title.yml"), "utf8")
+
+		expect(workflow).toContain("ref: ${{ github.event.pull_request.base.sha }}")
+		expect(workflow).toContain('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"')
+		expect(workflow.indexOf("ref: ${{ github.event.pull_request.base.sha }}")).toBeLessThan(
+			workflow.indexOf("bun run scripts/release-impact.ts"),
+		)
 	})
 
 	test("CLI help exposes inputs, output, and side-effect posture", () => {

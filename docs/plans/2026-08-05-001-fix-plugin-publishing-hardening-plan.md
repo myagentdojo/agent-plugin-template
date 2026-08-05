@@ -271,7 +271,7 @@ flowchart TB
 - **Test scenarios:**
   - Reject semantic versions with leading-zero numeric identifiers, invalid prerelease or build identifiers, missing components, or more than 64 characters; accept representative valid stable, prerelease, and build forms.
   - Reject descriptions over 1,024 characters or containing unsupported control text.
-  - Reject repository URLs with no host, embedded credentials, unsupported text, or a non-HTTPS scheme; accept representative valid HTTPS repository URLs.
+  - Reject repository URLs outside the canonical GitHub HTTPS shape used by release publication, including other hosts, ports, queries, fragments, embedded credentials, unsupported text, or a non-HTTPS scheme.
   - Reject empty, whitespace-only, multiline, duplicate-after-normalization, over-limit, or `@mention` starter prompts.
   - Verify author, developer, display, short-description, long-description, category, and capability limits remain aligned with the generated Codex manifest.
   - Verify the generated Codex marketplace keeps `policy.installation` at `AVAILABLE` and never silently opts recipients into `INSTALLED_BY_DEFAULT`.

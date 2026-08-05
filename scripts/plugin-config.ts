@@ -151,6 +151,17 @@ function validateRepository(repository: unknown): void {
 	if (parsed.username || parsed.password) {
 		throw packageContractError("repository must not contain embedded credentials")
 	}
+	if (
+		parsed.hostname.toLowerCase() !== "github.com" ||
+		parsed.port ||
+		parsed.search ||
+		parsed.hash ||
+		!/^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(parsed.pathname)
+	) {
+		throw packageContractError(
+			"repository must be a canonical GitHub HTTPS repository URL without a port, query, or fragment",
+		)
+	}
 }
 
 /**
