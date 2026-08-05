@@ -37,14 +37,14 @@ Commit generated files with their source. Never hand-edit a generated manifest o
 For a public GitHub repository:
 
 ```sh
-claude plugin marketplace add OWNER/REPOSITORY
+claude plugin marketplace add OWNER/REPOSITORY@vX.Y.Z
 claude plugin install PLUGIN_NAME@PLUGIN_NAME
 ```
 
 For a private repository, configure Git credentials first. Claude accepts a GitHub shorthand, HTTPS Git URL, or SSH Git URL:
 
 ```sh
-claude plugin marketplace add git@github.com:OWNER/REPOSITORY.git
+claude plugin marketplace add git@github.com:OWNER/REPOSITORY.git#vX.Y.Z
 claude plugin install PLUGIN_NAME@PLUGIN_NAME
 ```
 
@@ -56,11 +56,11 @@ claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope project
 claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope local
 ```
 
-After a release, refresh the marketplace and plugin:
+To move to a later release, replace `vX.Y.Z` with the new release tag. Remove the pinned marketplace entry, repeat the matching `marketplace add` command above with that tag, then reinstall the plugin:
 
 ```sh
-claude plugin marketplace update PLUGIN_NAME
-claude plugin update PLUGIN_NAME@PLUGIN_NAME
+claude plugin marketplace remove PLUGIN_NAME
+claude plugin install PLUGIN_NAME@PLUGIN_NAME
 ```
 
 Start a new session or run `/reload-plugins`. Review installed hooks before trusting the plugin source.
@@ -72,21 +72,21 @@ Official references: [plugin marketplaces](https://code.claude.com/docs/en/plugi
 For a public GitHub repository:
 
 ```sh
-codex plugin marketplace add OWNER/REPOSITORY --ref main
+codex plugin marketplace add OWNER/REPOSITORY --ref vX.Y.Z
 codex plugin add PLUGIN_NAME@PLUGIN_NAME
 ```
 
 For a private repository, configure Git credentials first and use an HTTPS or SSH Git URL:
 
 ```sh
-codex plugin marketplace add git@github.com:OWNER/REPOSITORY.git --ref main
+codex plugin marketplace add git@github.com:OWNER/REPOSITORY.git --ref vX.Y.Z
 codex plugin add PLUGIN_NAME@PLUGIN_NAME
 ```
 
-After a release, refresh the marketplace and reinstall or upgrade the plugin:
+To move to a later release, replace `vX.Y.Z` with the new release tag. Remove the pinned marketplace entry, repeat the matching `marketplace add ... --ref vX.Y.Z` command above with that tag, then reinstall the plugin:
 
 ```sh
-codex plugin marketplace upgrade PLUGIN_NAME
+codex plugin marketplace remove PLUGIN_NAME
 codex plugin add PLUGIN_NAME@PLUGIN_NAME
 ```
 
