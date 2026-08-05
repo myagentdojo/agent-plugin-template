@@ -198,6 +198,11 @@ test("release validation rejects a duplicate changelog heading", () => {
 test("release workflow is pinned and publishes proven assets after validation", () => {
 	const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
 	const finalReleaseJob = workflow.slice(workflow.indexOf("  release:\n"))
+	const compareStepStart = finalReleaseJob.indexOf("      - name: Compare release assets before mutation\n")
+	const uploadStepStart = finalReleaseJob.indexOf("      - name: Add or replace admitted release assets\n")
+	const attestationStepStart = finalReleaseJob.indexOf("      - name: Check for existing matching public attestation\n")
+	const compareStep = finalReleaseJob.slice(compareStepStart, uploadStepStart)
+	const uploadStep = finalReleaseJob.slice(uploadStepStart, attestationStepStart)
 	const actionReferences = [...workflow.matchAll(/uses: [^@\s]+@([^\s]+)/g)].map(
 		(match) => match[1],
 	)
@@ -221,6 +226,7 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("SOURCE_COMMIT")
+	expect(workflow).toContain("canonicalGitHubRepositoryIdentity")
 	expect(workflow).toContain("ref: ${{ needs.resolve.outputs.candidate_sha }}")
 	expect(workflow).toContain("git tag \"$RELEASE_TAG\" \"$CANDIDATE_SHA\"")
 	expect(workflow).toContain("git push origin \"refs/tags/${RELEASE_TAG}\"")
@@ -236,6 +242,13 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(finalReleaseJob).toContain("PUBLICATION_CANDIDATE_PATH=persisted-candidate.json")
 	expect(finalReleaseJob).toContain('--repository "$GITHUB_REPOSITORY"')
+	expect(compareStepStart).toBeGreaterThan(-1)
+	expect(uploadStepStart).toBeGreaterThan(compareStepStart)
+	expect(attestationStepStart).toBeGreaterThan(uploadStepStart)
+	expect(compareStep).toContain("asset-actions.tsv")
+	expect(compareStep).not.toContain("gh release upload")
+	expect(uploadStep).toContain("gh release upload")
+	expect(uploadStep).not.toContain("gh release download")
 	expect(workflow).toContain("environment: release")
 	expect(workflow).toContain("gh attestation verify")
 	expect(workflow).toContain("actions/attest")

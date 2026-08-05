@@ -33,6 +33,7 @@ test("release documentation names checksum evidence and exact repair identity", 
 	expect(release).toContain("incomplete-publication repair")
 	expect(release).toContain("exact existing `vX.Y.Z` tag")
 	expect(release).toContain("This repairs an incomplete publication; it does not create a new release.")
+	expect(release.match(/-f operation=repair/g)).toHaveLength(2)
 })
 
 test("Codex support boundary names only the proven client surfaces", async () => {

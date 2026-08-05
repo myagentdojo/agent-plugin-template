@@ -402,6 +402,7 @@ Start a compare-before-write repair with mismatched replacement disabled:
 gh workflow run Release \
   --repo OWNER/REPOSITORY \
   --ref main \
+  -f operation=repair \
   -f release_tag=vX.Y.Z \
   -f replace_mismatched_assets=false
 ```
@@ -413,7 +414,18 @@ The workflow resolves the existing immutable tag, checks out its commit, validat
 - Fail closed on a mismatched asset.
 - Never move or recreate the tag at another commit.
 
-If a mismatched asset is confirmed as the incomplete publication defect, rerun the same exact tag with `replace_mismatched_assets=true`. Required reviewers on the protected `release` environment authorize that same-tag replacement. The workflow uses `--clobber` only in this approved repair state. A missing public attestation is added after the archive matches.
+If a mismatched asset is confirmed as the incomplete publication defect, rerun the same exact tag with replacement enabled:
+
+```sh
+gh workflow run Release \
+  --repo OWNER/REPOSITORY \
+  --ref main \
+  -f operation=repair \
+  -f release_tag=vX.Y.Z \
+  -f replace_mismatched_assets=true
+```
+
+Required reviewers on the protected `release` environment authorize that same-tag replacement. The workflow uses `--clobber` only in this approved repair state. A missing public attestation is added after the archive matches.
 
 Before the first release, `.github/.release-please-manifest.json` stays empty so Release Please bootstraps `v0.1.0`. After that release, the release configuration synchronizes:
 

@@ -316,12 +316,18 @@ jobs:
           set -euo pipefail
           checksums=$(find dist -maxdepth 1 -name '*.checksums.json' -print -quit)
           [[ -n "$checksums" ]]
+          checksums_repository=$(jq -er .repository "$checksums")
+          checksums_repository_identity=$(bun -e 'import { canonicalGitHubRepositoryIdentity } from "./scripts/release-validate.ts"; process.stdout.write(canonicalGitHubRepositoryIdentity(process.argv.at(-1) ?? ""))' "$checksums_repository")
+          expected_repository_identity=$(bun -e 'import { canonicalGitHubRepositoryIdentity } from "./scripts/release-validate.ts"; process.stdout.write(canonicalGitHubRepositoryIdentity(process.argv.at(-1) ?? ""))' "$GITHUB_REPOSITORY")
+          if [[ "$checksums_repository_identity" != "$expected_repository_identity" ]]; then
+            echo "Packaged GitHub repository does not match the workflow repository." >&2
+            exit 1
+          fi
           jq -e \
-            --arg repository "https://github.com/${GITHUB_REPOSITORY}" \
             --arg sourceCommit "$CANDIDATE_SHA" \
             --arg tag "$RELEASE_TAG" \
             --arg version "$VERSION" \
-            '.sourceCommit == $sourceCommit and .tag == $tag and .version == $version and .repository == $repository' \
+            '.sourceCommit == $sourceCommit and .tag == $tag and .version == $version' \
             "$checksums"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -413,7 +419,7 @@ jobs:
           RELEASE_TARGET_SHA="$release_target_sha" \
           PUBLICATION_CANDIDATE_PATH=persisted-candidate.json \
             bun run release:validate -- --repair --repository "$GITHUB_REPOSITORY" --json
-      - name: Compare before adding or replacing release assets
+      - name: Compare release assets before mutation
         env:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ needs.resolve.outputs.mode }}
@@ -422,10 +428,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p remote-assets
+          : > asset-actions.tsv
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > remote-assets.txt
           for asset in dist/*.tar.gz dist/*.checksums.json; do
             name=$(basename "$asset")
             local_digest=$(sha256sum "$asset" | awk '{print $1}')
-            if gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir remote-assets >/dev/null 2>&1; then
+            if grep -Fxq "$name" remote-assets.txt; then
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir remote-assets
               remote_digest=$(sha256sum "remote-assets/$name" | awk '{print $1}')
               if [[ "$remote_digest" == "$local_digest" ]]; then
                 continue
@@ -434,11 +443,25 @@ jobs:
                 echo "Existing asset $name differs; replacement requires explicit same-tag repair authority." >&2
                 exit 1
               fi
-              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+              printf 'replace\t%s\n' "$asset" >> asset-actions.tsv
             else
-              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+              printf 'add\t%s\n' "$asset" >> asset-actions.tsv
             fi
           done
+      - name: Add or replace admitted release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r action asset; do
+            [[ -n "$action" ]] || continue
+            case "$action" in
+              add) gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" ;;
+              replace) gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber ;;
+              *) echo "Unsupported release asset action: ${action}." >&2; exit 1 ;;
+            esac
+          done < asset-actions.tsv
       - name: Check for existing matching public attestation
         id: attestation
         if: github.event.repository.private == false
