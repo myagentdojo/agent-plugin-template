@@ -36,6 +36,7 @@ function initializeTemplate(temporaryRoot: string, options: string[] = []): Retu
 			"My Agent Dojo",
 			"--repository",
 			"https://github.com/myagentdojo/dojo-hello",
+			"--force",
 			...options,
 		],
 		cwd: temporaryRoot,
@@ -127,6 +128,32 @@ test("generated manifest check detects drift from canonical metadata", () => {
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("plugin/.codex-plugin/plugin.json")
 	expect(result.stderr.toString()).toContain("bun run generate")
+})
+
+test("test fixtures can reinitialize a customized recipient", () => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-recipient-")
+	const customized = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"init",
+			"--",
+			"--name",
+			"recipient-hello",
+			"--author",
+			"My Agent Dojo",
+			"--repository",
+			"https://github.com/myagentdojo/recipient-hello",
+			"--force",
+		],
+		cwd: temporaryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	expect(customized.exitCode, customized.stderr.toString()).toBe(0)
+
+	const reinitialized = initializeTemplate(temporaryRoot)
+	expect(reinitialized.exitCode, reinitialized.stderr.toString()).toBe(0)
 })
 
 test("initialized repository packages the configured plugin identity", () => {
