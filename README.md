@@ -376,7 +376,7 @@ flowchart LR
 
 The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, required checks, Actions permissions, tag ruleset, or workflow authority cannot be proved.
 
-The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflow runs caused by that token, so the release workflow proves a merged release PR before publication. For strict pre-merge checks on the generated release PR, add a fine-grained token or GitHub App token as `RELEASE_PLEASE_TOKEN`. Grant only repository contents, pull requests, and issues write access.
+The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflow runs caused by that token, so the release workflow proves a merged release PR before publication. For strict pre-merge checks on the generated release PR, add a fine-grained token or GitHub App token as `RELEASE_PLEASE_TOKEN`. Grant only repository contents, pull requests, and issues write access. Set the repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` to the exact login that token uses to author the release PR; both the release-impact gate and publication admission bind that identity.
 
 ### Publish a release
 
