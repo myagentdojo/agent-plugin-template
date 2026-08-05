@@ -107,7 +107,7 @@ Claude Code explicitly reloads skills, agents, hooks, MCP servers, and LSP serve
 - Compile Bun-authored TypeScript into `plugin/runtime/hello-world.js`.
 - Vendor four checksum-pinned QuickJS executables under `plugin/runtime/`.
 - Share `plugin/skills/`, `plugin/bin/`, and the generated runtime.
-- Keep `plugin/hooks/hooks.json` for Codex.
+- Keep `plugin/hooks/codex/hooks.json` for Codex.
 - Keep `plugin/hooks/claude/hooks.json` for Claude Code.
 - Keep both native manifests.
 - Package the exact `plugin/` contents. Exclude source, Git metadata, scripts, and development staging.

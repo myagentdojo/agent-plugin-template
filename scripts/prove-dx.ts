@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 const root = resolve(import.meta.dir, "..")
@@ -17,7 +17,11 @@ function dryRun(harness: "claude" | "codex"): Record<string, string> {
 const claude = dryRun("claude")
 const codex = dryRun("codex")
 
-if (!claude.install.includes("--plugin-dir") || !claude.reload.includes("/reload-plugins")) {
+if (
+	!claude.install.includes("--plugin-dir") ||
+	!claude.install.includes("--settings") ||
+	!claude.reload.includes("/reload-plugins")
+) {
 	throw new Error("Claude plan does not use the native source-load and reload boundary")
 }
 if (!codex.install.includes("plugin add") || !codex.reload.includes("fresh Codex task")) {
@@ -29,6 +33,19 @@ const claudeManifest = JSON.parse(
 )
 if ("version" in claudeManifest) {
 	throw new Error("Claude manifest version would block Git commit SHA updates")
+}
+
+const codexManifest = JSON.parse(
+	readFileSync(join(root, "plugin", ".codex-plugin", "plugin.json"), "utf8"),
+)
+if (claudeManifest.hooks !== "./hooks/claude/hooks.json") {
+	throw new Error("Claude manifest does not own its explicit hook adapter")
+}
+if (codexManifest.hooks !== "./hooks/codex/hooks.json") {
+	throw new Error("Codex manifest does not own its explicit hook adapter")
+}
+if (existsSync(join(root, "plugin", "hooks", "hooks.json"))) {
+	throw new Error("default hooks/hooks.json would be auto-discovered by both hosts")
 }
 
 for (const marketplacePath of [

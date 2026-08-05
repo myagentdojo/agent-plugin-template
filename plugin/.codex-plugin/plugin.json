@@ -6,7 +6,7 @@
     "name": "Prototype"
   },
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
+  "hooks": "./hooks/codex/hooks.json",
   "interface": {
     "displayName": "Harness Native Plugin Prototype",
     "shortDescription": "Run a Bun-authored skill without Bun installed.",
