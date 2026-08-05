@@ -17,6 +17,7 @@
     "readiness": "bun run scripts/repository-readiness.ts",
     "package": "bun run build && bun run scripts/package.ts",
     "prove:distribution": "bun run scripts/prove-distribution.ts",
+    "prove:harness-install": "bun run scripts/prove-harness-install.ts",
     "prove:dx": "bun run scripts/prove-dx.ts",
     "prove:quickjs-ci": "bun run scripts/prove-quickjs-ci.ts",
     "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:quickjs-ci && bun run prove:dx",
