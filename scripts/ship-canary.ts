@@ -11,7 +11,7 @@ Usage:
 
 Options:
   --ref <git-ref>    Merged source ref to publish (default: origin/main)
-  --dry-run          Prove identity, source, and targets without writes
+  --dry-run          Prove identity, source, visibility, and target lineage without writes
   --execute          Create missing canaries, fast-forward main, and wait for CI
   --json             Emit one JSON result on stdout
   -h, --help         Show this help
@@ -35,6 +35,8 @@ interface Target {
 	visibility: Visibility
 	remote: string
 	exists: boolean
+	lineage: "missing" | "empty" | "current" | "fast-forward"
+	headSha?: string
 }
 
 interface HostedRun {
@@ -167,8 +169,43 @@ function buildTargets(origin: string, owner: string, publicName: string, private
 			...candidate,
 			remote: targetRemote(origin, candidate.repository),
 			exists: Boolean(actual),
+			lineage: actual ? "empty" : "missing",
 		}
 	})
+}
+
+function proveTargetLineage(target: Target, sourceSha: string): Target {
+	if (!target.exists) return target
+	const output = processResult(["git", "ls-remote", target.remote, "refs/heads/main"])
+	if (!output) return target
+	const [headSha, ref, ...extra] = output.split(/\s+/)
+	if (!/^[0-9a-f]{40}$/.test(headSha || "") || ref !== "refs/heads/main" || extra.length > 0) {
+		throw new CanaryError(
+			"target_head_invalid",
+			`${target.repository} returned an invalid main ref: ${output}`,
+			`git ls-remote ${target.remote} refs/heads/main`,
+			false,
+		)
+	}
+	const ancestry = Bun.spawnSync({
+		cmd: ["git", "merge-base", "--is-ancestor", headSha, sourceSha],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (ancestry.exitCode !== 0) {
+		throw new CanaryError(
+			"target_lineage_mismatch",
+			`${target.repository} main ${headSha} is not an ancestor of source ${sourceSha}`,
+			"choose an empty canary repository in plugin.config.json; canary history is never rewritten",
+			false,
+		)
+	}
+	return {
+		...target,
+		headSha,
+		lineage: headSha === sourceSha ? "current" : "fast-forward",
+	}
 }
 
 function createTarget(target: Target): void {
@@ -276,7 +313,7 @@ function preflight(options: Options): Preflight {
 		config.canary.owner,
 		config.canary.publicRepository,
 		config.canary.privateRepository,
-	)
+	).map((target) => proveTargetLineage(target, sourceSha || ""))
 	return { identity: identity || "", sourceSha: sourceSha || "", targets }
 }
 
@@ -287,11 +324,16 @@ async function publishTargets(targets: Target[], sourceSha: string): Promise<Hos
 	return runs
 }
 
-function emitSuccess(options: Options, preflightResult: Preflight, runs: HostedRun[]): void {
+function emitSuccess(
+	options: Options,
+	preflightResult: Preflight,
+	runs: HostedRun[],
+	runId: string,
+): void {
 	const result = {
 		ok: true,
 		action: options.dryRun ? "preview" : "published",
-		runId: crypto.randomUUID(),
+		runId,
 		sideEffects: options.dryRun ? "none" : "github-repositories-updated",
 		identity: preflightResult.identity,
 		source: { ref: options.ref, sha: preflightResult.sourceSha },
@@ -312,20 +354,21 @@ function emitSuccess(options: Options, preflightResult: Preflight, runs: HostedR
 	}
 }
 
-async function main(arguments_: string[]): Promise<void> {
+async function main(arguments_: string[], runId: string): Promise<void> {
 	const options = parseOptions(arguments_)
 	if (!options) return
 	const preflightResult = preflight(options)
 	const runs = options.execute
 		? await publishTargets(preflightResult.targets, preflightResult.sourceSha)
 		: []
-	emitSuccess(options, preflightResult, runs)
+	emitSuccess(options, preflightResult, runs, runId)
 }
 
 const arguments_ = process.argv.slice(2)
 const json = arguments_.includes("--json")
+const runId = crypto.randomUUID()
 try {
-	await main(arguments_)
+	await main(arguments_, runId)
 } catch (error) {
 	const failure =
 		error instanceof CanaryError
@@ -335,6 +378,7 @@ try {
 		console.log(
 			JSON.stringify({
 				ok: false,
+				runId,
 				category: failure.category,
 				message: failure.message,
 				retrySafe: failure.retrySafe,

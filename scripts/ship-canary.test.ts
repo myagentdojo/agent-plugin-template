@@ -70,7 +70,11 @@ exit 90
 if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo git@github-myagentdojo:myagentdojo/dojo-hello.git; exit 0; fi
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
 if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then exit 0; fi
-if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then exit 0; fi
+if [ "$1" = "ls-remote" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/main; exit 0; fi
+if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then
+  if [ "$3" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] && [ "$FAKE_DIVERGENT" = "1" ]; then exit 1; fi
+  exit 0
+fi
 if [ "$1" = "push" ]; then printf '%s\n' "$*" >> "$FAKE_LOG"; exit 0; fi
 echo "unexpected git command: $*" >&2
 exit 91
@@ -82,12 +86,14 @@ exit 91
 function runCanary(
 	fixture: ReturnType<typeof canaryFixture>,
 	mode: "--dry-run" | "--execute",
+	extraEnvironment: Record<string, string> = {},
 ): ReturnType<typeof Bun.spawnSync> {
 	return Bun.spawnSync({
 		cmd: [process.execPath, "run", "ship:canary", "--", mode, "--json"],
 		cwd: fixture.temporaryRoot,
 		env: {
 			...process.env,
+			...extraEnvironment,
 			FAKE_LOG: fixture.log,
 			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
 		},
@@ -115,6 +121,19 @@ test("canary dry-run proves identity, visibility, and source without publishing"
 			{ repository: "myagentdojo/dojo-hello-private-canary", visibility: "PRIVATE" },
 		],
 	})
+})
+
+test("canary dry-run rejects an existing target with unrelated history", () => {
+	const result = runCanary(canaryFixture(), "--dry-run", { FAKE_DIVERGENT: "1" })
+
+	expect(result.exitCode).toBe(1)
+	const failure = JSON.parse(result.stdout.toString().trim())
+	expect(failure).toMatchObject({
+		ok: false,
+		category: "target_lineage_mismatch",
+		retrySafe: false,
+	})
+	expect(failure.runId).toBeString()
 })
 
 test("canary execute publishes both targets and waits for both hosted proofs", async () => {

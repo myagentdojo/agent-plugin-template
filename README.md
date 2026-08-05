@@ -130,7 +130,7 @@ bun run ship:canary -- --dry-run
 bun run ship:canary -- --execute
 ```
 
-The command verifies the active GitHub identity, target visibility, clean source commit, and generated manifests. Execute mode creates missing canary repositories, performs fast-forward-only pushes, and waits for both hosted workflows. It never force-pushes.
+The command verifies the active GitHub identity, target visibility and lineage, clean source commit, and generated manifests. Execute mode creates missing canary repositories without starter commits, performs fast-forward-only pushes, and waits for both hosted workflows. It never force-pushes or rewrites canary history.
 
 ## Boundaries
 

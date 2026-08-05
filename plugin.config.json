@@ -17,7 +17,7 @@
   "defaultPrompts": ["Run the hello-world distribution proof."],
   "canary": {
     "owner": "myagentdojo",
-    "publicRepository": "agent-plugin-template-public-canary",
-    "privateRepository": "agent-plugin-template-private-canary"
+    "publicRepository": "agent-plugin-template-canary-public",
+    "privateRepository": "agent-plugin-template-canary-private"
   }
 }
