@@ -1,4 +1,4 @@
-# Decision 0002: Native development and main promotion
+# Decision 0001: Native development and versioned promotion
 
 Status: prototype accepted when `bun run prove:all` passes.
 
@@ -10,7 +10,7 @@ Keep one canonical plugin tree. Use harness-native loading and update boundaries
 | --- | --- | --- | --- |
 | Claude development | Bun watcher | `claude --plugin-dir <checkout>/plugin` | `/reload-plugins` |
 | Codex development | Bun build | full staged copy, cachebuster, `codex plugin add` | fresh task |
-| Production | PR check plus main rebuild | Git marketplace tracking `main` | harness startup |
+| Production | release PR plus full proof | versioned Git marketplace payload and GitHub Release | marketplace update plus harness reload/start |
 
 Do not use skill syncing or symlinks. Codex's linked-skill technique cannot represent hooks, manifests, or runtime files.
 
@@ -19,8 +19,9 @@ Do not use skill syncing or symlinks. Codex's linked-skill technique cannot repr
 - Claude loads a checkout directly and reloads plugin components in a running session.
 - Codex installs plugins into a cache. A full plugin therefore needs a staged copy and reinstall during development.
 - Current Codex starts a Git marketplace upgrade task and refreshes installed plugin caches when the marketplace advances.
-- Claude marketplace auto-update runs at startup when enabled. Omitting the Claude plugin version lets the Git commit SHA identify each update.
-- A merged commit already contains the generated JavaScript because PR CI rejects source and distribution drift. The main workflow rebuilds, proves, and packages that exact commit.
+- Both native manifests carry the same explicit semantic version. Ordinary commits on `main` do not advance the installed production version.
+- Release Please maintains one human-reviewed release PR. Merging it updates every version surface and `CHANGELOG.md`, then the release workflow proves the exact commit before creating the tag and GitHub Release.
+- A merged release commit contains generated JavaScript with the new version because PR and release validation reject source, metadata, and distribution drift.
 
 ## Commands
 
@@ -29,11 +30,14 @@ bun run dev:claude
 bun run dev:codex
 bun run dev -- codex --check
 bun run prove:all
+bun run release:validate
 ```
 
 ## Consequences
 
 - Claude gives the fastest loop: save, rebuild, `/reload-plugins`.
 - Codex requires a fresh task after each full-plugin reinstall. Do not claim live hot reload.
-- Production updates appear at harness startup, not at the instant GitHub merges the PR.
+- Merging a normal PR changes `main` but does not publish a version.
+- Merging the generated release PR creates the version boundary after the release proof passes.
+- Users refresh their marketplace and reload or start a fresh task to observe a released version.
 - Release archives stay small because four QuickJS executables compress together to about 3.46 MB.

@@ -15,6 +15,7 @@ test("template CLI discovery and rendered help expose the same public commands",
 	const packageJson = await Bun.file(new URL("../package.json", import.meta.url)).json()
 	expect(packageJson.scripts).toMatchObject({
 		init: "bun run scripts/init.ts",
+		"release:validate": "bun run scripts/release-validate.ts",
 		"ship:canary": "bun run scripts/ship-canary.ts",
 	})
 
@@ -27,6 +28,11 @@ test("template CLI discovery and rendered help expose the same public commands",
 	expect(canaryHelp.exitCode).toBe(0)
 	expect(canaryHelp.stdout.toString()).toContain("--execute")
 	expect(canaryHelp.stdout.toString()).toContain("never force-pushes")
+
+	const releaseHelp = run(["release:validate", "--", "--help"])
+	expect(releaseHelp.exitCode).toBe(0)
+	expect(releaseHelp.stdout.toString()).toContain("Validate release metadata")
+	expect(releaseHelp.stdout.toString()).toContain("Side effects: none")
 })
 
 test("init usage failure is structured for scripts and agents", () => {

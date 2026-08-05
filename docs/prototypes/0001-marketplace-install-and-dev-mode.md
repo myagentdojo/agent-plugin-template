@@ -56,6 +56,10 @@ Accepted for the prototype.
 - Codex development boundary: cachebuster reinstall plus fresh task.
 - Host hook declarations remain physically separate to prevent auto-discovery collisions.
 
+## Recipient follow-up
+
+The template was later initialized into dedicated public and private recipient repositories. The public hosted workflow was reverified successful on 2026-08-05 across the four native compatibility jobs, deterministic package, and artifact attestation. The session record reports the private hosted workflow and private SSH installation as successful; that repository requires an authorized GitHub identity and was not independently reverified during the final documentation pass.
+
 ## Remaining boundary
 
 Codex installs non-managed hooks without trusting them. The user must review and trust the current definition in `/hooks`; definition changes return to the trust boundary. Do not bypass that review in the normal development command.

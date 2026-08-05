@@ -36,7 +36,7 @@ CI=true bun run prove:quickjs-ci
 - SHA-named workflow artifact plus provenance JSON;
 - GitHub artifact attestation only for a push to `main` in a public repository; user-owned private repositories keep the provenance JSON and skip the unsupported attestation job.
 
-Local CI Testbed reproduction passed from a fresh temporary Git worktree with `CI=true` and a frozen Bun install. Hosted execution remains unproven until the repository has a commit and remote.
+Local CI Testbed reproduction passed from a fresh temporary Git worktree with `CI=true`. Hosted execution subsequently passed in the template repository and in a fresh public recipient across all four native jobs, deterministic packaging, and public attestation. The session record reports the matching private recipient proof; rechecking it requires an authorized GitHub identity.
 
 ## Boundary
 

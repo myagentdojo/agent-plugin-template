@@ -1,8 +1,19 @@
 # Agent plugin repository template
 
-One Git-distributed plugin per repository. Shared skills and runtime. Native Claude Code and Codex adapters. No skill syncing, symlinks, npm publication, or runtime dependency on Bun, Node.js, or Python.
+Build one Git-distributed plugin for Claude Code and Codex.
 
-After creating a repository from this GitHub template, initialize its identity once:
+- Share skills and portable runtime behavior.
+- Keep native manifests, hooks, trust, and reload behavior separate.
+- Author in Bun and TypeScript.
+- Execute offline through bundled QuickJS runtimes.
+- Publish from GitHub Releases, not npm.
+- Develop through each harness's native plugin workflow.
+
+Consumers need Claude Code or Codex and Git access to the repository. They do not need Bun, Node.js, Python, npm, or a post-install download.
+
+## Start a plugin repository
+
+Create a repository from this GitHub template, clone it, and install [Bun](https://bun.sh/docs/installation) for development. Then initialize the plugin identity once:
 
 ```sh
 bun run init -- \
@@ -12,15 +23,122 @@ bun run init -- \
   --repository https://github.com/myagentdojo/dojo-hello
 ```
 
-`plugin.config.json` is the only plugin metadata source. `bun run generate` derives both native manifests and both marketplace catalogs. CI fails when a generated file drifts.
-
-Then run:
+`plugin.config.json` is the metadata owner. Generation derives both marketplace catalogs and both native manifests:
 
 ```sh
+bun run generate:check
 bun run prove:all
 ```
 
-## Canonical payload
+Commit generated files with their source. Never hand-edit a generated manifest or `plugin/runtime/hello-world.js`.
+
+## Install in Claude Code
+
+For a public GitHub repository:
+
+```sh
+claude plugin marketplace add OWNER/REPOSITORY
+claude plugin install PLUGIN_NAME@PLUGIN_NAME
+```
+
+For a private repository, configure Git credentials first. Claude accepts a GitHub shorthand, HTTPS Git URL, or SSH Git URL:
+
+```sh
+claude plugin marketplace add git@github.com:OWNER/REPOSITORY.git
+claude plugin install PLUGIN_NAME@PLUGIN_NAME
+```
+
+Use the scope that matches the team:
+
+```sh
+claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope user
+claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope project
+claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope local
+```
+
+After a release, refresh the marketplace and plugin:
+
+```sh
+claude plugin marketplace update PLUGIN_NAME
+claude plugin update PLUGIN_NAME@PLUGIN_NAME
+```
+
+Start a new session or run `/reload-plugins`. Review installed hooks before trusting the plugin source.
+
+Official references: [plugin marketplaces](https://code.claude.com/docs/en/plugin-marketplaces), [plugins](https://code.claude.com/docs/en/plugins), and [plugin reference](https://code.claude.com/docs/en/plugins-reference).
+
+## Install in Codex
+
+For a public GitHub repository:
+
+```sh
+codex plugin marketplace add OWNER/REPOSITORY --ref main
+codex plugin add PLUGIN_NAME@PLUGIN_NAME
+```
+
+For a private repository, configure Git credentials first and use an HTTPS or SSH Git URL:
+
+```sh
+codex plugin marketplace add git@github.com:OWNER/REPOSITORY.git --ref main
+codex plugin add PLUGIN_NAME@PLUGIN_NAME
+```
+
+After a release, refresh the marketplace and reinstall or upgrade the plugin:
+
+```sh
+codex plugin marketplace upgrade PLUGIN_NAME
+codex plugin add PLUGIN_NAME@PLUGIN_NAME
+```
+
+Start a fresh Codex task after installation or update. Open `/hooks`, inspect the exact command definitions, and trust them only if they match the installed plugin. A changed definition crosses the trust boundary again.
+
+Official references: [build Codex plugins](https://developers.openai.com/plugins/build/plugins), [Codex plugins](https://learn.chatgpt.com/docs/plugins), and [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+
+## Develop locally
+
+Run a profile-safe preparation check first. These commands build local output and Codex staging, but do not change harness settings or installed plugins:
+
+```sh
+bun run dev -- claude --check
+bun run dev -- codex --check
+```
+
+### Claude Code development
+
+```sh
+bun run dev:claude
+```
+
+This command:
+
+1. Builds the portable JavaScript.
+2. Watches runtime source, skills, hooks, and manifests.
+3. Launches `claude --plugin-dir ./plugin`.
+4. Disables the installed production plugin only inside that process, preventing duplicate stale skills or hooks.
+
+Edit a file, wait for the successful rebuild, then run `/reload-plugins` in the same Claude session. Persistent Claude settings remain unchanged.
+
+### Codex development
+
+```sh
+bun run dev:codex
+```
+
+Codex plugins are cached rather than loaded directly from the checkout. The command:
+
+1. Builds the canonical `plugin/` payload.
+2. Copies it into ignored `.dev` staging.
+3. Adds build metadata only to the staged Codex version.
+4. Creates or validates the local development marketplace.
+5. Reinstalls the plugin and launches Codex.
+
+After an edit, rerun the command and start a fresh task. This is reinstall-and-restart, not hot reload.
+
+Do not symlink or sync only `skills/` into harness-global directories. That bypasses the manifests, hooks, runtime assets, cache identity, and installation boundary being tested.
+
+## Add plugin behavior
+
+Keep portable command logic under `runtime/src/`. Keep the QuickJS I/O adapter small. Add host behavior through the native manifest or hook file for that host.
 
 ```text
 plugin/
@@ -38,103 +156,142 @@ plugin/
     └── qjs-{darwin,linux}-{arm64,x86_64}
 ```
 
-Both marketplace catalogs point at `./plugin`. The release archive copies that subtree exactly. Repository source, scripts, Git metadata, development staging, and old compiled Bun artifacts cannot enter the plugin install.
+Both marketplace catalogs point at `./plugin`. Development staging, Git installation, packaging, and distribution proof all start from that subtree. Repository scripts, TypeScript source, Git metadata, and development state cannot enter the installed payload.
 
-## Runtime model
+The portable process seam is:
 
-Maintain TypeScript under `runtime/src/`. Bun builds the standards-only command contract into `plugin/runtime/hello-world.js`.
-
-The launcher selects one bundled QuickJS NG `0.16.1` executable for macOS arm64/x64 or Linux arm64/x64. Runtime execution is offline. The deterministic archive is about 3.46 MB compressed.
-
-This is not `bun build --compile`. Bun is the authoring and build tool. QuickJS is the small portable execution engine.
-
-## Shared versus host-specific
+```text
+arguments + complete stdin + invocation identity
+    -> stdout + stderr + exit code
+```
 
 Share:
 
-- `skills/`
-- TypeScript command logic
-- generated JavaScript
-- launcher and QuickJS executables
-- future standards-based MCP server implementation
+- Cross-harness Agent Skills content.
+- Portable TypeScript behavior and generated JavaScript.
+- Launcher and checksum-pinned QuickJS assets.
+- Standards-based protocol implementations validated in both hosts.
 
 Keep native:
 
-- plugin manifests
-- hook declarations
-- trust and reload behavior
-- Claude-only agents, LSP servers, monitors, themes, output styles, and settings
-- Codex-specific marketplace interface and policy metadata
+- Claude and Codex manifests.
+- Hook declarations and root variables.
+- Trust, matchers, handler types, and reload behavior.
+- Features supported by only one host.
 
-See `docs/research/claude-code-vs-codex-plugins.md` for the researched compatibility matrix.
+See the [architecture learning](docs/solutions/architecture-patterns/portable-dual-harness-plugin-distribution.md) and [compatibility matrix](docs/research/claude-code-vs-codex-plugins.md).
 
-## Development
+## Pull requests and CI
 
-Claude Code:
+Use a Conventional Commit PR title. The title becomes the squash commit and drives release notes:
 
-```sh
-bun run dev:claude
+```text
+feat: add a portable command
+fix(claude): correct hook matching
+docs: clarify private installation
 ```
 
-This builds and launches `claude --plugin-dir ./plugin`. Save source, let the watcher rebuild, then run `/reload-plugins`.
-The launch applies a session-only settings override for the production plugin ID, so an installed marketplace copy cannot contribute stale skills or hooks. Persistent Claude settings remain unchanged.
+`feat` advances the minor version. `fix` and `perf` advance the patch version. A `!` or `BREAKING CHANGE` advances the major version. Documentation and maintenance changes appear only when configured as visible changelog sections.
 
-Codex:
-
-```sh
-bun run dev:codex
-```
-
-This copies the exact canonical plugin into ignored staging, changes only the staged Codex version with a local cachebuster, reinstalls from a local marketplace, and launches Codex. Start a fresh task after edits.
-
-## Marketplace install proof
-
-The Git repository is directly installable in both hosts. Substitute the repository and plugin name written to `plugin.config.json`:
+Before opening a PR:
 
 ```sh
-claude plugin marketplace add OWNER/REPOSITORY
-claude plugin install PLUGIN_NAME@PLUGIN_NAME
-
-codex plugin marketplace add OWNER/REPOSITORY --ref main
-codex plugin add PLUGIN_NAME@PLUGIN_NAME
+bun test
+bun run generate:check
+bun run release:validate
+bun run prove:all
 ```
 
-See `docs/prototypes/0001-marketplace-install-and-dev-mode.md` for the live install and edit-reload evidence.
+Hosted CI runs QuickJS natively on Linux x64, Linux arm64, macOS arm64, and macOS x64. It then creates the deterministic archive and provenance JSON. Public `main` artifacts receive GitHub artifact attestation. User-owned private repositories retain provenance JSON and skip the unsupported attestation job.
 
-Inspect without changing harness state:
+## Release
+
+Normal PRs merge into `main` without publishing. Release Please keeps one generated release PR that accumulates releasable commits.
+
+```mermaid
+flowchart LR
+    change["Conventional PR merged"] --> releasePR["Generated release PR"]
+    releasePR --> review["Review version and CHANGELOG"]
+    review --> merge["Merge release PR"]
+    merge --> proof["Four-platform and distribution proof"]
+    proof --> publish["Tag, GitHub Release, package, provenance"]
+```
+
+### One-time GitHub setup
+
+1. Open **Settings → Actions → General → Workflow permissions**.
+2. Enable read and write workflow permissions.
+3. Allow GitHub Actions to create pull requests.
+4. Enable squash merging and keep the enforced Conventional Commit PR title.
+5. Protect `main` and require the plugin CI and title checks for normal PRs.
+
+The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflow runs caused by that token, so the release workflow proves a merged release PR before it creates a tag. For strict pre-merge checks on the generated release PR, add a fine-grained token or GitHub App token as the `RELEASE_PLEASE_TOKEN` repository secret. Grant only repository contents, pull requests, and issues write access.
+
+### Publish a release
+
+1. Merge normal PRs with valid Conventional Commit titles.
+2. Wait for the `Release` workflow to create or update the release PR.
+3. Review its semantic version and generated `CHANGELOG.md`.
+4. Merge the release PR when the batch is ready.
+5. Wait for the `Release` workflow to validate metadata, prove the four-platform payload, reject generated drift, create `vX.Y.Z`, create the GitHub Release, and attach the deterministic archive plus provenance JSON.
+
+Do not hand-edit versions or `CHANGELOG.md`. Do not create the tag first. Do not publish to npm.
+
+If the tag and GitHub Release exist but asset upload or attestation failed, run the `Release` workflow manually with `release_tag` set to the exact existing `vX.Y.Z` tag. The workflow checks out that tag, repeats the full proof, uploads the archive and provenance with `--clobber`, and recreates the public attestation. Leave the input empty during normal operation.
+
+The release configuration synchronizes:
+
+- `package.json`
+- `plugin.config.json`
+- Claude marketplace metadata
+- Claude native manifest
+- Codex native manifest
+- The version marker in generated portable JavaScript
+- `.github/.release-please-manifest.json`
+
+Validate the release contract locally:
 
 ```sh
-bun run dev -- claude --check
-bun run dev -- codex --check
+bun run release:validate -- --json
 ```
 
-## Proofs
+For a public repository, verify the release archive attestation:
 
-- `bun test`: prove init, generated metadata, CLI discovery, development identity, and canary orchestration.
-- `bun run generate:check`: prove checked-in manifests match `plugin.config.json`.
+```sh
+gh attestation verify dist/PLUGIN_NAME-X.Y.Z.tar.gz --repo OWNER/REPOSITORY
+```
+
+For a private user-owned repository, compare the SHA-256 value in the attached provenance JSON with the downloaded archive.
+
+Release machinery is based on [Release Please](https://github.com/googleapis/release-please), with a human-reviewed standing PR like Every's compound-engineering workflow. This single-plugin template additionally generates a committed changelog, validates every version surface, pins Actions to full commit SHAs, proves the payload before tagging, and attaches the deterministic package. See the [versioned release workflow learning](docs/solutions/workflow/versioned-plugin-releases-with-release-please.md) for rationale and recovery behavior.
+
+## Proof commands
+
+- `bun test`: initializer, metadata, CLI, release, development, and canary contracts.
+- `bun run generate:check`: generated manifests match `plugin.config.json`.
 - `bun run build`: regenerate portable JavaScript.
-- `bun run spike:quickjs`: compare Bun and QuickJS behavior on the host.
-- `bun run prove:distribution`: package twice, prove deterministic bytes, extract offline, verify every interpreter digest, and run both hook adapters.
-- `bun run prove:dx`: verify canonical marketplace paths and native reload contracts.
-- `bun run prove:quickjs-ci`: verify runtime equivalence, distribution, four-host CI, pinned actions, and public-repository attestation configuration.
-- `bun run prove:all`: run the complete local gate.
-
-`.github/workflows/plugin-ci.yml` runs the compatibility matrix, packages the exact plugin, and uploads a PR/main artifact. Public repositories also attest the main artifact. GitHub does not offer artifact attestations to user-owned private repositories, so private template instances skip that job and retain the generated provenance JSON.
+- `bun run spike:quickjs`: compare Bun and QuickJS behavior on the current host.
+- `bun run prove:distribution`: build twice, compare bytes, extract offline, verify interpreter digests, and run both harness command contracts.
+- `bun run prove:dx`: verify canonical marketplace paths and native development boundaries.
+- `bun run prove:quickjs-ci`: reproduce runtime, distribution, matrix, pinning, and attestation CI checks.
+- `bun run prove:all`: complete local gate.
 
 ## Public and private canaries
 
-After the implementation is merged, use a clean checkout of `origin/main`:
+After changes merge, run from a clean checkout of `origin/main`:
 
 ```sh
 bun run ship:canary -- --dry-run
 bun run ship:canary -- --execute
 ```
 
-The command verifies the active GitHub identity, target visibility and lineage, clean source commit, and generated manifests. Execute mode creates missing canary repositories without starter commits, performs fast-forward-only pushes, and waits for both hosted workflows. It never force-pushes or rewrites canary history.
+The command verifies GitHub identity, target visibility and lineage, no tracked changes, and generated manifests. Execute mode creates missing public and private recipients without starter commits, performs fast-forward-only pushes, and waits for both hosted workflows. It never force-pushes or rewrites recipient history.
 
-## Boundaries
+## Current boundaries
 
 - macOS arm64/x64 and Linux arm64/x64 only.
-- Future Bun-specific dependencies require a new runtime compatibility decision.
-- Codex plugin hooks require explicit trust for the current hook definition.
-- Production update visibility is a harness refresh/start boundary, not an instantaneous result of merging to `main`.
+- QuickJS NG `0.16.1` is checksum-pinned in the payload.
+- A future dependency on `Bun.*`, `node:*`, native addons, or unsupported Web APIs requires a fresh runtime decision and compatibility proof.
+- Claude reloads a direct development plugin in the existing session. Codex needs a staged reinstall and fresh task.
+- Hook declarations stay physically separate. A shared default `hooks/hooks.json` previously caused cross-host auto-discovery.
+- Vendor plugin specifications change. Recheck the linked official documentation when manifests, hooks, trust, or reload behavior changes.

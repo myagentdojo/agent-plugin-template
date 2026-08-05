@@ -1,5 +1,6 @@
 {
   "name": "agent-plugin-template-tooling",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -7,6 +8,7 @@
     "init": "bun run scripts/init.ts",
     "generate": "bun run scripts/generate.ts",
     "generate:check": "bun run scripts/generate.ts --check",
+    "release:validate": "bun run scripts/release-validate.ts",
     "build": "bun run generate:check && bun run scripts/build.ts",
     "dev": "bun run scripts/dev.ts",
     "dev:claude": "bun run scripts/dev.ts claude",
@@ -16,7 +18,7 @@
     "prove:distribution": "bun run scripts/prove-distribution.ts",
     "prove:dx": "bun run scripts/prove-dx.ts",
     "prove:quickjs-ci": "bun run scripts/prove-quickjs-ci.ts",
-    "prove:all": "bun run prove:quickjs-ci && bun run prove:dx",
+    "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:quickjs-ci && bun run prove:dx",
     "spike:quickjs": "bun run scripts/quickjs-spike.ts",
     "spike:quickjs:ci": "bun run scripts/quickjs-spike.ts --ci"
   }

@@ -1,4 +1,4 @@
-# Decision 0004: One canonical plugin, native host adapters
+# Decision 0003: One canonical plugin, native host adapters
 
 Status: accepted by the prototype when `bun run prove:all` passes.
 

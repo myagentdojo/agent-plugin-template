@@ -31,13 +31,12 @@ if (!codex.install.includes("plugin add") || !codex.reload.includes("fresh Codex
 const claudeManifest = JSON.parse(
 	readFileSync(join(root, "plugin", ".claude-plugin", "plugin.json"), "utf8"),
 )
-if ("version" in claudeManifest) {
-	throw new Error("Claude manifest version would block Git commit SHA updates")
-}
-
 const codexManifest = JSON.parse(
 	readFileSync(join(root, "plugin", ".codex-plugin", "plugin.json"), "utf8"),
 )
+if (claudeManifest.version !== codexManifest.version) {
+	throw new Error("native manifest versions do not match")
+}
 if (claudeManifest.hooks !== "./hooks/claude/hooks.json") {
 	throw new Error("Claude manifest does not own its explicit hook adapter")
 }
@@ -75,7 +74,7 @@ console.log(
 			claude: "canonical plugin/ + Bun watcher + /reload-plugins",
 			codex: "full staged copy + cachebuster + reinstall + fresh task",
 		},
-		production: "merge to main + rebuild + proof + Git marketplace startup refresh",
+		production: "release PR + proof + tag + GitHub Release + harness update",
 		boundaries: [
 			"one canonical installable plugin/ subtree",
 			"no symlinks",
