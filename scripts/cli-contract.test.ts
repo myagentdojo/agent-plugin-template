@@ -41,3 +41,12 @@ test("init usage failure is structured for scripts and agents", () => {
 	})
 	expect(failure.runId).toBeString()
 })
+
+test("artifact download does not depend on a checked-out git repository", async () => {
+	const workflow = await Bun.file(
+		new URL("../.github/workflows/plugin-ci.yml", import.meta.url),
+	).text()
+	expect(workflow).toContain(
+		'gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"',
+	)
+})

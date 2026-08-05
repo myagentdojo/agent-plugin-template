@@ -80,7 +80,7 @@ jobs:
       - name: Download packaged artifact
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --name "agent-plugin-${GITHUB_SHA}" --dir dist
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "agent-plugin-${GITHUB_SHA}" --dir dist
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: dist/*.tar.gz
