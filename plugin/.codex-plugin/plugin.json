@@ -1,0 +1,19 @@
+{
+  "name": "harness-native-plugin-prototype",
+  "version": "0.1.0",
+  "description": "Prove native plugin distribution with a Bun-authored portable runtime",
+  "author": {
+    "name": "Prototype"
+  },
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Harness Native Plugin Prototype",
+    "shortDescription": "Run a Bun-authored skill without Bun installed.",
+    "longDescription": "A portability proof with shared skills and runtime code plus native Claude Code and Codex manifests and hooks.",
+    "developerName": "Prototype",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "defaultPrompt": "Run the hello-world distribution proof."
+  }
+}

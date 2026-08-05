@@ -1,0 +1,20 @@
+{
+  "name": "harness-native-plugin-prototype",
+  "owner": {
+    "name": "Prototype"
+  },
+  "metadata": {
+    "description": "Local marketplace for the harness-native plugin prototype",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "harness-native-plugin-prototype",
+      "description": "Bun-authored hello world with an offline portable runtime",
+      "author": {
+        "name": "Prototype"
+      },
+      "source": "./plugin"
+    }
+  ]
+}

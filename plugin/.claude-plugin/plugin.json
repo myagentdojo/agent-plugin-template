@@ -1,0 +1,9 @@
+{
+  "name": "harness-native-plugin-prototype",
+  "description": "Prove native plugin distribution with a Bun-authored portable runtime",
+  "author": {
+    "name": "Prototype"
+  },
+  "skills": "./skills/",
+  "hooks": "./hooks/claude/hooks.json"
+}

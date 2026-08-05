@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hello-world",
+            "args": ["hook", "--harness", "claude", "--event", "SessionStart"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hello-world",
+            "args": ["hook", "--harness", "claude", "--event", "Stop"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
