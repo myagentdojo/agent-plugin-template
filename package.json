@@ -14,6 +14,7 @@
     "dev:claude": "bun run scripts/dev.ts claude",
     "dev:codex": "bun run scripts/dev.ts codex",
     "ship:canary": "bun run scripts/ship-canary.ts",
+    "readiness": "bun run scripts/repository-readiness.ts",
     "package": "bun run build && bun run scripts/package.ts",
     "prove:distribution": "bun run scripts/prove-distribution.ts",
     "prove:dx": "bun run scripts/prove-dx.ts",
