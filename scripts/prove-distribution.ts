@@ -1,4 +1,5 @@
 import {
+	lstatSync,
 	mkdirSync,
 	readFileSync,
 	rmSync,
@@ -6,11 +7,13 @@ import {
 } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { PLUGIN_DIRECTORY, pluginPayloadInventory } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
 const pluginConfig = loadPluginConfig(root)
 const packageName = `${pluginConfig.name}-${pluginConfig.version}`
+const inventory = pluginPayloadInventory(root)
 
 interface PackageResult {
 	archive: string
@@ -66,23 +69,12 @@ const archiveEntries = Bun.spawnSync({
 	stderr: "inherit",
 })
 if (archiveEntries.exitCode !== 0) process.exit(archiveEntries.exitCode)
-const entries = archiveEntries.stdout.toString().trim().split("\n")
-for (const required of [
-	`${packageName}/.claude-plugin/plugin.json`,
-	`${packageName}/.codex-plugin/plugin.json`,
-	`${packageName}/skills/hello-world/SKILL.md`,
-	`${packageName}/hooks/claude/hooks.json`,
-	`${packageName}/hooks/codex/hooks.json`,
-	`${packageName}/bin/hello-world`,
-	`${packageName}/runtime/hello-world.js`,
-	`${packageName}/runtime/qjs-darwin-arm64`,
-	`${packageName}/runtime/qjs-darwin-x86_64`,
-	`${packageName}/runtime/qjs-linux-aarch64`,
-	`${packageName}/runtime/qjs-linux-x86_64`,
-	`${packageName}/runtime/quickjs-assets.json`,
-	`${packageName}/QUICKJS-LICENSE`,
-]) {
-	if (!entries.includes(required)) throw new Error(`package is missing ${required}`)
+const entries = archiveEntries.stdout.toString().trim().split("\n").filter(Boolean)
+const expectedEntries = inventory.map((relativePath) => `${packageName}/${relativePath}`)
+if (JSON.stringify(entries) !== JSON.stringify(expectedEntries)) {
+	throw new Error(
+		`package entries do not match plugin inventory:\nexpected ${JSON.stringify(expectedEntries)}\nreceived ${JSON.stringify(entries)}`,
+	)
 }
 if (entries.some((entry) => entry.endsWith(".ts") || entry.includes("/.git/"))) {
 	throw new Error("package contains repository source or Git metadata")
@@ -102,6 +94,17 @@ const extract = Bun.spawnSync({
 if (extract.exitCode !== 0) process.exit(extract.exitCode)
 
 const installedRoot = join(extractedRoot, packageName)
+for (const relativePath of inventory) {
+	const sourcePath = join(root, PLUGIN_DIRECTORY, relativePath)
+	const installedPath = join(installedRoot, relativePath)
+	if (!lstatSync(installedPath).isFile()) {
+		throw new Error(`extracted payload entry is not a regular file: ${relativePath}`)
+	}
+	if (!readFileSync(installedPath).equals(readFileSync(sourcePath))) {
+		throw new Error(`extracted payload bytes differ from plugin inventory: ${relativePath}`)
+	}
+}
+
 const launcher = join(installedRoot, "bin", "hello-world")
 const version = runPackaged(launcher, ["--version"])
 if (version.exitCode !== 0 || version.stdout.trim() !== pluginConfig.version) {

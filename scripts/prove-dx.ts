@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { pluginPayloadInventory } from "./plugin-files"
+
 const root = resolve(import.meta.dir, "..")
+pluginPayloadInventory(root)
 
 function dryRun(harness: "claude" | "codex"): Record<string, string> {
 	const result = Bun.spawnSync({

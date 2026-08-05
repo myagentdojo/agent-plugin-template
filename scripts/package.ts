@@ -1,7 +1,6 @@
 import {
 	mkdirSync,
 	mkdtempSync,
-	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -22,25 +21,11 @@ const packageName = `${pluginConfig.name}-${version}`
 const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
 
-function archiveEntries(directory: string, prefix: string): string[] {
-	const entries = [prefix]
-	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
-		left.name.localeCompare(right.name),
-	)) {
-		const relativePath = `${prefix}/${entry.name}`
-		entries.push(relativePath)
-		if (entry.isDirectory()) {
-			entries.push(...archiveEntries(join(directory, entry.name), relativePath).slice(1))
-		}
-	}
-	return entries
-}
-
 try {
 	mkdirSync(outputRoot, { recursive: true })
-	copyPluginPayload(root, packageRoot)
+	const inventory = copyPluginPayload(root, packageRoot)
 
-	const entries = archiveEntries(packageRoot, packageName)
+	const entries = inventory.map((relativePath) => `${packageName}/${relativePath}`)
 	const epoch = new Date(0)
 	for (const relativePath of entries) utimesSync(join(stagingRoot, relativePath), epoch, epoch)
 
