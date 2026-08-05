@@ -1,0 +1,263 @@
+import { describe, expect, test } from "bun:test"
+
+import {
+	classifyReleaseImpact,
+	isReleasePleaseVersionOnlyChange,
+} from "./release-impact"
+
+describe("release impact", () => {
+	const nonReleasablePayloadChanges = [
+		["docs: explain the skill", "plugin/skills/hello-world/SKILL.md"],
+		["test: cover the hook", "plugin/hooks/claude/hooks.json"],
+		["ci: package the launcher", "plugin/bin/hello-world"],
+		["chore: refresh runtime assets", "plugin/runtime/quickjs-assets.json"],
+		["refactor: reshape the manifest", "plugin/.codex-plugin/plugin.json"],
+		["chore: refresh the marketplace", ".agents/plugins/marketplace.json"],
+	] as const
+
+	for (const [title, path] of nonReleasablePayloadChanges) {
+		test(`rejects ${path} under ${title.split(":")[0]} title`, () => {
+			expect(
+				classifyReleaseImpact({
+					title,
+					changedFiles: [{ path }],
+				}),
+			).toEqual({
+				payloadChanged: true,
+				isReleasePleaseProjection: false,
+				titleIsReleasable: false,
+				ok: false,
+				changedPayloadPaths: [path],
+				acceptedTitleTypes: ["feat", "fix", "perf", "breaking (!)"],
+			})
+		})
+	}
+
+	test("allows documentation, tests, and CI changes under a non-releasable title", () => {
+		const result = classifyReleaseImpact({
+			title: "chore: maintain contributor checks",
+			changedFiles: [
+				{ path: "README.md" },
+				{ path: "docs/distribution.md" },
+				{ path: "scripts/release-impact.test.ts" },
+				{ path: ".github/workflows/plugin-ci.yml" },
+			],
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: false,
+			isReleasePleaseProjection: false,
+			titleIsReleasable: false,
+			ok: true,
+			changedPayloadPaths: [],
+		})
+	})
+
+	test("allows a payload source and generated output under fix title", () => {
+		const result = classifyReleaseImpact({
+			title: "fix: keep the portable command deterministic",
+			changedFiles: [
+				{ path: "runtime/src/portable-command.ts" },
+				{ path: "plugin/runtime/hello-world.js" },
+			],
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: true,
+			isReleasePleaseProjection: false,
+			titleIsReleasable: true,
+			ok: true,
+			changedPayloadPaths: [
+				"runtime/src/portable-command.ts",
+				"plugin/runtime/hello-world.js",
+			],
+		})
+	})
+
+	test("exempts the exact Release Please version and changelog projection", () => {
+		const projection = [
+			"plugin.config.json",
+			".claude-plugin/marketplace.json",
+			"plugin/.claude-plugin/plugin.json",
+			"plugin/.codex-plugin/plugin.json",
+			"plugin/runtime/hello-world.js",
+			"plugin/hooks/codex/hooks.json",
+			".github/.release-please-manifest.json",
+			"CHANGELOG.md",
+		].map((path) => ({ path, versionOnly: true }))
+
+		const result = classifyReleaseImpact({
+			title: "chore(main): release 1.2.3",
+			changedFiles: projection,
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: true,
+			isReleasePleaseProjection: true,
+			titleIsReleasable: false,
+			ok: true,
+		})
+	})
+
+	test("exempts the full node Release Please projection including package.json", () => {
+		const projection = [
+			"package.json",
+			"plugin.config.json",
+			".claude-plugin/marketplace.json",
+			"plugin/.claude-plugin/plugin.json",
+			"plugin/.codex-plugin/plugin.json",
+			"plugin/runtime/hello-world.js",
+			"plugin/hooks/codex/hooks.json",
+			".github/.release-please-manifest.json",
+			"CHANGELOG.md",
+		].map((path) => ({ path, versionOnly: true }))
+
+		const result = classifyReleaseImpact({
+			title: "chore(main): release 0.2.0",
+			changedFiles: projection,
+		})
+
+		expect(result).toMatchObject({
+			isReleasePleaseProjection: true,
+			ok: true,
+		})
+	})
+
+	test("removes the projection exemption for an unrelated payload change", () => {
+		const result = classifyReleaseImpact({
+			title: "chore(main): release 1.2.3",
+			changedFiles: [
+				{ path: "plugin.config.json", versionOnly: true },
+				{ path: "plugin/runtime/hello-world.js", versionOnly: true },
+				{ path: "CHANGELOG.md", versionOnly: true },
+				{ path: "plugin/skills/hello-world/SKILL.md" },
+			],
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: true,
+			isReleasePleaseProjection: false,
+			titleIsReleasable: false,
+			ok: false,
+			changedPayloadPaths: [
+				"plugin.config.json",
+				"plugin/runtime/hello-world.js",
+				"plugin/skills/hello-world/SKILL.md",
+			],
+		})
+	})
+
+	test("recognizes only the owned JSON version field as a version-only change", () => {
+		const before = JSON.stringify({ version: "1.2.2", description: "Portable" })
+		const versionOnly = JSON.stringify({ version: "1.2.3", description: "Portable" })
+		const payloadEdit = JSON.stringify({ version: "1.2.3", description: "Changed" })
+
+		expect(isReleasePleaseVersionOnlyChange("plugin.config.json", before, versionOnly)).toBe(
+			true,
+		)
+		expect(isReleasePleaseVersionOnlyChange("plugin.config.json", before, payloadEdit)).toBe(
+			false,
+		)
+	})
+
+	test("recognizes only the package.json version field as a version-only change", () => {
+		const before = JSON.stringify({ version: "0.1.0", scripts: { test: "bun test" } })
+		const versionOnly = JSON.stringify({ version: "0.2.0", scripts: { test: "bun test" } })
+		const scriptEdit = JSON.stringify({ version: "0.2.0", scripts: { test: "bun test unit" } })
+
+		expect(isReleasePleaseVersionOnlyChange("package.json", before, versionOnly)).toBe(true)
+		expect(isReleasePleaseVersionOnlyChange("package.json", before, scriptEdit)).toBe(false)
+	})
+
+	test("allows a non-version package.json edit without treating it as payload", () => {
+		const result = classifyReleaseImpact({
+			title: "chore: add a package script",
+			changedFiles: [{ path: "package.json", versionOnly: false }],
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: false,
+			isReleasePleaseProjection: false,
+			titleIsReleasable: false,
+			ok: true,
+			changedPayloadPaths: [],
+		})
+	})
+
+	test("recognizes generated hook and runtime version markers", () => {
+		expect(
+			isReleasePleaseVersionOnlyChange(
+				"plugin/hooks/codex/hooks.json",
+				'{"command":"hello --plugin-version 1.2.2 # x-release-please-version"}',
+				'{"command":"hello --plugin-version 1.2.3 # x-release-please-version"}',
+			),
+		).toBe(true)
+		expect(
+			isReleasePleaseVersionOnlyChange(
+				"plugin/runtime/hello-world.js",
+				'const PLUGIN_VERSION = "1.2.2";\nrunOld()',
+				'const PLUGIN_VERSION = "1.2.3";\nrunNew()',
+			),
+		).toBe(false)
+	})
+
+	for (const title of [
+		"feat!: replace the plugin contract",
+		"fix!: remove the legacy hook",
+		"refactor(runtime)!: replace the portable protocol",
+		"feat(runtime): add a portable command",
+		"fix: repair launcher routing",
+		"perf: reduce startup work",
+	]) {
+		test(`accepts releasable title ${title}`, () => {
+			const result = classifyReleaseImpact({
+				title,
+				changedFiles: [{ path: "plugin/bin/hello-world" }],
+			})
+
+			expect(result.titleIsReleasable).toBe(true)
+			expect(result.ok).toBe(true)
+		})
+	}
+
+	test("CLI failure emits structured recovery details", () => {
+		const result = Bun.spawnSync({
+			cmd: [process.execPath, "run", "scripts/release-impact.ts"],
+			cwd: new URL("..", import.meta.url).pathname,
+			env: {
+				...process.env,
+				PR_TITLE: "docs: describe the launcher",
+				CHANGED_FILES_JSON: JSON.stringify([{ path: "plugin/bin/hello-world" }]),
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(1)
+		const failure = JSON.parse(result.stdout.toString())
+		expect(failure).toMatchObject({
+			ok: false,
+			category: "release_impact",
+			retrySafe: true,
+			changedPayloadPaths: ["plugin/bin/hello-world"],
+			acceptedTitleTypes: ["feat", "fix", "perf", "breaking (!)"],
+		})
+		expect(failure.message).toContain("feat, fix, perf, or a breaking (!) title")
+		expect(failure.nextAction).toContain("change the pull request title")
+		expect(failure.runId).toBeString()
+	})
+
+	test("CLI help exposes inputs, output, and side-effect posture", () => {
+		const result = Bun.spawnSync({
+			cmd: [process.execPath, "run", "scripts/release-impact.ts", "--help"],
+			cwd: new URL("..", import.meta.url).pathname,
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(0)
+		expect(result.stdout.toString()).toContain("--base <git-ref>")
+		expect(result.stdout.toString()).toContain("one JSON result on stdout")
+		expect(result.stdout.toString()).toContain("Side effects: none")
+	})
+})
