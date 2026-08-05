@@ -23,17 +23,31 @@ const packageRoot = join(stagingRoot, packageName)
 
 function resolveSourceCommit(): string {
 	const sourceCommit = process.env.SOURCE_COMMIT
-	if (sourceCommit !== undefined) return validateSourceCommit(sourceCommit, "SOURCE_COMMIT")
 	const githubSha = process.env.GITHUB_SHA
-	if (githubSha !== undefined) return validateSourceCommit(githubSha, "GITHUB_SHA")
+	const configuredSource =
+		sourceCommit !== undefined
+			? { name: "SOURCE_COMMIT", value: sourceCommit }
+			: githubSha !== undefined
+				? { name: "GITHUB_SHA", value: githubSha }
+				: undefined
+	const configuredCommit = configuredSource
+		? validateSourceCommit(configuredSource.value, configuredSource.name)
+		: undefined
 	const git = Bun.spawnSync({
 		cmd: ["git", "rev-parse", "HEAD"],
 		cwd: root,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
-	if (git.exitCode !== 0) throw new Error("Unable to resolve the package source commit from git")
-	return validateSourceCommit(git.stdout.toString().trim(), "git HEAD")
+	if (git.exitCode === 0) {
+		const gitHead = validateSourceCommit(git.stdout.toString().trim(), "git HEAD")
+		if (configuredCommit && configuredCommit !== gitHead) {
+			throw new Error(`${configuredSource?.name} does not match git HEAD`)
+		}
+		return gitHead
+	}
+	if (configuredCommit) return configuredCommit
+	throw new Error("Unable to resolve the package source commit from git or an explicit input")
 }
 
 function validateSourceCommit(value: string, source: string): string {

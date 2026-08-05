@@ -40,6 +40,57 @@ function writeJson(path: string, value: unknown): void {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`)
 }
 
+function commitPackageCheckout(repositoryRoot: string): string {
+	function git(...arguments_: string[]): ReturnType<typeof Bun.spawnSync> {
+		return Bun.spawnSync({
+			cmd: ["git", ...arguments_],
+			cwd: repositoryRoot,
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+	}
+
+	for (const arguments_ of [
+		["init", "--quiet"],
+		["add", "--", "plugin.config.json", "plugin"],
+		[
+			"-c",
+			"user.name=Plugin Test",
+			"-c",
+			"user.email=plugin-test@example.invalid",
+			"commit",
+			"--quiet",
+			"-m",
+			"package fixture",
+		],
+	] as const) {
+		const result = git(...arguments_)
+		expect(result.exitCode, result.stderr.toString()).toBe(0)
+	}
+	const head = git("rev-parse", "HEAD")
+	expect(head.exitCode, head.stderr.toString()).toBe(0)
+	return head.stdout.toString().trim()
+}
+
+function packageWithSource(
+	repositoryRoot: string,
+	sourceVariable: "SOURCE_COMMIT" | "GITHUB_SHA",
+	value: string,
+): ReturnType<typeof Bun.spawnSync> {
+	return Bun.spawnSync({
+		cmd: [process.execPath, "run", "scripts/package.ts"],
+		cwd: repositoryRoot,
+		env: {
+			...process.env,
+			SOURCE_COMMIT: undefined,
+			GITHUB_SHA: undefined,
+			[sourceVariable]: value,
+		},
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+}
+
 function createReleasedTemplate(prefix: string): string {
 	const temporaryRoot = copyTemplate(prefix)
 	const configPath = join(temporaryRoot, "plugin.config.json")
@@ -347,7 +398,7 @@ test("initialized repository packages the configured plugin identity", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-package-")
 	const init = initializeTemplate(temporaryRoot)
 	expect(init.exitCode, init.stderr.toString()).toBe(0)
-	const sourceCommit = "a".repeat(40)
+	const sourceCommit = commitPackageCheckout(temporaryRoot)
 
 	const packaged = Bun.spawnSync({
 		cmd: ["bun", "run", "package"],
@@ -375,6 +426,18 @@ test("initialized repository packages the configured plugin identity", () => {
 	})
 })
 
+test("package accepts an explicit source commit when Git metadata is unavailable", () => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-package-no-git-")
+	const init = initializeTemplate(temporaryRoot)
+	expect(init.exitCode, init.stderr.toString()).toBe(0)
+	const sourceCommit = "a".repeat(40)
+	const packaged = packageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
+	expect(packaged.exitCode, packaged.stderr.toString()).toBe(0)
+	const result = JSON.parse(packaged.stdout.toString().trim())
+	const checksums = JSON.parse(readFileSync(result.checksums, "utf8"))
+	expect(checksums.sourceCommit).toBe(sourceCommit)
+})
+
 test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(
 	"package rejects an invalid explicit %s",
 	(sourceVariable) => {
@@ -382,22 +445,25 @@ test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(
 		const init = initializeTemplate(temporaryRoot)
 		expect(init.exitCode, init.stderr.toString()).toBe(0)
 
-		const packaged = Bun.spawnSync({
-			cmd: [process.execPath, "run", "scripts/package.ts"],
-			cwd: temporaryRoot,
-			env: {
-				...process.env,
-				SOURCE_COMMIT: undefined,
-				GITHUB_SHA: undefined,
-				[sourceVariable]: "A".repeat(40),
-			},
-			stdout: "pipe",
-			stderr: "pipe",
-		})
+		const packaged = packageWithSource(temporaryRoot, sourceVariable, "A".repeat(40))
 		expect(packaged.exitCode).not.toBe(0)
 		expect(packaged.stderr.toString()).toContain(
 			`${sourceVariable} must be exactly 40 lowercase hexadecimal characters`,
 		)
+	},
+)
+
+test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(
+	"package rejects %s when it differs from Git HEAD",
+	(sourceVariable) => {
+		const temporaryRoot = copyTemplate("agent-plugin-template-package-mismatch-")
+		const init = initializeTemplate(temporaryRoot)
+		expect(init.exitCode, init.stderr.toString()).toBe(0)
+		const gitHead = commitPackageCheckout(temporaryRoot)
+		const mismatchedCommit = gitHead === "b".repeat(40) ? "c".repeat(40) : "b".repeat(40)
+		const packaged = packageWithSource(temporaryRoot, sourceVariable, mismatchedCommit)
+		expect(packaged.exitCode).not.toBe(0)
+		expect(packaged.stderr.toString()).toContain(`${sourceVariable} does not match git HEAD`)
 	},
 )
 
