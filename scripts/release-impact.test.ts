@@ -397,6 +397,38 @@ describe("release impact", () => {
 		})
 	})
 
+	test("CLI includes a payload path renamed into documentation", () => {
+		const repository = mkdtempSync(join(tmpdir(), "release-impact-rename-"))
+		const run = (arguments_: string[]) =>
+			Bun.spawnSync({ cmd: arguments_, cwd: repository, stdout: "pipe", stderr: "pipe" })
+		for (const command of [
+			["git", "init", "--quiet"],
+			["git", "config", "user.name", "Release Impact Test"],
+			["git", "config", "user.email", "release-impact@example.invalid"],
+		]) expect(run(command).exitCode).toBe(0)
+		mkdirSync(join(repository, "plugin", "skills", "hello-world"), { recursive: true })
+		mkdirSync(join(repository, "docs"), { recursive: true })
+		writeFileSync(join(repository, "plugin", "skills", "hello-world", "SKILL.md"), "hello\n")
+		expect(run(["git", "add", "plugin/skills/hello-world/SKILL.md"]).exitCode).toBe(0)
+		expect(run(["git", "commit", "--quiet", "-m", "base"]).exitCode).toBe(0)
+		const base = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		expect(run(["git", "mv", "plugin/skills/hello-world/SKILL.md", "docs/hello-world.md"]).exitCode).toBe(0)
+		expect(run(["git", "commit", "--quiet", "-m", "head"]).exitCode).toBe(0)
+		const head = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		const result = Bun.spawnSync({
+			cmd: [process.execPath, "run", join(root, "scripts", "release-impact.ts"), "--base", base, "--head", head],
+			cwd: repository,
+			env: { ...process.env, PR_TITLE: "docs: move the skill guide" },
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(1)
+		expect(JSON.parse(result.stdout.toString())).toMatchObject({
+			changedPayloadPaths: ["plugin/skills/hello-world/SKILL.md"],
+		})
+	})
+
 	test("CLI help exposes inputs, output, and side-effect posture", () => {
 		const result = Bun.spawnSync({
 			cmd: [process.execPath, "run", "scripts/release-impact.ts", "--help"],

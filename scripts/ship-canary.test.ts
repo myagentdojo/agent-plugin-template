@@ -96,6 +96,8 @@ if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef01
 if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then exit 0; fi
 if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
 	if [ "$3" != "--diff-filter=ACMRD" ]; then exit 92; fi
+	if [ "$4" != "--no-renames" ]; then exit 93; fi
+	if [ "$FAKE_RENAME" = "1" ]; then printf 'docs/package.ts\nscripts/package.ts\n'; exit 0; fi
 	printf '%s\n' "\${FAKE_DIFF_PATH:-}"
 	exit 0
 fi
@@ -244,6 +246,48 @@ test("classify includes deleted publishing-system paths", () => {
 	expect(JSON.parse(result.stdout.toString().trim())).toMatchObject({
 		changedPaths: ["scripts/package.ts"],
 		canaries: { required: true, triggeringPaths: ["scripts/package.ts"] },
+	})
+})
+
+test("classify includes a publishing path renamed into documentation", () => {
+	const fixture = canaryFixture()
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "run", "ship:canary", "--", "--classify", "--base", "base", "--head", "head", "--json"],
+		cwd: fixture.temporaryRoot,
+		env: {
+			...process.env,
+			FAKE_RENAME: "1",
+			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+		},
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		changedPaths: ["docs/package.ts", "scripts/package.ts"],
+		canaries: { required: true, triggeringPaths: ["scripts/package.ts"] },
+	})
+})
+
+test("candidate config cannot redirect trusted canary targets", () => {
+	const fixture = canaryFixture()
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "run", join(root, "scripts", "ship-canary.ts"), "--dry-run", "--source-root", fixture.temporaryRoot, "--ref", "HEAD", "--json"],
+		cwd: root,
+		env: {
+			...process.env,
+			FAKE_LOG: fixture.log,
+			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+		},
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		category: "canary_target_mismatch",
+		retrySafe: false,
 	})
 })
 

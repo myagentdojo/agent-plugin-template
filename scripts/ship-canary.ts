@@ -758,6 +758,15 @@ export async function qualifyTargets(
 
 function preflight(options: PublishOptions): Preflight {
 	const config = loadPluginConfig(options.sourceRoot)
+	const trustedConfig = loadPluginConfig(root)
+	if (JSON.stringify(config.canary) !== JSON.stringify(trustedConfig.canary)) {
+		throw new CanaryError(
+			"canary_target_mismatch",
+			"candidate canary targets differ from the trusted driver checkout",
+			"restore plugin.config.json canary targets to the trusted base values",
+			false,
+		)
+	}
 	const identity = processResult(["gh", "api", "user", "--jq", ".login"]) || ""
 	const dirty = processResult(
 		["git", "status", "--porcelain", "--untracked-files=no"],
@@ -801,15 +810,15 @@ function preflight(options: PublishOptions): Preflight {
 	const boundTransport = bindTransportIdentity(
 		identity,
 		resolvedTransport.identity,
-		config.canary.owner,
+		trustedConfig.canary.owner,
 		resolvedTransport.kind,
 	)
 	const transportIdentity = { ...boundTransport, host: resolvedTransport.host }
 	const targets = buildTargets(
 		origin,
-		config.canary.owner,
-		config.canary.publicRepository,
-		config.canary.privateRepository,
+		trustedConfig.canary.owner,
+		trustedConfig.canary.publicRepository,
+		trustedConfig.canary.privateRepository,
 		sourceSha,
 	)
 	return { identity, transportIdentity, sourceSha, targets }
@@ -821,6 +830,7 @@ function classify(options: ClassifyOptions): void {
 		"diff",
 		"--name-only",
 		"--diff-filter=ACMRD",
+		"--no-renames",
 		`${options.base}...${options.head}`,
 	])
 	const changedPaths = output ? output.split("\n").filter(Boolean) : []

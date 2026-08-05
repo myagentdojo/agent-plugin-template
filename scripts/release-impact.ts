@@ -241,7 +241,7 @@ function gitChangedFiles(base: string, head: string): ReleaseImpactChangedFile[]
 			"fetch the pull request base and head commits, then rerun the gate",
 		)
 	}
-	const changedPaths = (gitOutput(["diff", "--name-only", "-z", `${base}...${head}`, "--"]) ?? "")
+	const changedPaths = (gitOutput(["diff", "--no-renames", "--name-only", "-z", `${base}...${head}`, "--"]) ?? "")
 		.split("\0")
 		.filter(Boolean)
 	return changedPaths.map((path) => {
