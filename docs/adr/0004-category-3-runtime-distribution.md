@@ -1,8 +1,9 @@
-# Bootstrap the runtime for OS-integrated plugins
+# Two runtime tiers: QuickJS-sandboxed and Bun-OS-integrated
 
 ## Status
 
-Accepted — 2026-08-05.
+Accepted — 2026-08-05. Supersedes the interim "three categories" framing
+with a two-tier model.
 
 ## Context
 
@@ -41,29 +42,70 @@ directory, out of this repo; only the conclusions are recorded here.
   spawning and sockets have no host to shim to in QuickJS. Such a tool
   requires a Node-API-capable runtime, full stop.
 
-### Three plugin categories
+### Two runtime tiers, not three categories
 
-1. **Pure logic** (args + stdin -> stdout). QuickJS is the right runtime.
-2. **Pure-JS npm plus shimmable globals** (e.g. `nanoid`). QuickJS plus a
-   small host-shim layer.
-3. **OS-integrated** (spawn, sockets, filesystem at OS depth). Needs a
-   real Bun/Node runtime; QuickJS is impossible.
+An earlier framing split plugins into three categories: pure logic, pure-JS
+npm with shims, and OS-integrated. But the first two run on the **same
+runtime** (QuickJS) and differ only by whether a host-shim layer is present.
+A shim is an in-tier detail, not an architectural fork. The real fork is a
+single question: **does the plugin need to touch the operating system
+(spawn a process, open a socket, read the filesystem at OS depth)?**
+
+That yields two tiers:
+
+- **QuickJS-sandboxed tier.** Pure ECMAScript logic and pure-JS npm
+  libraries, the latter running once a small host-shim layer supplies the
+  Web globals QuickJS lacks (`crypto.getRandomValues`, `TextEncoder`/
+  `TextDecoder`, timers). Tiny (~1.3 MB in-artifact interpreter), offline,
+  zero-install, deterministic, and — decisively — **incapable of spawning
+  processes or opening sockets by construction**. That inability is a
+  security property, not a limitation: a QuickJS-tier plugin physically
+  cannot exfiltrate data or shell out regardless of its code.
+- **Bun-OS-integrated tier.** Anything that spawns processes, opens
+  sockets, or uses the filesystem at OS depth. Requires a real Node-API
+  runtime; QuickJS is impossible. Heavier (a ~60–90 MB Bun), needs the
+  runtime bootstrapped or embedded, and carries the full power (and full
+  trust surface) of the host.
+
+### Why not run everything on the Bun tier
+
+Bun's capability is a strict superset, so "put everything on Bun" is
+tempting. It is rejected because the tiers are a **cost ladder**, and most
+plugins should sit on the lowest rung that does the job:
+
+- **Payload.** Forcing every plugin onto Bun replaces a ~1.3 MB in-artifact
+  interpreter with a ~60–90 MB runtime per consumer — absurd for a plugin
+  that transforms text, and a distribution burden across a marketplace of
+  small plugins.
+- **Offline and trust.** The QuickJS tier is zero-install and fully offline
+  the moment the reviewed payload lands. The Bun tier must fetch and execute
+  a runtime binary on first use: a network dependency and a new trust
+  decision. Only workloads that need OS access should pay that.
+- **Sandbox.** The QuickJS tier cannot reach the network or filesystem.
+  Moving a trivial plugin to Bun hands it that power for no benefit. Keeping
+  "this plugin *cannot* touch the OS" is worth preserving for most of the
+  ecosystem.
+
+Pick the QuickJS tier by default; escalate to the OS-integrated tier (Bun
+or Python) only for the minority of plugins that genuinely need OS access.
 
 ## Decision
 
-Keep QuickJS as the runtime for category 1 and 2 payloads. It is the best
-fit for the zero-install, tiny, offline goal, and no bundler change or
-shim removes its ceiling.
+Keep QuickJS as the default runtime tier (pure logic, plus pure-JS npm via
+an in-tier host-shim layer). It is the best fit for the zero-install, tiny,
+offline, sandboxed goal, and no bundler change or shim removes its ceiling.
 
-For category 3, distribute on the **same Git-marketplace rails** (candidate
-SHA binding, safe payload inventory, `*.checksums.json`, hosted canaries,
-harness install proof — all runtime-agnostic) but **bootstrap the runtime
-on first run** rather than embedding it or requiring it as a prerequisite.
+For the Bun-OS-integrated tier, distribute on the **same Git-marketplace
+rails** (candidate SHA binding, safe payload inventory, `*.checksums.json`,
+hosted canaries, harness install proof — all runtime-agnostic) but
+**bootstrap the runtime on first run** rather than embedding it or requiring
+it as a prerequisite.
 
-The plugin payload stays small: bundled JS plus a launcher. On first use
-the launcher resolves a pinned, checksum-verified Bun into a cache
+The plugin payload stays small: bundled code plus a launcher. On first use
+the launcher resolves a pinned, checksum-verified runtime into a cache
 directory (reusing an already-present runtime when present), then runs the
-bundled JS on it. A doctor command reports and repairs runtime custody.
+payload on it. A doctor command reports and repairs runtime custody. The
+runtime is Bun or Python, chosen by what the tool is written in (see below).
 
 ### Alternatives considered
 
@@ -82,28 +124,62 @@ bundled JS on it. A doctor command reports and repairs runtime custody.
   the warm-Chrome fetch/detect/pin/cache/repair/doctor state machine — so it
   adds little new machinery.
 
+### The OS-integrated runtime is itself a choice: Bun vs Python
+
+The Bun-OS-integrated tier is named for Bun, but the tier is really "a real
+OS-capable runtime," and Bun is not the only candidate. **Python** is a
+first-class alternative: much OS-integration and agent/automation tooling is
+already written in it, and for a Python-authored tool, bootstrapping a pinned
+Python (or `uv`) is the natural custody path rather than translating to Bun.
+
+The tier's decision (bootstrap on first run, on the same rails) is
+**runtime-agnostic**: the pinned-binary manifest, checksum gate, cache, and
+self-proving bootstrap check work identically whether the resolved runtime is
+Bun or a Python/`uv` toolchain. So the OS-integrated tier splits into a
+sub-choice made per tool by what the tool is written in:
+
+- **Bun** when the tool is TypeScript/JavaScript and wants the same authoring
+  stack as the QuickJS tier (shared `runtime/src/`, one language).
+- **Python** when the tool is Python-native; bootstrap a pinned Python/`uv`
+  instead. Larger and with its own packaging model (wheels, venvs), but no
+  rewrite.
+
+Do not force a Python tool onto Bun (or vice versa) to unify the runtime —
+the bootstrap rails already absorb either. Pick the runtime the tool is
+written in; the distribution machinery does not care.
+
 ## Consequences
 
-- Zero-install-and-offline is preserved for category 1 and 2. For category
-  3 it becomes zero-install-after-first-warm: the first run needs network
-  to fetch the pinned runtime, and offline-first fails until warmed.
-- The first-run fetch downloads an executable; it must be checksum-pinned
-  per platform (mirroring `quickjs-assets.json`) and the fetch is a trust
-  boundary. A doctor command must surface runtime custody and repair paths.
+- Zero-install-and-offline is preserved for the QuickJS tier. The
+  OS-integrated tier becomes zero-install-after-first-warm: the first run
+  fetches the pinned runtime (Bun or Python), and offline-first fails until
+  warmed.
+- The first-run fetch downloads an executable/toolchain; it must be
+  checksum-pinned per platform (mirroring `quickjs-assets.json`) and the
+  fetch is a trust boundary. A doctor command must surface runtime custody
+  and repair paths.
 - The publishing-hardening machinery does not change: it carries a
-  bootstrapping category-3 plugin unmodified. Only the payload's runtime
-  marker and launcher differ.
-- Category-2 support (pure-JS npm libraries) requires a QuickJS host-shim
-  layer in `runtime/src/` for the missing globals (`crypto.getRandomValues`,
-  `TextEncoder`/`TextDecoder`, timers). Any shimmed library must pass the
-  four-platform distribution proof, and a `crypto` shim must bridge to real
-  entropy — never `Math.random`, which silently makes `nanoid`/`uuid`
+  bootstrapping OS-integrated plugin unmodified, Bun or Python. Only the
+  payload's runtime marker and launcher differ.
+- The QuickJS host-shim layer (in `runtime/src/`) supplies the missing Web
+  globals (`crypto.getRandomValues`, `TextEncoder`/`TextDecoder`, timers).
+  Any shimmed library must pass the four-platform distribution proof, and a
+  `crypto` shim must bridge to real entropy (e.g. `/dev/urandom` via
+  `qjs:std`) — never `Math.random`, which silently makes `nanoid`/`uuid`
   identifiers predictable.
+- The OS-integrated tier does **not** need a QuickJS-style four-platform
+  runtime proof: it does not ship the runtime, so runtime portability belongs
+  to Bun/Python, not this template. The template-owned check is instead a
+  **self-proving bootstrap** — an executable proof that resolves, installs to
+  a clean cache, checksum-verifies, runs the skill on the cached runtime, and
+  fails closed on a tampered checksum. The prototype demonstrates this: it
+  proves the mechanism by running it, not by documenting steps.
 
 ## Follow-up
 
-- Author the QuickJS host-shim layer for category 2, gated by
-  `prove:distribution` on all four targets.
-- Prototype the category-3 first-run bootstrap by mirroring
-  `quickjs-assets.json` for a pinned Bun and reusing the warm-Chrome custody
-  pattern, with a doctor command.
+- Author the QuickJS host-shim layer, gated by `prove:distribution` on all
+  four targets.
+- Productionize the OS-integrated bootstrap by mirroring
+  `quickjs-assets.json` for a pinned runtime (Bun and/or Python/`uv`) and
+  reusing the warm-Chrome custody pattern, with a doctor command and the
+  self-proving bootstrap check wired into CI.
