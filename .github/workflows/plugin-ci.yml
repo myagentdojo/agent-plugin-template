@@ -17,6 +17,7 @@ on:
   push:
     branches:
       - main
+      - "candidate/**"
   workflow_dispatch:
 
 permissions:
@@ -27,6 +28,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  canary-classification:
+    name: Hosted canary classification
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      required: ${{ steps.classify.outputs.required }}
+      triggers: ${{ steps.classify.outputs.triggers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Classify publishing-system paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          result="$(bun run ship:canary -- --classify --base "$BASE_SHA" --head "$HEAD_SHA" --json)"
+          printf '%s\n' "$result"
+          required="$(printf '%s\n' "$result" | jq -r '.canaries.required')"
+          triggers="$(printf '%s\n' "$result" | jq -c '.canaries.triggeringPaths')"
+          printf 'required=%s\n' "$required" >> "$GITHUB_OUTPUT"
+          printf 'triggers=%s\n' "$triggers" >> "$GITHUB_OUTPUT"
+
   compatibility:
     name: Compatibility (${{ matrix.target }})
     strategy:
@@ -71,6 +99,70 @@ jobs:
             dist/*.tar.gz
             dist/*.checksums.json
           if-no-files-found: error
+
+  hosted-canary-qualification:
+    name: Qualify hosted public and private Git canaries
+    if: needs.canary-classification.outputs.required == 'true'
+    needs:
+      - canary-classification
+      - package
+    runs-on: ubuntu-24.04
+    environment: hosted-canary-qualification
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Install native marketplace CLIs
+        run: bun add --global "@anthropic-ai/claude-code@latest" "@openai/codex@latest"
+      - name: Qualify immutable candidates
+        env:
+          CANARY_GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
+          CANARY_SSH_KNOWN_HOSTS: ${{ secrets.CANARY_SSH_KNOWN_HOSTS }}
+          CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test -n "$CANARY_GH_TOKEN"
+          test -n "$CANARY_SSH_KNOWN_HOSTS"
+          test -n "$CANARY_SSH_PRIVATE_KEY"
+          export GH_TOKEN="$CANARY_GH_TOKEN"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$CANARY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null' EXIT
+          ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"
+          git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
+          bun run ship:canary -- --execute --ref "$SOURCE_SHA" --json
+
+  hosted-canaries:
+    name: Hosted public and private Git canaries
+    if: always() && github.event_name == 'pull_request'
+    needs:
+      - canary-classification
+      - package
+      - hosted-canary-qualification
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Enforce conditional qualification
+        env:
+          CANARIES_REQUIRED: ${{ needs.canary-classification.outputs.required }}
+          CLASSIFICATION_RESULT: ${{ needs.canary-classification.result }}
+          HERMETIC_RESULT: ${{ needs.package.result }}
+          HOSTED_RESULT: ${{ needs.hosted-canary-qualification.result }}
+          TRIGGERING_PATHS: ${{ needs.canary-classification.outputs.triggers }}
+        run: |
+          test "$CLASSIFICATION_RESULT" = "success"
+          test "$HERMETIC_RESULT" = "success"
+          if [ "$CANARIES_REQUIRED" != "true" ]; then
+            printf 'Hosted canaries not required. Publishing-system triggers: %s\n' "$TRIGGERING_PATHS"
+            exit 0
+          fi
+          test "$HOSTED_RESULT" = "success"
+          printf 'Hosted public and private Git canaries passed for: %s\n' "$TRIGGERING_PATHS"
 
   attest:
     name: Attest main artifact
