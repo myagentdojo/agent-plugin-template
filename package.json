@@ -21,5 +21,9 @@
     "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:quickjs-ci && bun run prove:dx",
     "spike:quickjs": "bun run scripts/quickjs-spike.ts",
     "spike:quickjs:ci": "bun run scripts/quickjs-spike.ts --ci"
+  },
+  "dependencies": {
+    "nanoid": "^6.0.1",
+    "zod": "^4.4.3"
   }
 }
