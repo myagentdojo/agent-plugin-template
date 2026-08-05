@@ -351,6 +351,7 @@ test("initialized repository packages the configured plugin identity", () => {
 	const packaged = Bun.spawnSync({
 		cmd: ["bun", "run", "package"],
 		cwd: temporaryRoot,
+		env: { ...process.env, SOURCE_COMMIT: undefined, GITHUB_SHA: undefined },
 		stdout: "pipe",
 		stderr: "pipe",
 	})
