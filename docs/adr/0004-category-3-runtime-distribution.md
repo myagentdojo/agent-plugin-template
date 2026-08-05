@@ -115,14 +115,22 @@ runtime is Bun or Python, chosen by what the tool is written in (see below).
   for the common case, though it remains available where strict offline-first
   outweighs size.
 - **Require the runtime** as a documented prerequisite ("you need Bun"):
-  smallest artifact, simplest, but not zero-install. Correct for
-  developer-facing tools whose users already have Bun; wrong as the default
-  for broad end-user plugins.
-- **Bootstrap on first run** (chosen): small payload, near-full capability,
-  a one-time pinned fetch. It composes patterns this repo already owns —
-  the `quickjs-assets.json` checksum-pinned per-platform binary manifest and
-  the warm-Chrome fetch/detect/pin/cache/repair/doctor state machine — so it
-  adds little new machinery.
+  smallest artifact, zero overhead when the runtime is already present, but
+  it pushes an explicit install step onto the user and fails offline for a
+  runtime-less machine. Reasonable when the audience is known to have the
+  runtime (developer tools; Python where a system `python3` already exists);
+  the opt-out, not the default.
+- **Bootstrap on first run** (chosen default): small payload, near-full
+  capability, a one-time pinned fetch. Measured cost is small — a Bun
+  bootstrap is ~22 MB downloaded, ~60 MB cached, and **~3.3 s wall-clock**
+  cold (download + unzip + first run), incurred once and then a cache hit
+  for every later OS-integrated plugin at the same pinned version. That
+  three-second, invisible warm-up beats making the user find and install a
+  runtime, and it works on any machine, developer or not, with no
+  prerequisite and no dependency fight. It composes patterns this repo
+  already owns — the `quickjs-assets.json` checksum-pinned per-platform
+  binary manifest and the warm-Chrome fetch/detect/pin/cache/repair/doctor
+  state machine — so it adds little new machinery.
 
 ### The OS-integrated runtime is itself a choice: Bun vs Python
 
@@ -147,6 +155,19 @@ sub-choice made per tool by what the tool is written in:
 Do not force a Python tool onto Bun (or vice versa) to unify the runtime —
 the bootstrap rails already absorb either. Pick the runtime the tool is
 written in; the distribution machinery does not care.
+
+**Runtime implementation is distribution-neutral.** Bun's stable series is
+built in Zig on JavaScriptCore; a Zig-to-Rust rewrite (announced July 2026,
+memory-safety motivated) is in the canary channel but not yet the default.
+From the plugin-rails perspective this changes nothing: Bun is a single
+self-contained ~60 MB binary either way, and the tier boundary, bootstrap
+cost, and OS-capability answer are unaffected by the implementation
+language. The only consequence is operational — a Zig-built and a Rust-built
+Bun are different binaries with different checksums, so the pinned-runtime
+manifest must stay version-exact across that transition (it already is).
+On the Python side, `uv` (itself Rust) is the tool that de-risks the
+dependency story: it makes bootstrapping a pinned Python plus its wheels
+fast and reproducible, softening Python's venv/PEP-668 friction.
 
 ## Consequences
 
