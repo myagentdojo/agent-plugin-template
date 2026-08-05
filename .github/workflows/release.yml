@@ -357,6 +357,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_NAME: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir dist
+      - name: Download persisted publication candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=publication-candidate-${CANDIDATE_SHA}" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')
+          if [[ -z "$artifact_id" ]]; then
+            echo "Release requires the persisted publication candidate for ${CANDIDATE_SHA}." >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > publication-candidate.zip
+          unzip -p publication-candidate.zip candidate.json > persisted-candidate.json
       - name: Create or verify immutable tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -397,7 +411,8 @@ jobs:
           CHECKOUT_SHA="$checkout_sha" \
           TAG_SHA="$remote_tag_sha" \
           RELEASE_TARGET_SHA="$release_target_sha" \
-            bun run release:validate -- --repair --json
+          PUBLICATION_CANDIDATE_PATH=persisted-candidate.json \
+            bun run release:validate -- --repair --repository "$GITHUB_REPOSITORY" --json
       - name: Compare before adding or replacing release assets
         env:
           GH_TOKEN: ${{ github.token }}

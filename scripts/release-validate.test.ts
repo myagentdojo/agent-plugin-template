@@ -197,6 +197,7 @@ test("release validation rejects a duplicate changelog heading", () => {
 
 test("release workflow is pinned and publishes proven assets after validation", () => {
 	const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+	const finalReleaseJob = workflow.slice(workflow.indexOf("  release:\n"))
 	const actionReferences = [...workflow.matchAll(/uses: [^@\s]+@([^\s]+)/g)].map(
 		(match) => match[1],
 	)
@@ -232,6 +233,9 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("gh release download")
 	expect(workflow).toContain("sha256sum")
 	expect(workflow).toContain("bun run release:validate -- --repair")
+	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
+	expect(finalReleaseJob).toContain("PUBLICATION_CANDIDATE_PATH=persisted-candidate.json")
+	expect(finalReleaseJob).toContain('--repository "$GITHUB_REPOSITORY"')
 	expect(workflow).toContain("environment: release")
 	expect(workflow).toContain("gh attestation verify")
 	expect(workflow).toContain("actions/attest")
