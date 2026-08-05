@@ -1,0 +1,7 @@
+{
+  "_comment": "PROTOTYPE — closed skill registry. Skills select a runtime PROFILE by id; never a version/url/checksum/path. Adding the 21st skill = one entry here + regenerate launchers. A skill id absent from this catalog fails closed.",
+  "skills": {
+    "chrome-drive": { "entry": "skills/chrome-drive.js", "runtimeProfile": "bun" },
+    "live-fetch":   { "entry": "skills/live-fetch.js",   "runtimeProfile": "bun" }
+  }
+}

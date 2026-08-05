@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "_comment": "PROTOTYPE — one template-wide, version-exact runtime pin. Reviewed artifact; not build-regenerated. Per-platform url + archiveSha256 + executableSha256. For the prototype the darwin-arm64 'url' is a local path (transport abstracted); production uses the approved release URL.",
+  "profiles": {
+    "bun": {
+      "runtimeKind": "bun",
+      "version": "1.3.14",
+      "assets": {
+        "darwin-arm64": {
+          "url": "file:///opt/homebrew/Cellar/bun/1.3.14/bin/bun",
+          "archiveKind": "raw",
+          "executableSha256": "e0c90ec15d33363e6b70713d56bc3b2c7585c17f40a0fe0f8fd9305901d4e233",
+          "executableBytes": 63096576
+        }
+      }
+    }
+  }
+}
