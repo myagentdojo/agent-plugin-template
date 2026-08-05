@@ -37,14 +37,14 @@ Commit generated files with their source. Never hand-edit a generated manifest o
 For a public GitHub repository:
 
 ```sh
-claude plugin marketplace add OWNER/REPOSITORY@vX.Y.Z
+claude plugin marketplace add OWNER/REPOSITORY
 claude plugin install PLUGIN_NAME@PLUGIN_NAME
 ```
 
 For a private repository, configure Git credentials first. Claude accepts a GitHub shorthand, HTTPS Git URL, or SSH Git URL:
 
 ```sh
-claude plugin marketplace add git@github.com:OWNER/REPOSITORY.git#vX.Y.Z
+claude plugin marketplace add git@github.com:OWNER/REPOSITORY.git
 claude plugin install PLUGIN_NAME@PLUGIN_NAME
 ```
 
@@ -56,14 +56,14 @@ claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope project
 claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope local
 ```
 
-To move to a later release, replace `vX.Y.Z` with the new release tag. Remove the pinned marketplace entry, repeat the matching `marketplace add` command above with that tag, then reinstall the plugin:
+Claude caches both the marketplace and each semantic plugin version. Refresh the marketplace before updating the plugin:
 
 ```sh
-claude plugin marketplace remove PLUGIN_NAME
-claude plugin install PLUGIN_NAME@PLUGIN_NAME
+claude plugin marketplace update PLUGIN_NAME
+claude plugin update PLUGIN_NAME@PLUGIN_NAME
 ```
 
-Start a new session or run `/reload-plugins`. Review installed hooks before trusting the plugin source.
+Start a new session or run `/reload-plugins`. Review installed hooks before trusting each new plugin version.
 
 Official references: [plugin marketplaces](https://code.claude.com/docs/en/plugin-marketplaces), [plugins](https://code.claude.com/docs/en/plugins), and [plugin reference](https://code.claude.com/docs/en/plugins-reference).
 

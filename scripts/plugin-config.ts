@@ -55,14 +55,56 @@ function serialize(value: unknown): string {
 }
 
 function validateConfig(config: PluginConfig): void {
+	const strictSemver =
+		/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+	const codexCategories = new Set([
+		"Productivity",
+		"Creativity",
+		"Developer Tools",
+		"Business & Operations",
+		"Data & Analytics",
+		"Communication",
+		"Education & Research",
+		"Security",
+		"Finance",
+		"Healthcare",
+		"Travel",
+		"Entertainment",
+		"Other",
+	])
 	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.name) || config.name.length > 64) {
 		throw new Error("plugin name must be kebab-case and at most 64 characters")
 	}
-	if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(config.version)) {
+	if (!strictSemver.test(config.version)) {
 		throw new Error("plugin version must use semantic versioning")
 	}
 	if (!config.displayName.trim() || !config.description.trim() || !config.author.name.trim()) {
 		throw new Error("displayName, description, and author.name are required")
+	}
+	if (config.displayName.length > 30) {
+		throw new Error("displayName must be at most 30 characters for Codex directory submission")
+	}
+	if (config.author.name.length > 80) {
+		throw new Error("author.name must be at most 80 characters for Codex directory submission")
+	}
+	if (
+		!config.shortDescription.trim() ||
+		config.shortDescription.includes("\n") ||
+		config.shortDescription.length > 30
+	) {
+		throw new Error("shortDescription must be one non-empty line of at most 30 characters")
+	}
+	if (!config.longDescription.trim() || config.longDescription.length > 4_000) {
+		throw new Error("longDescription must be non-empty and at most 4000 characters")
+	}
+	if (!codexCategories.has(config.category)) {
+		throw new Error("category must be a supported Codex directory category")
+	}
+	if (
+		config.capabilities.length > 20 ||
+		config.capabilities.some((capability) => !capability.trim() || capability.length > 120)
+	) {
+		throw new Error("capabilities accepts at most 20 non-empty entries of at most 120 characters")
 	}
 	if (!config.repository.startsWith("https://")) {
 		throw new Error("repository must be an absolute HTTPS URL")
@@ -127,6 +169,7 @@ function claudeManifest(config: PluginConfig): GeneratedFile {
 		path: "plugin/.claude-plugin/plugin.json",
 		contents: serialize({
 			name: config.name,
+			displayName: config.displayName,
 			version: config.version,
 			description: config.description,
 			author: config.author,

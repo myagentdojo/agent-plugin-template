@@ -85,6 +85,7 @@ test("template user initializes both harness manifests from one metadata source"
 	)
 	expect(claudeManifest).toMatchObject({
 		name: "dojo-hello",
+		displayName: "Dojo Hello",
 		version: templateVersion,
 		skills: "./skills/",
 		hooks: "./hooks/claude/hooks.json",
