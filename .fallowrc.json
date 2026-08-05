@@ -1,4 +1,5 @@
 {
   "$schema": "https://docs.fallow.tools/config-schema.json",
-  "entry": ["scripts/*.ts", "runtime/src/bun-proof-adapter.ts", "runtime/src/quickjs-adapter.ts"]
+  "entry": ["scripts/*.ts", "runtime/src/bun-proof-adapter.ts", "runtime/src/quickjs-adapter.ts"],
+  "ignoreDependencies": ["qjs:std"]
 }

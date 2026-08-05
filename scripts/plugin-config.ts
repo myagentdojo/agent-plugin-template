@@ -9,7 +9,7 @@ export interface PluginConfig {
 	name: string
 	/** Human-readable plugin title. */
 	displayName: string
-	/** Strict semantic version embedded in Codex and release archives. */
+	/** Strict semantic version embedded in both native manifests and release archives. */
 	version: string
 	/** Shared summary used by both harness manifests. */
 	description: string
@@ -127,6 +127,7 @@ function claudeManifest(config: PluginConfig): GeneratedFile {
 		path: "plugin/.claude-plugin/plugin.json",
 		contents: serialize({
 			name: config.name,
+			version: config.version,
 			description: config.description,
 			author: config.author,
 			repository: config.repository,

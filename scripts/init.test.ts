@@ -5,6 +5,7 @@ import { basename, join, resolve } from "node:path"
 import { expect, test } from "bun:test"
 
 const root = resolve(import.meta.dir, "..")
+const templateVersion = JSON.parse(readFileSync(join(root, "plugin.config.json"), "utf8")).version
 const ignoredEntries = new Set([
 	".claude",
 	".dev",
@@ -61,7 +62,7 @@ test("template user initializes both harness manifests from one metadata source"
 		ok: true,
 		action: "initialized",
 		sideEffects: "repository-files-written",
-		plugin: { name: "dojo-hello", version: "0.1.0" },
+		plugin: { name: "dojo-hello", version: templateVersion },
 	})
 
 	const config = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
@@ -84,17 +85,17 @@ test("template user initializes both harness manifests from one metadata source"
 	)
 	expect(claudeManifest).toMatchObject({
 		name: "dojo-hello",
+		version: templateVersion,
 		skills: "./skills/",
 		hooks: "./hooks/claude/hooks.json",
 	})
-	expect(claudeManifest).not.toHaveProperty("version")
 
 	const codexManifest = JSON.parse(
 		readFileSync(join(temporaryRoot, "plugin", ".codex-plugin", "plugin.json"), "utf8"),
 	)
 	expect(codexManifest).toMatchObject({
 		name: "dojo-hello",
-		version: "0.1.0",
+		version: templateVersion,
 		skills: "./skills/",
 		hooks: "./hooks/codex/hooks.json",
 		interface: { displayName: "Dojo Hello" },
@@ -169,9 +170,9 @@ test("initialized repository packages the configured plugin identity", () => {
 	})
 	expect(packaged.exitCode, packaged.stderr.toString()).toBe(0)
 	const result = JSON.parse(packaged.stdout.toString().trim().split("\n").at(-1) ?? "")
-	expect(basename(result.archive)).toBe("dojo-hello-0.1.0.tar.gz")
+	expect(basename(result.archive)).toBe(`dojo-hello-${templateVersion}.tar.gz`)
 	const provenance = JSON.parse(readFileSync(result.provenance, "utf8"))
-	expect(provenance).toMatchObject({ plugin: "dojo-hello", version: "0.1.0" })
+	expect(provenance).toMatchObject({ plugin: "dojo-hello", version: templateVersion })
 })
 
 test("initialized repository development plan uses configured plugin identity", () => {

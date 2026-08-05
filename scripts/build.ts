@@ -9,18 +9,14 @@ const pluginRoot = join(root, "plugin")
 const outputDirectory = join(pluginRoot, "runtime")
 const pluginConfig = loadPluginConfig(root)
 
-const codexManifestPath = "plugin/.codex-plugin/plugin.json"
-const codexManifest = JSON.parse(readFileSync(join(root, codexManifestPath), "utf8"))
-if (codexManifest.version !== pluginConfig.version) {
-	throw new Error(`${codexManifestPath} version does not match plugin.config.json`)
-}
-
-const claudeManifestPath = "plugin/.claude-plugin/plugin.json"
-const claudeManifest = JSON.parse(readFileSync(join(root, claudeManifestPath), "utf8"))
-if ("version" in claudeManifest) {
-	throw new Error(
-		`${claudeManifestPath} must omit version so Git marketplace updates use the commit SHA`,
-	)
+for (const manifestPath of [
+	"plugin/.claude-plugin/plugin.json",
+	"plugin/.codex-plugin/plugin.json",
+]) {
+	const manifest = JSON.parse(readFileSync(join(root, manifestPath), "utf8"))
+	if (manifest.version !== pluginConfig.version) {
+		throw new Error(`${manifestPath} version does not match plugin.config.json`)
+	}
 }
 
 mkdirSync(outputDirectory, { recursive: true })
@@ -32,8 +28,10 @@ const result = await Bun.build({
 	format: "esm",
 	external: ["qjs:std"],
 	minify: true,
-	define: { PLUGIN_VERSION: JSON.stringify(pluginConfig.version) },
-	banner: "// Generated from runtime/src/. Edit source, then run bun run build.",
+	banner: `// Generated from runtime/src/. Edit source, then run bun run build.
+// x-release-please-start-version
+const PLUGIN_VERSION = ${JSON.stringify(pluginConfig.version)};
+// x-release-please-end`,
 })
 
 if (!result.success) {

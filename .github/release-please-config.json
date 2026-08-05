@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-component-in-tag": false,
+  "release-search-depth": 100,
+  "commit-search-depth": 500,
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "package-name": "agent-plugin",
+      "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        { "type": "feat", "section": "Features", "hidden": false },
+        { "type": "fix", "section": "Bug Fixes", "hidden": false },
+        { "type": "perf", "section": "Performance", "hidden": false },
+        { "type": "refactor", "section": "Refactoring", "hidden": false },
+        { "type": "docs", "section": "Documentation", "hidden": false },
+        { "type": "test", "section": "Tests", "hidden": true },
+        { "type": "ci", "section": "Continuous Integration", "hidden": true },
+        { "type": "chore", "section": "Maintenance", "hidden": true }
+      ],
+      "extra-files": [
+        { "type": "json", "path": "plugin.config.json", "jsonpath": "$.version" },
+        { "type": "json", "path": ".claude-plugin/marketplace.json", "jsonpath": "$.metadata.version" },
+        { "type": "json", "path": "plugin/.claude-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "plugin/.codex-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "generic", "path": "plugin/runtime/hello-world.js" }
+      ]
+    }
+  }
+}
