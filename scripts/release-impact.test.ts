@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
+
 import { describe, expect, test } from "bun:test"
 
 import {
@@ -6,6 +10,7 @@ import {
 } from "./release-impact"
 
 describe("release impact", () => {
+	const root = resolve(import.meta.dir, "..")
 	const nonReleasablePayloadChanges = [
 		["docs: explain the skill", "plugin/skills/hello-world/SKILL.md"],
 		["test: cover the hook", "plugin/hooks/claude/hooks.json"],
@@ -349,6 +354,47 @@ describe("release impact", () => {
 			category: "release_impact",
 		})
 		expect(result.stderr.toString()).toContain("release-impact:")
+	})
+
+	test("CLI classifies Git-backed changed files through the centralized projection policy", () => {
+		const repository = mkdtempSync(join(tmpdir(), "release-impact-git-"))
+		const run = (arguments_: string[]) =>
+			Bun.spawnSync({ cmd: arguments_, cwd: repository, stdout: "pipe", stderr: "pipe" })
+		for (const command of [
+			["git", "init", "--quiet"],
+			["git", "config", "user.name", "Release Impact Test"],
+			["git", "config", "user.email", "release-impact@example.invalid"],
+		]) expect(run(command).exitCode).toBe(0)
+		mkdirSync(join(repository, "runtime", "src"), { recursive: true })
+		writeFileSync(join(repository, "runtime", "src", "portable.ts"), "export const value = 1\n")
+		expect(run(["git", "add", "runtime/src/portable.ts"]).exitCode).toBe(0)
+		expect(run(["git", "commit", "--quiet", "-m", "base"]).exitCode).toBe(0)
+		const base = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		writeFileSync(join(repository, "runtime", "src", "portable.ts"), "export const value = 2\n")
+		expect(run(["git", "add", "runtime/src/portable.ts"]).exitCode).toBe(0)
+		expect(run(["git", "commit", "--quiet", "-m", "head"]).exitCode).toBe(0)
+		const head = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		const result = Bun.spawnSync({
+			cmd: [
+				process.execPath,
+				"run",
+				join(root, "scripts", "release-impact.ts"),
+				"--base",
+				base,
+				"--head",
+				head,
+			],
+			cwd: repository,
+			env: { ...process.env, PR_TITLE: "fix: update the portable runtime" },
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode, result.stderr.toString()).toBe(0)
+		expect(JSON.parse(result.stdout.toString())).toMatchObject({
+			ok: true,
+			changedPayloadPaths: ["runtime/src/portable.ts"],
+		})
 	})
 
 	test("CLI help exposes inputs, output, and side-effect posture", () => {

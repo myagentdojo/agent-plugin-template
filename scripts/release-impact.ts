@@ -245,7 +245,7 @@ function gitChangedFiles(base: string, head: string): ReleaseImpactChangedFile[]
 		.split("\0")
 		.filter(Boolean)
 	return changedPaths.map((path) => {
-		if (!releasePleaseProjectionPaths.has(path)) return { path }
+		if (!RELEASE_PROJECTION_PATH_SET.has(path)) return { path }
 		const before = gitOutput(["show", `${mergeBase}:${path}`], true)
 		const after = gitOutput(["show", `${head}:${path}`], true)
 		return {
