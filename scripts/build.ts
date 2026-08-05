@@ -1,16 +1,18 @@
 import { mkdirSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { loadPluginConfig } from "./plugin-config"
+
 const root = resolve(import.meta.dir, "..")
 const sourceRoot = join(root, "runtime", "src")
 const pluginRoot = join(root, "plugin")
 const outputDirectory = join(pluginRoot, "runtime")
-const pluginVersion = readFileSync(join(root, "runtime", "version.txt"), "utf8").trim()
+const pluginConfig = loadPluginConfig(root)
 
 const codexManifestPath = "plugin/.codex-plugin/plugin.json"
 const codexManifest = JSON.parse(readFileSync(join(root, codexManifestPath), "utf8"))
-if (codexManifest.version !== pluginVersion) {
-	throw new Error(`${codexManifestPath} version does not match runtime/version.txt`)
+if (codexManifest.version !== pluginConfig.version) {
+	throw new Error(`${codexManifestPath} version does not match plugin.config.json`)
 }
 
 const claudeManifestPath = "plugin/.claude-plugin/plugin.json"
@@ -30,6 +32,7 @@ const result = await Bun.build({
 	format: "esm",
 	external: ["qjs:std"],
 	minify: true,
+	define: { PLUGIN_VERSION: JSON.stringify(pluginConfig.version) },
 	banner: "// Generated from runtime/src/. Edit source, then run bun run build.",
 })
 

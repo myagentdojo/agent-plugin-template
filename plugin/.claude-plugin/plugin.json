@@ -4,6 +4,13 @@
   "author": {
     "name": "Prototype"
   },
+  "repository": "https://github.com/myagentdojo/agent-plugin-template",
+  "license": "MIT",
+  "keywords": [
+    "agent-plugin",
+    "bun",
+    "quickjs"
+  ],
   "skills": "./skills/",
   "hooks": "./hooks/claude/hooks.json"
 }

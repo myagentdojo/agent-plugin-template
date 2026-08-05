@@ -5,6 +5,13 @@
   "author": {
     "name": "Prototype"
   },
+  "repository": "https://github.com/myagentdojo/agent-plugin-template",
+  "license": "MIT",
+  "keywords": [
+    "agent-plugin",
+    "bun",
+    "quickjs"
+  ],
   "skills": "./skills/",
   "hooks": "./hooks/codex/hooks.json",
   "interface": {
@@ -13,7 +20,11 @@
     "longDescription": "A portability proof with shared skills and runtime code plus native Claude Code and Codex manifests and hooks.",
     "developerName": "Prototype",
     "category": "Developer Tools",
-    "capabilities": ["Read"],
-    "defaultPrompt": "Run the hello-world distribution proof."
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Run the hello-world distribution proof."
+    ]
   }
 }

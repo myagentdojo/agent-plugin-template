@@ -28,7 +28,7 @@ The runtime seam is `args + stdin + invocation id -> stdout + stderr + exit code
 | --- | --- | --- | --- | --- |
 | Skills | Yes | `skills/<name>/SKILL.md`; invoked as `/plugin:skill`; Claude-specific frontmatter extensions | `skills/<name>/SKILL.md`; explicit `$skill` or implicit selection | Author the open Agent Skills subset once |
 | Commands | No need | Legacy `commands/*.md` still works and behaves like skills | Not a plugin component | Use skills, not commands |
-| Hooks | Runtime only | `hooks/hooks.json` or manifest path; five handler types | `hooks/hooks.json` or manifest path; command handlers only today | Separate JSON declarations; call one launcher |
+| Hooks | Runtime only | `hooks/hooks.json` or manifest path; five handler types | `hooks/hooks.json` by default or a manifest path; command handlers only today | Separate JSON declarations; call one launcher |
 | Subagents | No | Plugin `agents/*.md` is supported | Codex has subagents, but the plugin manifest does not package an `agents` component | Add host-specific agents only when a workflow needs them |
 | MCP servers | Server can be shared | `.mcp.json` or manifest `mcpServers`; starts when enabled | `.mcp.json` or `mcpServers`; per-plugin enablement and approval policy | Share the MCP protocol/server; validate each host config |
 | LSP servers | No | `.lsp.json` or `lspServers` is a plugin component | Not listed in the Codex plugin manifest | Claude-only adapter |
@@ -109,6 +109,7 @@ Claude Code explicitly reloads skills, agents, hooks, MCP servers, and LSP serve
 - Share `plugin/skills/`, `plugin/bin/`, and the generated runtime.
 - Keep `plugin/hooks/codex/hooks.json` for Codex.
 - Keep `plugin/hooks/claude/hooks.json` for Claude Code.
+- Point each native manifest at its explicit hook path. Current Codex docs support manifest hook paths. The live dual-harness proof found that relying on the Codex default file caused Claude to load the wrong adapter, so this repo does not use `hooks/hooks.json`.
 - Keep both native manifests.
 - Package the exact `plugin/` contents. Exclude source, Git metadata, scripts, and development staging.
 
