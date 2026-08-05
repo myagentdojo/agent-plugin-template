@@ -6,7 +6,7 @@ test("production installation pins each marketplace checkout to a release tag", 
 	const readme = await Bun.file(readmeUrl).text()
 	const productionInstall = readme.slice(
 		readme.indexOf("## Install in Claude Code"),
-		readme.indexOf("## Develop locally"),
+		readme.indexOf("## Upgrade and roll back"),
 	)
 	const marketplaceAdds = productionInstall
 		.split("\n")
@@ -22,4 +22,26 @@ test("production installation pins each marketplace checkout to a release tag", 
 	expect(productionInstall).not.toContain("plugin marketplace update")
 	expect(productionInstall).not.toContain("plugin marketplace upgrade")
 	expect(productionInstall.match(/Remove the pinned marketplace entry/g)).toHaveLength(2)
+})
+
+test("release documentation names checksum evidence and exact repair identity", async () => {
+	const readme = await Bun.file(readmeUrl).text()
+	const release = readme.slice(readme.indexOf("## Release"), readme.indexOf("## Proof commands"))
+
+	expect(readme.toLowerCase()).not.toContain("provenance")
+	expect(readme).toContain("*.checksums.json")
+	expect(release).toContain("incomplete-publication repair")
+	expect(release).toContain("exact existing `vX.Y.Z` tag")
+	expect(release).toContain("This repairs an incomplete publication; it does not create a new release.")
+})
+
+test("Codex support boundary names only the proven client surfaces", async () => {
+	const readme = await Bun.file(readmeUrl).text()
+
+	expect(readme).toContain(
+		"Supported Codex surfaces: Codex CLI and Codex in the ChatGPT desktop app.",
+	)
+	expect(readme).toContain(
+		"This repository does not claim support for the IDE extension, Chat, mobile, or a universal Codex host.",
+	)
 })

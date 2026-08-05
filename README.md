@@ -11,6 +11,8 @@ Build one Git-distributed plugin for Claude Code and Codex.
 
 Consumers need Claude Code or Codex and Git access to the repository. They do not need Bun, Node.js, Python, npm, or a post-install download.
 
+The operator verification recipes also use a POSIX shell, `jq`, `awk`, and `diff`.
+
 ## Start a plugin repository
 
 Create a repository from this GitHub template, clone it, and install [Bun](https://bun.sh/docs/installation) for development. Then initialize the plugin identity once:
@@ -32,67 +34,208 @@ bun run prove:all
 
 Commit generated files with their source. Never hand-edit a generated manifest or `plugin/runtime/hello-world.js`.
 
+## Preflight a release tag
+
+Inspect a release before changing either client. Set `FETCH_URL` to the same Git transport the marketplace will use. A public repository can use HTTPS. A private repository needs durable Git credentials because foreground installation and later background refreshes run Git independently.
+
+```sh
+set -eu
+TAG=vX.Y.Z
+FETCH_URL=https://github.com/OWNER/REPOSITORY.git
+PREFLIGHT_ROOT=$(mktemp -d)
+git clone --filter=blob:none --no-checkout "$FETCH_URL" "$PREFLIGHT_ROOT/repository"
+REMOTE_SHA=$(git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG" | awk '{print $1}')
+test -n "$REMOTE_SHA"
+git -C "$PREFLIGHT_ROOT/repository" checkout --detach "$REMOTE_SHA"
+test "$(git -C "$PREFLIGHT_ROOT/repository" rev-parse HEAD)" = "$REMOTE_SHA"
+VERSION=${TAG#v}
+test "$(jq -r .version "$PREFLIGHT_ROOT/repository/plugin/.claude-plugin/plugin.json")" = "$VERSION"
+test "$(jq -r .version "$PREFLIGHT_ROOT/repository/plugin/.codex-plugin/plugin.json")" = "$VERSION"
+jq -e '.plugins[0].defaultEnabled == false' "$PREFLIGHT_ROOT/repository/.claude-plugin/marketplace.json"
+jq -e '.plugins[0].policy.installation == "AVAILABLE" and .plugins[0].policy.authentication == "ON_INSTALL"' "$PREFLIGHT_ROOT/repository/.agents/plugins/marketplace.json"
+test -z "$(git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin | awk '$1 == "120000"')"
+git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin > "$PREFLIGHT_ROOT/payload-inventory.txt"
+```
+
+For private SSH, verify GitHub's published host-key fingerprint, accept that key through an interactive SSH connection, and load the repository key before preflight:
+
+```sh
+ssh -T git@github.com
+ssh-keygen -F github.com
+ssh-add -l
+FETCH_URL=git@github.com:OWNER/REPOSITORY.git
+git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG"
+```
+
+GitHub's successful SSH authentication greeting may exit with status 1 because it does not provide shell access. Verify the account named by the greeting before continuing.
+
+For private HTTPS, configure a Git credential helper, then prove it can fetch the tag:
+
+```sh
+git config --get credential.helper
+FETCH_URL=https://github.com/OWNER/REPOSITORY.git
+git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG"
+```
+
+A token present only in an environment variable is insufficient. Do not continue until `git ls-remote` succeeds through the same SSH agent and known-hosts file, or the same HTTPS credential helper, that the client will inherit. Keep `$PREFLIGHT_ROOT`; it is the restoration and byte-comparison source if replacement fails.
+
 ## Install in Claude Code
+
+These first-install examples use the default `user` scope. Run the preflight first.
 
 For a public GitHub repository:
 
 ```sh
 claude plugin marketplace add OWNER/REPOSITORY@vX.Y.Z
-claude plugin install PLUGIN_NAME@PLUGIN_NAME
+claude plugin marketplace list --json > "$PREFLIGHT_ROOT/claude-marketplaces-after-add.json"
+claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope user
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-disabled.json"
+claude plugin enable PLUGIN_NAME@PLUGIN_NAME --scope user
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-active.json"
 ```
 
-For a private repository, configure Git credentials first. Claude accepts a GitHub shorthand, HTTPS Git URL, or SSH Git URL:
+For a private repository over SSH:
 
 ```sh
 claude plugin marketplace add git@github.com:OWNER/REPOSITORY.git#vX.Y.Z
-claude plugin install PLUGIN_NAME@PLUGIN_NAME
-```
-
-Use the scope that matches the team:
-
-```sh
+claude plugin marketplace list --json > "$PREFLIGHT_ROOT/claude-marketplaces-after-add.json"
 claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope user
-claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope project
-claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope local
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-disabled.json"
+claude plugin enable PLUGIN_NAME@PLUGIN_NAME --scope user
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-active.json"
 ```
 
-To move to a later release, replace `vX.Y.Z` with the new release tag. Remove the pinned marketplace entry, repeat the matching `marketplace add` command above with that tag, then reinstall the plugin:
+An HTTPS private source uses `https://github.com/OWNER/REPOSITORY.git#vX.Y.Z` after the credential-helper preflight. For `project` or `local`, append the same `--scope project` or `--scope local` to marketplace add, install, enable, uninstall, and marketplace remove. Never cross scopes during replacement.
+
+Inspect `claude-marketplaces-after-add.json` before installation. Confirm the marketplace name, pinned source, tag, scope, and host-selected snapshot match the preflight. Then verify the active install and its bytes:
 
 ```sh
-claude plugin marketplace remove PLUGIN_NAME
-claude plugin install PLUGIN_NAME@PLUGIN_NAME
+jq -e '.[] | select(.id == "PLUGIN_NAME@PLUGIN_NAME" and .scope == "user" and .version == "X.Y.Z" and .enabled == true)' "$PREFLIGHT_ROOT/claude-plugins-active.json"
+INSTALL_PATH=$(jq -r '.[] | select(.id == "PLUGIN_NAME@PLUGIN_NAME" and .scope == "user") | .installPath' "$PREFLIGHT_ROOT/claude-plugins-active.json")
+diff -qr "$PREFLIGHT_ROOT/repository/plugin" "$INSTALL_PATH"
 ```
 
-Start a new session or run `/reload-plugins`. Review installed hooks before trusting the plugin source.
+Generated Claude manifests install disabled by default. Claude Code clients older than `2.1.154` ignore `defaultEnabled: false`; use a supported client for this review-before-enable sequence. Start a new session or run `/reload-plugins` after verification. Claude automatic updates remain a user or team policy choice.
+
+The replacement recipe below preserves the scope and persistent data. Remove the pinned marketplace entry only after both target and restoration preflights pass.
 
 Official references: [plugin marketplaces](https://code.claude.com/docs/en/plugin-marketplaces), [plugins](https://code.claude.com/docs/en/plugins), and [plugin reference](https://code.claude.com/docs/en/plugins-reference).
 
 ## Install in Codex
 
-For a public GitHub repository:
+Supported Codex surfaces: Codex CLI and Codex in the ChatGPT desktop app. This repository does not claim support for the IDE extension, Chat, mobile, or a universal Codex host.
+
+Run the preflight first. For a public GitHub repository:
 
 ```sh
 codex plugin marketplace add OWNER/REPOSITORY --ref vX.Y.Z
-codex plugin add PLUGIN_NAME@PLUGIN_NAME
+codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-after-add.json"
+codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-add.json"
+codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-after-add.json"
 ```
 
-For a private repository, configure Git credentials first and use an HTTPS or SSH Git URL:
+For a private repository over SSH:
 
 ```sh
 codex plugin marketplace add git@github.com:OWNER/REPOSITORY.git --ref vX.Y.Z
-codex plugin add PLUGIN_NAME@PLUGIN_NAME
+codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-after-add.json"
+codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-add.json"
+codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-after-add.json"
 ```
 
-To move to a later release, replace `vX.Y.Z` with the new release tag. Remove the pinned marketplace entry, repeat the matching `marketplace add ... --ref vX.Y.Z` command above with that tag, then reinstall the plugin:
+An HTTPS private source uses `https://github.com/OWNER/REPOSITORY.git` with the same `--ref vX.Y.Z` after the credential-helper preflight. Codex has no Claude scope and does not use Claude's default-disabled installation behavior.
+
+Inspect the marketplace snapshot and installed plugin before starting a task:
 
 ```sh
-codex plugin marketplace remove PLUGIN_NAME
-codex plugin add PLUGIN_NAME@PLUGIN_NAME
+MARKETPLACE_ROOT=$(jq -r '.marketplaces[] | select(.name == "PLUGIN_NAME") | .root' "$PREFLIGHT_ROOT/codex-marketplaces-after-add.json")
+INSTALLED_PATH=$(jq -r .installedPath "$PREFLIGHT_ROOT/codex-plugin-add.json")
+test -d "$MARKETPLACE_ROOT"
+test -d "$INSTALLED_PATH"
+cmp "$PREFLIGHT_ROOT/repository/.agents/plugins/marketplace.json" "$MARKETPLACE_ROOT/.agents/plugins/marketplace.json"
+diff -qr "$PREFLIGHT_ROOT/repository/plugin" "$INSTALLED_PATH"
+jq -e '.installed[] | select(.pluginId == "PLUGIN_NAME@PLUGIN_NAME" and .version == "X.Y.Z")' "$PREFLIGHT_ROOT/codex-plugins-after-add.json"
 ```
 
-Start a fresh Codex task after installation or update. Open `/hooks`, inspect the exact command definitions, and trust them only if they match the installed plugin. A changed definition crosses the trust boundary again.
+Start an isolated inspection task with `codex -C "$PREFLIGHT_ROOT"`. Keep hooks skipped while they are untrusted. Open `/hooks`, compare the exact definitions and installed executable closure with the preflight checkout, then accept trust only for that definition. Plugin enablement and hook trust are separate states. Start a second fresh task after trust review and repeat the version and byte checks.
+
+The replacement recipe below preserves the marketplace source, ref, and prior `enabled` state. Remove the pinned marketplace entry only after target and restoration preflights pass.
 
 Official references: [build Codex plugins](https://developers.openai.com/plugins/build/plugins), [Codex plugins](https://learn.chatgpt.com/docs/plugins), and [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+
+## Upgrade and roll back
+
+An upgrade and a rollback use the same replacement operation. Set the target to the newer tag for an upgrade or the older tag for a rollback. First capture current JSON state. Run the detached preflight above for both the target tag and the current restoration tag. Stop before uninstalling anything if either tag, commit, credential path, policy, payload, prior cache, or removal authority cannot be proved. Managed, workspace-installed, or non-removable plugins require an administrator.
+
+### Claude Code replacement
+
+Record `SCOPE`, `PRIOR_CLAUDE_SOURCE`, `PRIOR_ENABLED`, and the prior active cache from the JSON snapshots. Set `TARGET_CLAUDE_SOURCE` to the exact public, SSH, or HTTPS source with its tag. Preserve the same scope throughout:
+
+```sh
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-before.json"
+claude plugin marketplace list --json > "$PREFLIGHT_ROOT/claude-marketplaces-before.json"
+claude plugin uninstall PLUGIN_NAME@PLUGIN_NAME --keep-data --scope "$SCOPE"
+claude plugin marketplace remove PLUGIN_NAME --scope "$SCOPE"
+claude plugin marketplace add "$TARGET_CLAUDE_SOURCE" --scope "$SCOPE"
+claude plugin marketplace list --json > "$PREFLIGHT_ROOT/claude-marketplaces-target.json"
+claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope "$SCOPE"
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-target-disabled.json"
+claude plugin enable PLUGIN_NAME@PLUGIN_NAME --scope "$SCOPE"
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-target-active.json"
+```
+
+Inspect the target marketplace JSON before install. After enablement, require the target version, the intended scope, the host-selected active cache path, and `diff -qr` equality with the target checkout. Ignore orphan cache directories that the host did not select.
+
+If any step after uninstall fails, restore before doing other work:
+
+```sh
+claude plugin uninstall PLUGIN_NAME@PLUGIN_NAME --keep-data --scope "$SCOPE" || true
+claude plugin marketplace remove PLUGIN_NAME --scope "$SCOPE" || true
+claude plugin marketplace add "$PRIOR_CLAUDE_SOURCE" --scope "$SCOPE"
+claude plugin install PLUGIN_NAME@PLUGIN_NAME --scope "$SCOPE"
+if test "$PRIOR_ENABLED" = true; then
+  claude plugin enable PLUGIN_NAME@PLUGIN_NAME --scope "$SCOPE"
+else
+  claude plugin disable PLUGIN_NAME@PLUGIN_NAME --scope "$SCOPE"
+fi
+claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-restored.json"
+```
+
+Verify the restored version, scope, active cache bytes, enabled state, and persistent plugin data. Never delete the persistent plugin data directory. Private background refresh uses the configured Git credential path; a fetch failure keeps the prior installed cache. Run `claude plugin marketplace update PLUGIN_NAME` for a manual same-source refresh, then inspect before replacement.
+
+### Codex replacement
+
+Capture marketplace and plugin JSON first. Record `PRIOR_CODEX_SOURCE`, `PRIOR_CODEX_REF`, and `PRIOR_ENABLED`. Preflight both the target and restoration refs before removal:
+
+```sh
+codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-before.json"
+codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-before.json"
+codex plugin remove PLUGIN_NAME@PLUGIN_NAME --json
+codex plugin marketplace remove PLUGIN_NAME --json
+codex plugin marketplace add "$TARGET_CODEX_SOURCE" --ref "$TARGET_CODEX_REF" --json > "$PREFLIGHT_ROOT/codex-marketplace-target-add.json"
+codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-target.json"
+codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-target-add.json"
+codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-target.json"
+```
+
+Inspect the marketplace JSON and installed root before plugin add. Then inspect the plugin JSON and installed path. Require the target source/ref, version, and byte equality with the detached target checkout.
+
+If any step after removal fails, restore the exact prior source and ref immediately:
+
+```sh
+codex plugin remove PLUGIN_NAME@PLUGIN_NAME --json || true
+codex plugin marketplace remove PLUGIN_NAME --json || true
+codex plugin marketplace add "$PRIOR_CODEX_SOURCE" --ref "$PRIOR_CODEX_REF" --json > "$PREFLIGHT_ROOT/codex-marketplace-restored-add.json"
+codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-restored-add.json"
+codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-restored.json"
+codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-restored.json"
+```
+
+Verify the restored source, ref, version, cache bytes, and enabled state. Codex CLI currently has no documented plugin enable/disable subcommand; restore a differing enabled state in the Codex plugin settings and confirm it with `codex plugin list --json` before continuing.
+
+For the target install, start an isolated task with hooks skipped, review `/hooks`, restore the prior enabled state, then start a second fresh task. A version, hook command, launcher, runtime, or QuickJS executable change invalidates prior hook trust and requires another review.
+
+`codex plugin marketplace upgrade PLUGIN_NAME` is the documented explicit CLI operation for refreshing the configured Git snapshot. A pinned immutable tag should resolve to the same bytes. Automatic Codex marketplace refresh is unspecified; never rely on it to move or restore a release.
 
 ## Develop locally
 
@@ -178,7 +321,7 @@ Use [CONTEXT.md](CONTEXT.md) for canonical language. The architecture rationale 
 
 ## Pull requests and CI
 
-Use a Conventional Commit PR title. The title becomes the squash commit and drives release notes:
+Use a Conventional Commit PR title. The title becomes the normal PR's squash commit and drives release notes:
 
 ```text
 feat: add a portable command
@@ -186,7 +329,9 @@ fix(claude): correct hook matching
 docs: clarify private installation
 ```
 
-`feat` advances the minor version. `fix` and `perf` advance the patch version. A `!` or `BREAKING CHANGE` advances the major version. Documentation and maintenance changes appear only when configured as visible changelog sections.
+Installable payload changes require a releasable title: `feat`, `fix`, `perf`, or any valid Conventional Commit type with `!` for a breaking release. A payload-changing `refactor`, `docs`, `test`, `ci`, `build`, or `chore` title fails the `Release impact` check unless it uses `!`. Documentation-, test-, and CI-only changes are exempt because they do not change the installed payload. The pure Release Please version projection is also exempt.
+
+`feat` advances the minor version. `fix` and `perf` advance the patch version. `!` advances the major version. Documentation and maintenance changes appear only when configured as visible changelog sections.
 
 Before opening a PR:
 
@@ -197,7 +342,7 @@ bun run release:validate
 bun run prove:all
 ```
 
-Hosted CI runs QuickJS natively on Linux x64, Linux arm64, macOS arm64, and macOS x64. It then creates the deterministic archive and provenance JSON. Public `main` artifacts receive GitHub artifact attestation. User-owned private repositories retain provenance JSON and skip the unsupported attestation job.
+Hosted CI runs QuickJS natively on Linux x64, Linux arm64, macOS arm64, and macOS x64. It then creates the deterministic archive and `*.checksums.json`. The checksums JSON contains `repository`, `sourceCommit`, `tag`, `plugin`, `version`, `archive`, `archiveBytes`, `archiveSha256`, and an `evidence` note. It is integrity evidence for the named archive bytes, not independent publisher or builder authenticity. Public `main` artifacts receive GitHub artifact attestation. User-owned private repositories retain the checksums JSON and skip the unsupported attestation job.
 
 ### Optional Codex review gate
 
@@ -207,38 +352,68 @@ Enable Codex code review for the repository before activating the required statu
 
 ## Release
 
-Normal PRs merge into `main` without publishing. Release Please keeps one generated release PR that accumulates releasable commits.
+Normal PRs merge into `main` without publishing. Each push is classified as release-PR maintenance, publication, or incomplete-publication repair. Release Please only maintains one generated release PR that accumulates releasable commits. Its configuration sets `skip-github-release: true`; it never creates the version tag or GitHub Release.
 
 ```mermaid
 flowchart LR
     change["Conventional PR merged"] --> releasePR["Generated release PR"]
     releasePR --> review["Review version and CHANGELOG"]
-    review --> merge["Merge release PR"]
-    merge --> proof["Four-platform and distribution proof"]
-    proof --> publish["Tag, GitHub Release, package, provenance"]
+    review --> merge["Two-parent merge into main"]
+    merge --> admit["Admit and persist one candidate SHA"]
+    admit --> proof["Proof pinned to candidate SHA"]
+    proof --> publish["Immutable tag, GitHub Release, archive, checksums"]
 ```
 
 ### One-time GitHub setup
 
-1. Open **Settings → Actions → General → Workflow permissions**.
-2. Keep the default workflow permission read-only; the release job requests narrowly scoped write permissions.
-3. Allow GitHub Actions to create and approve pull requests.
-4. Enable squash merging and keep the enforced Conventional Commit PR title.
-5. Protect `main` and require the plugin CI and title checks for normal PRs.
+1. Open **Settings → Actions → General → Workflow permissions**. Keep the default workflow permission read-only and allow GitHub Actions to create and approve pull requests.
+2. Enable squash merging for normal PRs and merge commits for release PRs. Publication admits only a two-parent release-PR merge commit.
+3. Protect `main`. Require `Conventional Commit title`, `Release impact`, all four `Compatibility` checks, and `Deterministic package`.
+4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
+5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
+6. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
+7. Enable release automation only after readiness reports `READY`.
 
-The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflow runs caused by that token, so the release workflow proves a merged release PR before it creates a tag. For strict pre-merge checks on the generated release PR, add a fine-grained token or GitHub App token as the `RELEASE_PLEASE_TOKEN` repository secret. Grant only repository contents, pull requests, and issues write access.
+The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, required checks, Actions permissions, tag ruleset, or workflow authority cannot be proved.
+
+The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflow runs caused by that token, so the release workflow proves a merged release PR before publication. For strict pre-merge checks on the generated release PR, add a fine-grained token or GitHub App token as `RELEASE_PLEASE_TOKEN`. Grant only repository contents, pull requests, and issues write access.
 
 ### Publish a release
 
 1. Merge normal PRs with valid Conventional Commit titles.
-2. Wait for the `Release` workflow to create or update the release PR.
-3. Confirm the first release is `v0.1.0`; review its semantic version and generated `CHANGELOG.md`.
-4. Merge the release PR when the batch is ready.
-5. Wait for the `Release` workflow to validate metadata, prove the four-platform payload, reject generated drift, create `vX.Y.Z`, create the GitHub Release, and attach the deterministic archive plus provenance JSON.
+2. Wait for the `Release` workflow's maintenance path to create or update the release PR. No tag or GitHub Release is created here.
+3. Confirm the first release is `v0.1.0`; review the proposed semantic version, exact version projection, and generated `CHANGELOG.md`.
+4. Merge the release PR into `main` with a merge commit. Do not squash it.
+5. Wait for the workflow to admit exactly one merged release PR bound to `github.sha`: base `main`, configured Release Please automation identity, two parents, and only the allowed version projection.
+6. Confirm the workflow persisted `publication-candidate-<SHA>` before proof and checked out that candidate SHA. Later movement of `main` does not change the candidate.
+7. Wait for metadata validation, four-platform proof, deterministic packaging, and generated-drift rejection.
+8. Approve the protected `release` environment. The workflow creates `vX.Y.Z` explicitly at the candidate SHA, verifies the remote tag target, then creates the GitHub Release with `--verify-tag --target <candidate-sha>`.
+9. Confirm the Release contains the deterministic archive and `*.checksums.json`. For a public repository, confirm the archive attestation.
 
 Do not hand-edit versions or `CHANGELOG.md`. Do not create the tag first. Do not publish to npm.
 
-If the tag and GitHub Release exist but asset upload or attestation failed, run the `Release` workflow manually with `release_tag` set to the exact existing `vX.Y.Z` tag. The workflow checks out that tag, repeats the full proof, uploads the archive and provenance with `--clobber`, and recreates the public attestation. Leave the input empty during normal operation.
+### Repair an incomplete publication
+
+Manual dispatch is repair-only. It requires `release_tag` set to the exact existing `vX.Y.Z` tag; there is no empty-input normal mode. This repairs an incomplete publication; it does not create a new release.
+
+Start a compare-before-write repair with mismatched replacement disabled:
+
+```sh
+gh workflow run Release \
+  --repo OWNER/REPOSITORY \
+  --ref main \
+  -f release_tag=vX.Y.Z \
+  -f replace_mismatched_assets=false
+```
+
+The workflow resolves the existing immutable tag, checks out its commit, validates any existing GitHub Release target, and repeats the complete proof. It compares each archive and checksums asset before writing:
+
+- Leave matching assets untouched.
+- Add missing assets.
+- Fail closed on a mismatched asset.
+- Never move or recreate the tag at another commit.
+
+If a mismatched asset is confirmed as the incomplete publication defect, rerun the same exact tag with `replace_mismatched_assets=true`. Required reviewers on the protected `release` environment authorize that same-tag replacement. The workflow uses `--clobber` only in this approved repair state. A missing public attestation is added after the archive matches.
 
 Before the first release, `.github/.release-please-manifest.json` stays empty so Release Please bootstraps `v0.1.0`. After that release, the release configuration synchronizes:
 
@@ -262,7 +437,7 @@ For a public repository, verify the release archive attestation:
 gh attestation verify dist/PLUGIN_NAME-X.Y.Z.tar.gz --repo OWNER/REPOSITORY
 ```
 
-For a private user-owned repository, compare the SHA-256 value in the attached provenance JSON with the downloaded archive.
+For a private user-owned repository, compare the downloaded archive with `archiveSha256` in the attached checksums JSON. This proves byte integrity against that file; it does not independently authenticate the publisher or builder.
 
 Release machinery is based on [Release Please](https://github.com/googleapis/release-please), with a human-reviewed standing PR like Every's compound-engineering workflow. This single-plugin template additionally generates a committed changelog, validates every version surface, pins Actions to full commit SHAs, proves the payload before tagging, and attaches the deterministic package. See the [reviewed versioned release ADR](docs/adr/0003-reviewed-versioned-releases.md) for the publication boundary.
 
@@ -279,14 +454,22 @@ Release machinery is based on [Release Please](https://github.com/googleapis/rel
 
 ## Public and private canaries
 
-After changes merge, run from a clean checkout of `origin/main`:
+Public and private Git-repository canaries qualify publishing-system changes only. They are not required for every recipient plugin release. CI classifies the owned release, package, install-proof, readiness, and canary paths. For a manual qualification after merge, run from a clean checkout of the exact `origin/main` commit:
 
 ```sh
-bun run ship:canary -- --dry-run
-bun run ship:canary -- --execute
+bun run ship:canary -- --dry-run --ref origin/main
+bun run ship:canary -- --execute --ref origin/main
 ```
 
-The command verifies GitHub identity, target visibility and lineage, no tracked changes, and generated manifests. Execute mode creates missing public and private recipients without starter commits, performs fast-forward-only pushes, and waits for both hosted workflows. It never force-pushes or rewrites recipient history.
+The command binds the active `gh` login and the real SSH or HTTPS Git transport identity to `plugin.config.json`, verifies target visibility and lineage, checks the exact source SHA and generated manifests, and uses `refs/heads/candidate/<source-sha>`. Each candidate ref is unique and immutable: retry may reuse only the same ref at the same SHA. Execute mode publishes the candidate ref, waits for hosted CI, then installs and compares the native Claude and Codex caches in both the public and private repositories. It never force-pushes, deletes, or rewrites candidate history.
+
+These canaries prove this repository's Git publishing transport and native Git-marketplace installation path. They do not validate or claim OpenAI universal-directory ZIP acceptance, review, approval, or publication.
+
+## Distribution boundaries
+
+- **Implemented Git marketplace:** deterministic `tar.gz`, `*.checksums.json`, optional public GitHub attestation, pinned public/private Git sources, and public/private Git canaries.
+- **Deferred OpenAI universal directory:** separate public ZIP, assets, publisher identity, portal submission, review, approval, and publication. Passing the generated directory-readiness text subset does not complete any of these steps.
+- **Deferred Anthropic `claude-community`:** separate submission form, safety review, and catalog commit-SHA pinning. This repository does not submit or approve that catalog entry.
 
 ## Current boundaries
 
@@ -295,4 +478,5 @@ The command verifies GitHub identity, target visibility and lineage, no tracked 
 - A future dependency on `Bun.*`, `node:*`, native addons, or unsupported Web APIs requires a fresh runtime decision and compatibility proof.
 - Claude reloads a direct development plugin in the existing session. Codex needs a staged reinstall and fresh task.
 - Hook declarations stay physically separate. A shared default `hooks/hooks.json` previously caused cross-harness auto-discovery.
+- Managed, workspace-installed, or non-removable plugins require administrator replacement or rollback.
 - Vendor plugin specifications change. Recheck the linked official documentation when manifests, hooks, trust, or reload behavior changes.
