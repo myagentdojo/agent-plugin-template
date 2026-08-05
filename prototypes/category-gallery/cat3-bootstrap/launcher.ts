@@ -1,44 +1,74 @@
 // PROTOTYPE — throwaway. Category 3 bootstrap launcher (ADR 0004 Option B).
-// Resolve a pinned Bun runtime into a cache (reuse-if-present, else fetch),
-// then run the OS-integrated skill on it. This proves the BOOTSTRAP MECHANISM;
-// the actual network fetch is stubbed (marked) — a production version would
-// download a checksum-pinned Bun like quickjs-assets.json pins qjs.
+// Proves the FULL custody mechanism hermetically: resolve -> install into a
+// clean cache -> checksum-verify against a pinned manifest -> run the skill on
+// the CACHED runtime (not the ambient one). Only the network transport (where
+// the bytes come from) is abstracted behind `acquire`, so the proof never
+// depends on a live download.
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, chmodSync } from "node:fs"
 import { join } from "node:path"
-import { homedir } from "node:os"
+import { createHash } from "node:crypto"
 
-interface RuntimePin {
+export interface RuntimePin {
 	name: string
 	version: string
-	// In production: per-platform URL + sha256, mirroring plugin/runtime/quickjs-assets.json.
+	platform: string // e.g. darwin-arm64
+	sha256: string
+	// Production: a URL. Prototype: a local path to the pinned executable bytes.
 	source: string
 }
 
-const pin: RuntimePin = {
-	name: "bun",
-	version: "pinned-vX.Y.Z",
-	source: "https://bun.sh/download (checksum-pinned per platform in production)",
+function currentPlatform(): string {
+	const arch = process.arch === "arm64" ? "arm64" : "x64"
+	return `${process.platform}-${arch}`
 }
 
-const cacheDir = join(homedir(), ".cache", "category-gallery-runtime")
-mkdirSync(cacheDir, { recursive: true })
+function sha256File(path: string): string {
+	return createHash("sha256").update(readFileSync(path)).digest("hex")
+}
 
-function resolveRuntime(): { path: string; origin: "reused-present" | "fetched-pinned" } {
-	// 1) Reuse an already-present runtime if custody can be proven.
-	const present = spawnSync("bun", ["--version"], { encoding: "utf8" })
-	if (present.status === 0) {
-		return { path: "bun", origin: "reused-present" }
+/**
+ * Resolve the pinned runtime into a clean cache and verify its checksum.
+ * Reuses an already-cached, checksum-matching binary; otherwise acquires the
+ * bytes (via the injected transport), verifies, and caches them. Fails closed
+ * on a checksum mismatch — a corrupted or wrong binary never runs.
+ */
+export function bootstrapRuntime(
+	pin: RuntimePin,
+	cacheDir: string,
+	acquire: (pin: RuntimePin, dest: string) => void,
+): { runtimePath: string; origin: "cache-hit" | "acquired" } {
+	mkdirSync(cacheDir, { recursive: true })
+	const cached = join(cacheDir, `${pin.name}-${pin.version}-${pin.platform}`)
+
+	if (existsSync(cached) && sha256File(cached) === pin.sha256) {
+		return { runtimePath: cached, origin: "cache-hit" }
 	}
-	// 2) Otherwise fetch the pinned runtime into the cache (STUBBED here).
-	//    Production: download pin.source, verify sha256, chmod +x, cache it.
-	throw new Error(
-		`bootstrap: no runtime present; would fetch pinned ${pin.name}@${pin.version} into ${cacheDir} and verify its checksum`,
-	)
+
+	acquire(pin, cached) // transport: copy/download the pinned bytes into place
+	const got = sha256File(cached)
+	if (got !== pin.sha256) {
+		throw new Error(`bootstrap: checksum mismatch for ${pin.name}@${pin.version} (${pin.platform}): expected ${pin.sha256}, got ${got}`)
+	}
+	chmodSync(cached, 0o755)
+	return { runtimePath: cached, origin: "acquired" }
 }
 
-const skill = join(import.meta.dir, "skill.ts")
-const runtime = resolveRuntime()
-console.log(`[bootstrap] runtime=${pin.name}@${pin.version} origin=${runtime.origin} cache=${cacheDir}`)
-const run = spawnSync(runtime.path, ["run", skill], { encoding: "utf8", stdio: "inherit" })
-process.exit(run.status ?? 1)
+// CLI entry: bootstrap using the PRESENT bun as the pinned source (real bytes,
+// real checksum), into a scratch cache, then run the OS-integrated skill on it.
+if (import.meta.main) {
+	const ambientBun = spawnSync("which", ["bun"], { encoding: "utf8" }).stdout.trim()
+	if (!ambientBun) throw new Error("no bun found to pin for the prototype")
+	const pin: RuntimePin = {
+		name: "bun",
+		version: spawnSync(ambientBun, ["--version"], { encoding: "utf8" }).stdout.trim(),
+		platform: currentPlatform(),
+		sha256: sha256File(ambientBun),
+		source: ambientBun,
+	}
+	const cacheDir = join(process.env.CAT3_CACHE ?? join(import.meta.dir, ".runtime-cache"))
+	const { runtimePath, origin } = bootstrapRuntime(pin, cacheDir, (p, dest) => copyFileSync(p.source, dest))
+	console.log(`[bootstrap] ${pin.name}@${pin.version} ${pin.platform} origin=${origin} sha256=${pin.sha256.slice(0, 12)}… cache=${cacheDir}`)
+	const run = spawnSync(runtimePath, ["run", join(import.meta.dir, "skill.ts")], { encoding: "utf8", stdio: "inherit" })
+	process.exit(run.status ?? 1)
+}

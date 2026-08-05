@@ -1,1 +1,3 @@
 .out/
+.runtime-cache/
+cat3-bootstrap/.runtime-cache/

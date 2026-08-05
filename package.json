@@ -20,7 +20,8 @@
     "prove:quickjs-ci": "bun run scripts/prove-quickjs-ci.ts",
     "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:quickjs-ci && bun run prove:dx",
     "spike:quickjs": "bun run scripts/quickjs-spike.ts",
-    "spike:quickjs:ci": "bun run scripts/quickjs-spike.ts --ci"
+    "spike:quickjs:ci": "bun run scripts/quickjs-spike.ts --ci",
+    "prove:cat3-bootstrap": "bun run prototypes/category-gallery/cat3-bootstrap/prove.ts"
   },
   "dependencies": {
     "nanoid": "^6.0.1",
