@@ -30,6 +30,7 @@ function canaryFixture(): { temporaryRoot: string; fakeBin: string; log: string 
 			"My Agent Dojo",
 			"--repository",
 			"https://github.com/myagentdojo/dojo-hello",
+			"--force",
 		],
 		cwd: temporaryRoot,
 		stdout: "pipe",
