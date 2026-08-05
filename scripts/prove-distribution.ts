@@ -7,7 +7,11 @@ import {
 } from "node:fs"
 import { join, resolve } from "node:path"
 
-import { PLUGIN_DIRECTORY, pluginPayloadInventory } from "./plugin-files"
+import {
+	directoryArchiveEntries,
+	PLUGIN_DIRECTORY,
+	pluginPayloadInventory,
+} from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
@@ -87,15 +91,7 @@ for (const required of [
 ]) {
 	if (!entries.includes(required)) throw new Error(`package is missing ${required}`)
 }
-const expectedEntrySet = new Set([`${packageName}/`])
-for (const relativePath of inventory) {
-	const segments = relativePath.split("/")
-	for (let index = 1; index < segments.length; index += 1) {
-		expectedEntrySet.add(`${packageName}/${segments.slice(0, index).join("/")}/`)
-	}
-	expectedEntrySet.add(`${packageName}/${relativePath}`)
-}
-const expectedEntries = [...expectedEntrySet].sort((left, right) => left.localeCompare(right))
+const expectedEntries = directoryArchiveEntries(join(root, PLUGIN_DIRECTORY), packageName)
 if (JSON.stringify(entries) !== JSON.stringify(expectedEntries)) {
 	throw new Error(
 		`package entries do not match plugin inventory:\nexpected ${JSON.stringify(expectedEntries)}\nreceived ${JSON.stringify(entries)}`,

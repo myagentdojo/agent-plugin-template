@@ -18,6 +18,7 @@ import {
 	assertReplacementAdmission,
 	codexHookTrustEvidence,
 	hostedMarketplaceSources,
+	nativeHarnessEnvironment,
 	proveHarnessInstall,
 	redactTemporaryEvidencePath,
 } from "./prove-harness-install"
@@ -66,6 +67,26 @@ test("release proof requires both native harness CLIs", () => {
 		"bun run scripts/prove-harness-install.ts",
 	)
 	expect(packageJson.scripts["prove:all"]).toContain("prove:harness-install -- --require-native")
+})
+
+test("native harness commands receive no publication credentials", () => {
+	const environment = nativeHarnessEnvironment({
+		PATH: "/usr/bin:/bin",
+		HOME: "/tmp/home",
+		SSH_AUTH_SOCK: "/tmp/agent.sock",
+		GH_TOKEN: "secret",
+		GITHUB_TOKEN: "secret",
+		CANARY_GH_TOKEN: "secret",
+		CANARY_SSH_PRIVATE_KEY: "secret",
+		RELEASE_PLEASE_TOKEN: "secret",
+	})
+
+	expect(environment).toEqual({
+		PATH: "/usr/bin:/bin",
+		HOME: "/tmp/home",
+		SSH_AUTH_SOCK: "/tmp/agent.sock",
+	})
+	expect(JSON.stringify(environment)).not.toContain("secret")
 })
 
 test.each([

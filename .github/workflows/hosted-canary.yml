@@ -84,6 +84,7 @@ jobs:
           eval "$(ssh-agent -s)"
           trap 'ssh-agent -k >/dev/null' EXIT
           ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"
+          unset CANARY_GH_TOKEN CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY
           git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
           bun run ship:canary -- --execute --source-root candidate --ref "$SOURCE_SHA" --json
 

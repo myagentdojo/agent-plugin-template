@@ -27,10 +27,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ inputs.release_tag || github.sha }}
-  cancel-in-progress: false
-
 jobs:
   resolve:
     name: Resolve publication state
@@ -243,6 +239,9 @@ jobs:
     name: Maintain Release Please PR only
     if: needs.resolve.outputs.mode == 'maintenance'
     needs: resolve
+    concurrency:
+      group: release-maintenance
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -345,7 +344,8 @@ jobs:
             "$checksums"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-candidate-${{ github.run_id }}
+          overwrite: true
           path: |
             dist/*.tar.gz
             dist/*.checksums.json
@@ -357,6 +357,9 @@ jobs:
     needs:
       - resolve
       - package
+    concurrency:
+      group: release-publication-${{ needs.resolve.outputs.release_tag }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -375,7 +378,7 @@ jobs:
       - name: Download proven release candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          ARTIFACT_NAME: release-candidate-${{ github.run_id }}
         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir dist
       - name: Download persisted publication candidate
         env:
@@ -399,8 +402,20 @@ jobs:
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
-          if [[ "$MODE" == "publish" ]]; then
-            git tag "$RELEASE_TAG" "$CANDIDATE_SHA"
+          local_tag_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)
+          remote_tag_sha=$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')
+          if [[ -n "$remote_tag_sha" && "$remote_tag_sha" != "$CANDIDATE_SHA" ]]; then
+            echo "Immutable remote tag does not target the proven candidate SHA." >&2
+            exit 1
+          fi
+          if [[ -z "$remote_tag_sha" && "$MODE" == "publish" ]]; then
+            if [[ -n "$local_tag_sha" && "$local_tag_sha" != "$CANDIDATE_SHA" ]]; then
+              echo "Local release tag does not target the proven candidate SHA." >&2
+              exit 1
+            fi
+            if [[ -z "$local_tag_sha" ]]; then
+              git tag "$RELEASE_TAG" "$CANDIDATE_SHA"
+            fi
             git push origin "refs/tags/${RELEASE_TAG}"
           fi
           remote_tag_sha=$(git ls-remote --refs origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')

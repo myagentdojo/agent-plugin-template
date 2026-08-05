@@ -69,9 +69,18 @@ export function isReleaseProjectionVersionOnlyChange(
 		return version !== undefined && (expectedVersion === undefined || version === expectedVersion)
 	}
 	if (path === "plugin/hooks/codex/hooks.json") {
-		const normalize = (contents: string): string =>
-			contents.replace(/--plugin-version\s+[^"\s]+/g, "--plugin-version VERSION")
-		return normalize(before) === normalize(after)
+		const normalize = (contents: string): string | undefined => {
+			const versionProjection = new RegExp(
+				`--plugin-version\\s+${SEMANTIC_VERSION}(?=\\s+# x-release-please-version)`,
+				"g",
+			)
+			if (!versionProjection.test(contents)) return undefined
+			versionProjection.lastIndex = 0
+			return contents.replace(versionProjection, "--plugin-version VERSION")
+		}
+		const normalizedBefore = normalize(before)
+		const normalizedAfter = normalize(after)
+		return normalizedBefore !== undefined && normalizedBefore === normalizedAfter
 	}
 	if (path === "plugin/runtime/hello-world.js") {
 		const normalize = (contents: string): string =>

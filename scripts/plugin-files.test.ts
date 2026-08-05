@@ -5,7 +5,11 @@ import { join } from "node:path"
 
 import { afterEach, expect, test } from "bun:test"
 
-import { copyPluginPayload, pluginPayloadInventory } from "./plugin-files"
+import {
+	copyPluginPayload,
+	directoryArchiveEntries,
+	pluginPayloadInventory,
+} from "./plugin-files"
 
 const temporaryRoots: string[] = []
 
@@ -106,6 +110,16 @@ test("copy rejects a Unix-domain socket before copying payload content", async (
 	}
 })
 
+test("copy rejects an empty payload directory instead of silently dropping it", () => {
+	const fixture = pluginFixture()
+	fileSystem.mkdirSync(join(fixture.pluginRoot, "empty"))
+
+	expect(() => copyPluginPayload(fixture.sourceRoot, fixture.targetRoot)).toThrow(
+		/empty.*empty directory/,
+	)
+	expect(fileSystem.existsSync(fixture.targetRoot)).toBe(false)
+})
+
 test("copy preserves every regular file path, mode, and byte", () => {
 	const { sourceRoot, pluginRoot, targetRoot } = pluginFixture()
 	fileSystem.chmodSync(join(pluginRoot, "a-safe.txt"), 0o640)
@@ -142,4 +156,19 @@ test("inventory includes an unexpected regular file", () => {
 	fileSystem.writeFileSync(join(pluginRoot, "unexpected.extra"), "include me\n")
 
 	expect(pluginPayloadInventory(sourceRoot)).toEqual(["a-safe.txt", "unexpected.extra"])
+})
+
+test("archive order keeps each directory beside its descendants", () => {
+	const { pluginRoot } = pluginFixture()
+	fileSystem.mkdirSync(join(pluginRoot, "runtime"))
+	fileSystem.writeFileSync(join(pluginRoot, "runtime", "a.js"), "runtime\n")
+	fileSystem.writeFileSync(join(pluginRoot, "runtime.txt"), "sibling\n")
+
+	expect(directoryArchiveEntries(pluginRoot, "plugin-0.1.0")).toEqual([
+		"plugin-0.1.0/",
+		"plugin-0.1.0/a-safe.txt",
+		"plugin-0.1.0/runtime/",
+		"plugin-0.1.0/runtime/a.js",
+		"plugin-0.1.0/runtime.txt",
+	])
 })

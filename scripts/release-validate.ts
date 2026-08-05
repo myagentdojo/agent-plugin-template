@@ -461,6 +461,10 @@ function validateRepository(repositoryRoot: string) {
 		"*.checksums.json",
 		"replace_mismatched_assets",
 		"sha256sum",
+		"group: release-maintenance",
+		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
+		"release-candidate-${{ github.run_id }}",
+		"overwrite: true",
 		"environment: release",
 		"gh attestation verify",
 		"actions/attest",
@@ -468,11 +472,19 @@ function validateRepository(repositoryRoot: string) {
 	]) {
 		if (!releaseWorkflow.includes(required)) throw new Error(`release workflow is missing ${required}`)
 	}
+	if (releaseWorkflow.includes("github.run_attempt")) {
+		throw new Error("release workflow artifact identity must survive rerun-failed-jobs attempts")
+	}
+	if (/^concurrency:/m.test(releaseWorkflow)) {
+		throw new Error("release workflow must serialize only mutation jobs, not discard distinct pending runs")
+	}
 	const maintainJob = releaseWorkflow.slice(
 		releaseWorkflow.indexOf("\n  maintain:\n"),
 		releaseWorkflow.indexOf("\n  compatibility:\n"),
 	)
 	for (const required of [
+		"group: release-maintenance",
+		"cancel-in-progress: false",
 		"persist-credentials: false",
 		"id: bootstrap-version",
 		"jq 'length' .github/.release-please-manifest.json",
@@ -490,6 +502,9 @@ function validateRepository(repositoryRoot: string) {
 	const releaseJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  release:\n"))
 	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
 		throw new Error("release workflow publish job must depend on package")
+	}
+	if (!releaseJob.includes("group: release-publication-${{ needs.resolve.outputs.release_tag }}")) {
+		throw new Error("release workflow publish mutation must serialize by resolved immutable tag")
 	}
 	if (!releaseJob.includes("    permissions:\n      actions: read\n")) {
 		throw new Error("release workflow publish job must grant actions: read")

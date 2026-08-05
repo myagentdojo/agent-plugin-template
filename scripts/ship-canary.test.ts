@@ -1,4 +1,12 @@
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	cpSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
@@ -103,13 +111,15 @@ if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
 fi
 if [ "$1" = "credential" ] && [ "$2" = "fill" ]; then printf 'protocol=https\nhost=github.com\nusername=%s\npassword=fake\n' "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}"; exit 0; fi
 if [ "$1" = "ls-remote" ]; then
+	if [ "$FAKE_PUSH_RACE" = "same" ] && [ -s "$FAKE_LOG" ]; then printf '0123456789abcdef0123456789abcdef01234567\t%s\n' "$4"; fi
+	if [ "$FAKE_PUSH_RACE" = "different" ] && [ -s "$FAKE_LOG" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$4"; fi
 	if [ "$FAKE_EXISTING_CANDIDATE" = "same" ]; then printf '0123456789abcdef0123456789abcdef01234567\t%s\n' "$4"; fi
 	if [ "$FAKE_EXISTING_CANDIDATE" = "different" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$4"; fi
 	exit 0
 fi
 if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then exit 0; fi
 if [ "$1" = "push" ]; then
-	printf '%s\n' "$*" >> "$FAKE_LOG"
+	printf 'git-push-cwd=%s %s\n' "$(pwd)" "$*" >> "$FAKE_LOG"
 	if [ "$FAKE_PUSH_FAIL" = "1" ]; then exit 1; fi
 	exit 0
 fi
@@ -133,6 +143,37 @@ function runCanary(
 			...extraEnvironment,
 			FAKE_LOG: fixture.log,
 			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+		},
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+}
+
+function runTrustedCanary(
+	driverRoot: string,
+	driver: ReturnType<typeof canaryFixture>,
+	sourceRoot: string,
+	mode: "--dry-run" | "--execute",
+	extraEnvironment: Record<string, string> = {},
+): ReturnType<typeof Bun.spawnSync> {
+	return Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			join(driverRoot, "scripts", "ship-canary.ts"),
+			mode,
+			"--source-root",
+			sourceRoot,
+			"--ref",
+			"HEAD",
+			"--json",
+		],
+		cwd: driverRoot,
+		env: {
+			...process.env,
+			...extraEnvironment,
+			FAKE_LOG: driver.log,
+			PATH: `${driver.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
 		},
 		stdout: "pipe",
 		stderr: "pipe",
@@ -173,23 +214,6 @@ test("publishing-system paths require both hosted canaries and report every trig
 	expect(PUBLISHING_SYSTEM_PATHS).toEqual([
 		"package.json",
 		"plugin.config.json",
-		"scripts/package.ts",
-		"scripts/release-validate.ts",
-		"scripts/release-impact.ts",
-		"scripts/release-projection.ts",
-		"scripts/repository-readiness.ts",
-		"scripts/prove-distribution.ts",
-		"scripts/prove-harness-install.ts",
-		"scripts/harness-install-codex.ts",
-		"scripts/ship-canary.ts",
-		"scripts/plugin-config.ts",
-		"scripts/plugin-files.ts",
-		"scripts/init.ts",
-		".github/workflows/release.yml",
-		".github/workflows/plugin-ci.yml",
-		".github/workflows/hosted-canary.yml",
-		".github/workflows/pull-request-title.yml",
-		".github/workflows/release-impact.yml",
 		".github/release-please-config.json",
 	])
 	const changedPaths = [
@@ -202,6 +226,21 @@ test("publishing-system paths require both hosted canaries and report every trig
 		"scripts/plugin-files.ts",
 		"scripts/prove-harness-install.ts",
 		"scripts/ship-canary.ts",
+	]
+
+	expect(classifyPublishingSystemChanges(changedPaths)).toEqual({
+		required: true,
+		triggeringPaths: changedPaths,
+	})
+})
+
+test("new scripts and workflows fail closed into hosted canary qualification", () => {
+	const changedPaths = [
+		"scripts/build.ts",
+		"scripts/generate.ts",
+		"scripts/future-publisher.ts",
+		".github/workflows/codex-review-gate.yml",
+		".github/workflows/future-release.yml",
 	]
 
 	expect(classifyPublishingSystemChanges(changedPaths)).toEqual({
@@ -275,22 +314,69 @@ test("classify includes a publishing path renamed into documentation", () => {
 
 test("candidate config cannot redirect trusted canary targets", () => {
 	const fixture = canaryFixture()
-	const result = Bun.spawnSync({
-		cmd: [process.execPath, "run", join(root, "scripts", "ship-canary.ts"), "--dry-run", "--source-root", fixture.temporaryRoot, "--ref", "HEAD", "--json"],
-		cwd: root,
-		env: {
-			...process.env,
-			FAKE_LOG: fixture.log,
-			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-		},
-		stdout: "pipe",
-		stderr: "pipe",
-	})
+	const result = runTrustedCanary(root, fixture, fixture.temporaryRoot, "--dry-run")
 
 	expect(result.exitCode).toBe(1)
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		category: "canary_target_mismatch",
 		retrySafe: false,
+	})
+})
+
+test("candidate publication pushes from the checkout that owns the source commit", async () => {
+	const driver = canaryFixture()
+	const candidate = canaryFixture()
+	const result = runTrustedCanary(
+		driver.temporaryRoot,
+		driver,
+		candidate.temporaryRoot,
+		"--execute",
+		{ FAKE_PUSH_FAIL: "1" },
+	)
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({ category: "candidate_push_rejected" })
+	expect(await Bun.file(driver.log).text()).toContain(
+		`git-push-cwd=${realpathSync(candidate.temporaryRoot)} push`,
+	)
+	expect(await Bun.file(driver.log).text()).toContain(
+		"--force-with-lease=refs/heads/candidate/0123456789abcdef0123456789abcdef01234567:",
+	)
+})
+
+test("trusted preflight rejects generated drift before candidate publication", async () => {
+	const driver = canaryFixture()
+	const candidate = canaryFixture()
+	writeFileSync(join(candidate.temporaryRoot, "plugin", ".codex-plugin", "plugin.json"), "{}\n")
+
+	const result = runTrustedCanary(
+		driver.temporaryRoot,
+		driver,
+		candidate.temporaryRoot,
+		"--execute",
+	)
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({ category: "generated_drift" })
+	expect(await Bun.file(driver.log).exists()).toBe(false)
+})
+
+test("create-only candidate push accepts an identical winner but rejects a conflicting race", () => {
+	const same = runCanary(canaryFixture(), "--execute", {
+		FAKE_PUSH_FAIL: "1",
+		FAKE_PUSH_RACE: "same",
+		FAKE_HOSTED_FAILURE: "1",
+	})
+	const different = runCanary(canaryFixture(), "--execute", {
+		FAKE_PUSH_FAIL: "1",
+		FAKE_PUSH_RACE: "different",
+	})
+
+	expect(same.exitCode).toBe(1)
+	expect(JSON.parse(same.stdout.toString())).toMatchObject({ category: "hosted_failure" })
+	expect(different.exitCode).toBe(1)
+	expect(JSON.parse(different.stdout.toString())).toMatchObject({
+		category: "candidate_ref_conflict",
 	})
 })
 
@@ -530,6 +616,9 @@ test("untrusted PR workflow always reports without canary credentials", () => {
 	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("environment: hosted-canary-qualification")
 	expect(workflow).toContain("bun run generate:check")
+	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
+	expect(workflow).toContain("@openai/codex@0.146.1")
+	expect(workflow).toContain("bun run prove:harness-install -- --require-native")
 })
 
 test("privileged canary workflow executes trusted code and treats the PR checkout as data", () => {
@@ -551,6 +640,7 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("environment: hosted-canary-qualification")
+	expect(workflow).toContain("unset CANARY_GH_TOKEN CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("CHECK_RUN_ID")
 })
 

@@ -2,7 +2,6 @@ import {
 	chmodSync,
 	mkdirSync,
 	mkdtempSync,
-	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -12,7 +11,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { copyPluginPayload } from "./plugin-files"
+import { copyPluginPayload, directoryArchiveEntries } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
@@ -22,20 +21,6 @@ const outputRoot = join(root, "dist")
 const packageName = `${pluginConfig.name}-${version}`
 const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
-
-function archiveEntries(directory: string, prefix: string): string[] {
-	const entries = [prefix]
-	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
-		left.name.localeCompare(right.name),
-	)) {
-		const relativePath = `${prefix}/${entry.name}`
-		entries.push(relativePath)
-		if (entry.isDirectory()) {
-			entries.push(...archiveEntries(join(directory, entry.name), relativePath).slice(1))
-		}
-	}
-	return entries
-}
 
 function resolveSourceCommit(): string {
 	const sourceCommit = process.env.SOURCE_COMMIT
@@ -78,7 +63,7 @@ try {
 	mkdirSync(outputRoot, { recursive: true })
 	copyPluginPayload(root, packageRoot)
 
-	const entries = archiveEntries(packageRoot, packageName)
+	const entries = directoryArchiveEntries(packageRoot, packageName)
 	const epoch = new Date(0)
 	for (const relativePath of entries) {
 		const absolutePath = join(stagingRoot, relativePath)

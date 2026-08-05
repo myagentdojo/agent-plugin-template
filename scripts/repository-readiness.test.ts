@@ -8,6 +8,7 @@ import {
 	classifyActionsPermissions,
 	classifyApiFailure,
 	classifyRepositorySettings,
+	classifyReleaseAutomationConfiguration,
 	classifyRequiredStatusChecks,
 	classifyTagRuleset,
 	classifyWorkflowAdminPermissions,
@@ -41,6 +42,10 @@ test("reports ready when every publication safeguard is proven", () => {
 		classifyTagRuleset([immutableTagRuleset()]),
 		...classifyRepositorySettings({ default_branch: "main", allow_merge_commit: true }),
 		classifyActionsPermissions({ enabled: true, allowed_actions: "all" }),
+		classifyReleaseAutomationConfiguration(
+			{ secrets: [{ name: "RELEASE_PLEASE_TOKEN" }] },
+			{ variables: [{ name: "RELEASE_PLEASE_AUTOMATION_LOGIN", value: "must-not-leak" }] },
+		),
 		classifyRequiredStatusChecks({ strict: true, contexts: REQUIRED_STATUS_CHECKS }),
 		classifyWorkflowAdminPermissions([
 			{
@@ -52,6 +57,20 @@ test("reports ready when every publication safeguard is proven", () => {
 
 	expect(summarizeReadiness(checks)).toEqual({ ok: true, checks })
 	expect(checks.every((check) => check.status === "ready")).toBe(true)
+})
+
+test("release automation readiness checks names without exposing values", () => {
+	const readyCheck = classifyReleaseAutomationConfiguration(
+		{ secrets: [{ name: "RELEASE_PLEASE_TOKEN" }] },
+		{ variables: [{ name: "RELEASE_PLEASE_AUTOMATION_LOGIN", value: "myagentdojo" }] },
+	)
+	const missingCheck = classifyReleaseAutomationConfiguration({ secrets: [] }, { variables: [] })
+
+	expect(readyCheck).toMatchObject({ status: "ready" })
+	expect(JSON.stringify(readyCheck)).not.toContain("myagentdojo")
+	expect(missingCheck).toMatchObject({ status: "missing" })
+	expect(missingCheck.detail).toContain("secret RELEASE_PLEASE_TOKEN")
+	expect(missingCheck.detail).toContain("variable RELEASE_PLEASE_AUTOMATION_LOGIN")
 })
 
 describe("immutable version tag ruleset", () => {

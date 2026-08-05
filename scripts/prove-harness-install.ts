@@ -15,6 +15,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import {
+	assertCodexReportedVersion,
 	proveCodexFixtureCopy as runCodexFixtureCopy,
 	proveCodexNative as runCodexNative,
 } from "./harness-install-codex"
@@ -494,12 +495,50 @@ function comparePayload(checkout: TaggedCheckout, installedPath: string): string
 	return installedInventory
 }
 
+/**
+ * Build the minimal process environment native plugin CLIs need without forwarding credentials.
+ *
+ * @param environment - Parent process environment that may contain publication credentials
+ * @returns Allowlisted shell, locale, temporary-directory, and SSH-agent settings
+ *
+ * @example
+ * ```ts
+ * nativeHarnessEnvironment({ PATH: "/usr/bin", GH_TOKEN: "secret" })
+ * ```
+ */
+export function nativeHarnessEnvironment(
+	environment: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+	const allowed = [
+		"PATH",
+		"HOME",
+		"USER",
+		"LOGNAME",
+		"SHELL",
+		"TMPDIR",
+		"TMP",
+		"TEMP",
+		"LANG",
+		"LC_ALL",
+		"SSH_AUTH_SOCK",
+		"SSH_AGENT_PID",
+		"GIT_SSH_COMMAND",
+		"GIT_CONFIG_GLOBAL",
+		"XDG_CONFIG_HOME",
+		"XDG_CACHE_HOME",
+		"XDG_DATA_HOME",
+	] as const
+	return Object.fromEntries(
+		allowed.flatMap((name) => environment[name] === undefined ? [] : [[name, environment[name]]]),
+	)
+}
+
 function claudeEnvironment(home: string): Record<string, string | undefined> {
-	return { ...process.env, CLAUDE_CONFIG_DIR: home, CI: "1", NO_COLOR: "1" }
+	return { ...nativeHarnessEnvironment(process.env), CLAUDE_CONFIG_DIR: home, CI: "1", NO_COLOR: "1" }
 }
 
 function codexEnvironment(home: string): Record<string, string | undefined> {
-	return { ...process.env, CODEX_HOME: home, CI: "1", NO_COLOR: "1" }
+	return { ...nativeHarnessEnvironment(process.env), CODEX_HOME: home, CI: "1", NO_COLOR: "1" }
 }
 
 function findClaudeInstall(
@@ -898,9 +937,7 @@ export function proveHostedHarnessInstall(
 			codexProject,
 			ref,
 		)
-		if (codexInstall.add.version !== claudeManifest.version) {
-			throw new Error("Codex hosted install reported the wrong manifest version")
-		}
+		assertCodexReportedVersion(codexInstall, claudeManifest.version, "hosted install")
 		const codexInventory = comparePayload(expected, codexInstall.add.installedPath)
 		return {
 			temporaryRoot,

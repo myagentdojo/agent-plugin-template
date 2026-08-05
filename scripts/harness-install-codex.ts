@@ -35,6 +35,16 @@ function digestFile(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
+export function assertCodexReportedVersion(
+	state: CodexInstallState,
+	expectedVersion: string,
+	phase: string,
+): void {
+	if (state.add.version !== expectedVersion || state.plugin.version !== expectedVersion) {
+		throw new Error(`Codex ${phase} reported the wrong tagged manifest version`)
+	}
+}
+
 /** Execute Codex add, upgrade, rollback, and restoration through native JSON commands. */
 export function proveCodexNative(
 	fixture: FixtureRelease,
@@ -57,9 +67,7 @@ export function proveCodexNative(
 		environment,
 		project,
 	)
-	if (initial.add.version !== fixture.base.manifestVersion) {
-		throw new Error("Codex install reported the wrong tagged manifest version")
-	}
+	assertCodexReportedVersion(initial, fixture.base.manifestVersion, "install")
 	const initialInventory = dependencies.comparePayload(fixture.base, initial.add.installedPath)
 	const initialRuntimeDigest = digestFile(join(initial.add.installedPath, "runtime", "hello-world.js"))
 
@@ -78,6 +86,7 @@ export function proveCodexNative(
 		environment,
 		project,
 	)
+	assertCodexReportedVersion(upgraded, fixture.target.manifestVersion, "upgrade")
 	const upgradedInventory = dependencies.comparePayload(fixture.target, upgraded.add.installedPath)
 	const upgradedRuntimeDigest = digestFile(join(upgraded.add.installedPath, "runtime", "hello-world.js"))
 	if (initialRuntimeDigest === upgradedRuntimeDigest) {
@@ -92,6 +101,7 @@ export function proveCodexNative(
 		environment,
 		project,
 	)
+	assertCodexReportedVersion(restored, fixture.base.manifestVersion, "rollback")
 	const restoredInventory = dependencies.comparePayload(fixture.base, restored.add.installedPath)
 	if (restored.plugin.enabled !== initial.plugin.enabled) {
 		throw new Error("Codex rollback did not restore the prior enabled state")
@@ -104,6 +114,7 @@ export function proveCodexNative(
 		environment,
 		project,
 	)
+	assertCodexReportedVersion(restored, fixture.base.manifestVersion, "interrupted-state restoration")
 	const recoveredInventory = dependencies.comparePayload(fixture.base, restored.add.installedPath)
 	const failureRestored =
 		restored.add.version === fixture.base.manifestVersion &&

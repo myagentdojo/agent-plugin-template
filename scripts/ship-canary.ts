@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { loadPluginConfig } from "./plugin-config"
+import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
 import { proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
@@ -25,7 +25,7 @@ Options:
   -h, --help         Show this help
 
 Safety:
-  Publishing changes GitHub repositories. The command never force-pushes or deletes refs.
+  Publishing changes GitHub repositories. Candidate refs use create-only compare-and-swap and are never replaced or deleted.
   Active gh and real Git transport identities must match plugin.config.json canary.owner.
 `
 
@@ -51,29 +51,14 @@ interface ClassifyOptions {
 
 type Options = PublishOptions | ClassifyOptions
 
-/** Paths whose changes alter how the template publishes or proves a plugin. */
+/** Exact root files whose changes alter how the template publishes or proves a plugin. */
 export const PUBLISHING_SYSTEM_PATHS = [
 	"package.json",
 	"plugin.config.json",
-	"scripts/package.ts",
-	"scripts/release-validate.ts",
-	"scripts/release-impact.ts",
-	"scripts/release-projection.ts",
-	"scripts/repository-readiness.ts",
-	"scripts/prove-distribution.ts",
-	"scripts/prove-harness-install.ts",
-	"scripts/harness-install-codex.ts",
-	"scripts/ship-canary.ts",
-	"scripts/plugin-config.ts",
-	"scripts/plugin-files.ts",
-	"scripts/init.ts",
-	".github/workflows/release.yml",
-	".github/workflows/plugin-ci.yml",
-	".github/workflows/hosted-canary.yml",
-	".github/workflows/pull-request-title.yml",
-	".github/workflows/release-impact.yml",
 	".github/release-please-config.json",
 ] as const
+
+const PUBLISHING_SYSTEM_PATH_PREFIXES = ["scripts/", ".github/workflows/"] as const
 
 /** One hosted repository target and its immutable candidate-ref admission state. */
 export interface Target {
@@ -168,7 +153,15 @@ export function classifyPublishingSystemChanges(changedPaths: string[]): {
 	triggeringPaths: string[]
 } {
 	const publishingPaths = new Set<string>(PUBLISHING_SYSTEM_PATHS)
-	const triggeringPaths = [...new Set(changedPaths.filter((path) => publishingPaths.has(path)))]
+	const triggeringPaths = [
+		...new Set(
+			changedPaths.filter(
+				(path) =>
+					publishingPaths.has(path) ||
+					PUBLISHING_SYSTEM_PATH_PREFIXES.some((prefix) => path.startsWith(prefix)),
+			),
+		),
+	]
 	return { required: triggeringPaths.length > 0, triggeringPaths }
 }
 
@@ -564,16 +557,28 @@ function createTarget(target: Target): void {
 	])
 }
 
-function publishTarget(target: Target, sourceSha: string): void {
+function publishTarget(target: Target, sourceSha: string, sourceRoot: string): void {
 	if (target.candidateState === "current") return
 	createTarget(target)
 	try {
-		processResult(["git", "push", target.remote, `${sourceSha}:${target.candidateRef}`])
+		processResult(
+			[
+				"git",
+				"push",
+				`--force-with-lease=${target.candidateRef}:`,
+				target.remote,
+				`${sourceSha}:${target.candidateRef}`,
+			],
+			false,
+			sourceRoot,
+		)
 	} catch (error) {
+		const raced = proveCandidateRef({ ...target, exists: true }, sourceSha)
+		if (raced.candidateState === "current") return
 		throw new CanaryError(
 			"candidate_push_rejected",
 			`${target.repository} rejected ${target.candidateRef}: ${error instanceof Error ? error.message : String(error)}`,
-			`inspect the remote candidate ref and credentials; never force-push, delete, or rewrite candidate history`,
+			`inspect the remote candidate ref and credentials; never replace, delete, or reuse candidate history`,
 			false,
 		)
 	}
@@ -755,12 +760,15 @@ function assertCandidateInstall(
 export async function qualifyTargets(
 	targets: Target[],
 	sourceSha: string,
-	dependencies: QualificationDependencies = {
-		publish: publishTarget,
+	dependencies?: QualificationDependencies,
+	sourceRoot = root,
+): Promise<{ runs: HostedRun[]; installs: CandidateInstallEvidence[] }> {
+	const adapters = dependencies ?? {
+		publish: (target: Target, candidateSha: string) =>
+			publishTarget(target, candidateSha, sourceRoot),
 		hostedProof: waitForRun,
 		install: installCandidate,
-	},
-): Promise<{ runs: HostedRun[]; installs: CandidateInstallEvidence[] }> {
+	}
 	const visibilities = targets.map((target) => target.visibility).sort().join(",")
 	if (targets.length !== 2 || visibilities !== "PRIVATE,PUBLIC") {
 		throw new CanaryError(
@@ -770,12 +778,12 @@ export async function qualifyTargets(
 			false,
 		)
 	}
-	for (const target of targets) await dependencies.publish(target, sourceSha)
+	for (const target of targets) await adapters.publish(target, sourceSha)
 	const runs: HostedRun[] = []
-	for (const target of targets) runs.push(await dependencies.hostedProof(target, sourceSha))
+	for (const target of targets) runs.push(await adapters.hostedProof(target, sourceSha))
 	const installs: CandidateInstallEvidence[] = []
 	for (const target of targets) {
-		const evidence = await dependencies.install(target, sourceSha)
+		const evidence = await adapters.install(target, sourceSha)
 		assertCandidateInstall(target, sourceSha, evidence)
 		installs.push(evidence)
 	}
@@ -794,6 +802,28 @@ function preflight(options: PublishOptions): Preflight {
 			"canary_target_mismatch",
 			"candidate canary targets differ from the trusted driver checkout",
 			"restore plugin.config.json canary targets to the trusted base values",
+			false,
+		)
+	}
+	let generatedDrift: string[]
+	try {
+		generatedDrift = checkGeneratedFiles(
+			options.sourceRoot,
+			loadPluginConfig(options.sourceRoot),
+		)
+	} catch (error) {
+		throw new CanaryError(
+			"candidate_metadata_invalid",
+			`trusted driver could not validate candidate metadata: ${error instanceof Error ? error.message : String(error)}`,
+			"repair plugin.config.json and its generated manifests in the candidate checkout",
+			false,
+		)
+	}
+	if (generatedDrift.length > 0) {
+		throw new CanaryError(
+			"generated_drift",
+			`candidate generated manifests differ from plugin.config.json: ${generatedDrift.join(", ")}`,
+			"regenerate and commit the candidate manifests before hosted publication",
 			false,
 		)
 	}
@@ -914,7 +944,12 @@ async function main(arguments_: string[], runId: string): Promise<void> {
 	}
 	const preflightResult = preflight(options)
 	const qualification = options.execute
-		? await qualifyTargets(preflightResult.targets, preflightResult.sourceSha)
+		? await qualifyTargets(
+				preflightResult.targets,
+				preflightResult.sourceSha,
+				undefined,
+				options.sourceRoot,
+			)
 		: { runs: [], installs: [] }
 	emitSuccess(options, preflightResult, qualification, runId)
 }

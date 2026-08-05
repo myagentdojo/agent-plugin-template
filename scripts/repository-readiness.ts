@@ -12,6 +12,8 @@ const requiredChecksRepair =
 	"Settings > Branches > Branch protection rules: protect main and require every release-path status check"
 const workflowAdminRepair =
 	"Remove administration from workflow permissions; release publication needs contents: write, never repository administration"
+const releaseAutomationRepair =
+	"Settings > Secrets and variables > Actions: add secret RELEASE_PLEASE_TOKEN and variable RELEASE_PLEASE_AUTOMATION_LOGIN"
 
 const help = `Verify human-owned GitHub repository safeguards without changing them.
 
@@ -238,6 +240,55 @@ export function classifyActionsPermissions(permissions: unknown): ReadinessCheck
 	return permissions.enabled
 		? ready("actions-permissions", "GitHub Actions is enabled")
 		: missing("actions-permissions", "GitHub Actions is disabled", actionsRepair)
+}
+
+/** Verify only the names of the release-maintenance credential and bound automation identity. */
+export function classifyReleaseAutomationConfiguration(
+	secretsResponse: unknown,
+	variablesResponse: unknown,
+): ReadinessCheck {
+	if (!isRecord(secretsResponse) || !Array.isArray(secretsResponse.secrets)) {
+		return {
+			name: "release-automation-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable Actions secret metadata; release maintenance credentials are unproven",
+			repair: releaseAutomationRepair,
+		}
+	}
+	if (!isRecord(variablesResponse) || !Array.isArray(variablesResponse.variables)) {
+		return {
+			name: "release-automation-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable Actions variable metadata; release automation identity is unproven",
+			repair: releaseAutomationRepair,
+		}
+	}
+	const secretNames = new Set(
+		secretsResponse.secrets.flatMap((entry) =>
+			isRecord(entry) && typeof entry.name === "string" ? [entry.name] : [],
+		),
+	)
+	const variableNames = new Set(
+		variablesResponse.variables.flatMap((entry) =>
+			isRecord(entry) && typeof entry.name === "string" ? [entry.name] : [],
+		),
+	)
+	const absent = [
+		...(!secretNames.has("RELEASE_PLEASE_TOKEN") ? ["secret RELEASE_PLEASE_TOKEN"] : []),
+		...(!variableNames.has("RELEASE_PLEASE_AUTOMATION_LOGIN")
+			? ["variable RELEASE_PLEASE_AUTOMATION_LOGIN"]
+			: []),
+	]
+	return absent.length === 0
+		? ready(
+				"release-automation-configuration",
+				"Release Please token and automation-login names are configured",
+			)
+		: missing(
+				"release-automation-configuration",
+				`Release maintenance is missing ${absent.join(" and ")}`,
+				releaseAutomationRepair,
+			)
 }
 
 /**
@@ -570,6 +621,27 @@ function runChecks(repository: string): ReadinessCheck[] {
 			? classifyActionsPermissions(actions.data)
 			: apiFailure("actions-permissions", actions, actionsRepair),
 	)
+	const releaseSecrets = readApi(`repos/${repository}/actions/secrets`)
+	const releaseVariables = readApi(`repos/${repository}/actions/variables`)
+	if (!releaseSecrets.ok) {
+		checks.push(
+			apiFailure(
+				"release-automation-configuration",
+				releaseSecrets,
+				releaseAutomationRepair,
+			),
+		)
+	} else if (!releaseVariables.ok) {
+		checks.push(
+			apiFailure(
+				"release-automation-configuration",
+				releaseVariables,
+				releaseAutomationRepair,
+			),
+		)
+	} else {
+		checks.push(classifyReleaseAutomationConfiguration(releaseSecrets.data, releaseVariables.data))
+	}
 	const requiredChecks = readApi(`repos/${repository}/branches/main/protection/required_status_checks`)
 	checks.push(
 		requiredChecks.ok

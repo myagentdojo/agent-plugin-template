@@ -11,6 +11,33 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 /** Canonical directory copied by development staging and release packaging. */
 export const PLUGIN_DIRECTORY = "plugin"
 
+/**
+ * List one directory tree in the exact depth-first order used by deterministic tar input.
+ *
+ * @param directory - Absolute directory whose entries have already passed payload validation
+ * @param prefix - Archive-relative root name
+ * @returns Root, directory, and file entries with directories carrying trailing slashes
+ *
+ * @example
+ * ```ts
+ * directoryArchiveEntries("/tmp/plugin", "hello-0.1.0")
+ * ```
+ */
+export function directoryArchiveEntries(directory: string, prefix: string): string[] {
+	const entries = [`${prefix}/`]
+	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+		left.name.localeCompare(right.name),
+	)) {
+		const relativePath = `${prefix}/${entry.name}`
+		if (entry.isDirectory()) {
+			entries.push(...directoryArchiveEntries(join(directory, entry.name), relativePath))
+		} else {
+			entries.push(relativePath)
+		}
+	}
+	return entries
+}
+
 function unsafeEntry(relativePath: string, reason: string): Error {
 	const entry = relativePath ? `${PLUGIN_DIRECTORY}/${relativePath}` : PLUGIN_DIRECTORY
 	return new Error(`unsafe plugin payload entry "${entry}": ${reason}`)
@@ -37,7 +64,7 @@ function assertRealpathContained(
  *
  * @param sourceRoot - Repository root containing the canonical `plugin/` directory
  * @returns Sorted paths relative to `plugin/`, using forward slashes
- * @throws {Error} When the plugin root or any descendant is a symlink, special file, or realpath escape
+ * @throws {Error} When the plugin root or any descendant is empty, a symlink, special file, or realpath escape
  *
  * @example
  * ```ts
@@ -54,7 +81,9 @@ export function pluginPayloadInventory(sourceRoot: string): string[] {
 	const inventory: string[] = []
 
 	function walk(directory: string, relativeDirectory: string): void {
-		for (const entry of readdirSync(directory).sort()) {
+		const entries = readdirSync(directory).sort()
+		if (entries.length === 0) throw unsafeEntry(relativeDirectory, "empty directory")
+		for (const entry of entries) {
 			const absolutePath = join(directory, entry)
 			const relativePath = relativeDirectory ? `${relativeDirectory}/${entry}` : entry
 			const status = lstatSync(absolutePath)
@@ -82,7 +111,7 @@ export function pluginPayloadInventory(sourceRoot: string): string[] {
  * @param sourceRoot - Repository root containing the canonical `plugin/` directory
  * @param targetRoot - Empty or replaceable directory receiving plugin contents
  * @returns The validated inventory copied into the target
- * @throws {Error} When the canonical payload contains a symlink, special file, or realpath escape
+ * @throws {Error} When the canonical payload contains an empty directory, symlink, special file, or realpath escape
  *
  * @example
  * ```ts
@@ -96,9 +125,11 @@ export function copyPluginPayload(sourceRoot: string, targetRoot: string): strin
 	for (const relativePath of inventory) {
 		const sourcePath = join(pluginRoot, relativePath)
 		const targetPath = join(targetRoot, relativePath)
+		const sourceStatus = lstatSync(sourcePath)
+		if (!sourceStatus.isFile()) throw unsafeEntry(relativePath, "changed after inventory (expected file)")
 		mkdirSync(dirname(targetPath), { recursive: true })
 		copyFileSync(sourcePath, targetPath)
-		chmodSync(targetPath, lstatSync(sourcePath).mode & 0o7777)
+		chmodSync(targetPath, sourceStatus.mode & 0o7777)
 	}
 	return inventory
 }

@@ -24,6 +24,14 @@ test("production installation pins each marketplace checkout to a release tag", 
 	expect(productionInstall.match(/Remove the pinned marketplace entry/g)).toHaveLength(2)
 })
 
+test("replacement guidance preserves the documented refresh operations", async () => {
+	const readme = await Bun.file(readmeUrl).text()
+	expect(readme).toContain("claude plugin marketplace update PLUGIN_NAME")
+	expect(readme).toContain("codex plugin marketplace upgrade PLUGIN_NAME")
+	expect(readme).toContain("Automatic Codex marketplace refresh is unspecified")
+	expect(readme).toContain("A pinned immutable tag should resolve to the same bytes")
+})
+
 test("release documentation names checksum evidence and exact repair identity", async () => {
 	const readme = await Bun.file(readmeUrl).text()
 	const release = readme.slice(readme.indexOf("## Release"), readme.indexOf("## Proof commands"))

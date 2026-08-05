@@ -265,12 +265,19 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("replace_mismatched_assets")
 	expect(workflow).toContain("gh release download")
 	expect(workflow).toContain("sha256sum")
+	expect(workflow).not.toMatch(/^concurrency:/m)
+	expect(workflow).toContain("group: release-maintenance")
+	expect(workflow).toContain("group: release-publication-${{ needs.resolve.outputs.release_tag }}")
+	expect(workflow.match(/release-candidate-\$\{\{ github\.run_id \}\}/g)).toHaveLength(2)
+	expect(workflow).toContain("overwrite: true")
+	expect(workflow).not.toContain("github.run_attempt")
 	expect(workflow).toContain("bun run release:validate -- --repair")
 	const maintainJob = workflow.slice(
 		workflow.indexOf("\n  maintain:\n"),
 		workflow.indexOf("\n  compatibility:\n"),
 	)
 	expect(maintainJob).toContain("persist-credentials: false")
+	expect(maintainJob).toContain("group: release-maintenance")
 	expect(maintainJob).toContain("id: bootstrap-version")
 	expect(maintainJob).toContain("jq 'length' .github/.release-please-manifest.json")
 	expect(maintainJob).toContain('release_as="0.1.0"')
@@ -279,6 +286,9 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(maintainJob).toContain("release-as: ${{ steps.bootstrap-version.outputs.release_as }}")
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(finalReleaseJob).toContain("    needs:\n      - resolve\n      - package\n")
+	expect(finalReleaseJob).toContain(
+		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
+	)
 	expect(finalReleaseJob).toContain("    permissions:\n      actions: read\n")
 	expect(finalReleaseJob).toContain("PUBLICATION_CANDIDATE_PATH=persisted-candidate.json")
 	expect(finalReleaseJob).toContain('--repository "$GITHUB_REPOSITORY"')
@@ -297,6 +307,58 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).not.toContain("ref: ${{ inputs.release_tag || github.sha }}")
 	expect(workflow).not.toContain("*.provenance.json")
 	expect(workflow).not.toContain("endswith($repository)")
+})
+
+test("immutable tag creation is retry-safe and rejects a rebound candidate", () => {
+	const workflowSource = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+	const workflow = Bun.YAML.parse(workflowSource) as {
+		jobs: { release: { steps: Array<{ name?: string; run?: string }> } }
+	}
+	const tagScript = workflow.jobs.release.steps.find(
+		(step) => step.name === "Create or verify immutable tag",
+	)?.run
+	expect(tagScript).toBeString()
+
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "release-tag-retry-"))
+	const origin = join(temporaryRoot, "origin.git")
+	const checkout = join(temporaryRoot, "checkout")
+	const git = (arguments_: string[], cwd = temporaryRoot) =>
+		Bun.spawnSync({ cmd: ["git", ...arguments_], cwd, stdout: "pipe", stderr: "pipe" })
+	expect(git(["init", "--bare", origin]).exitCode).toBe(0)
+	expect(git(["init", checkout]).exitCode).toBe(0)
+	writeFileSync(join(checkout, "payload"), "one\n")
+	expect(git(["add", "payload"], checkout).exitCode).toBe(0)
+	expect(
+		git(
+			["-c", "user.name=Release Test", "-c", "user.email=release@example.invalid", "commit", "-m", "one"],
+			checkout,
+		).exitCode,
+	).toBe(0)
+	expect(git(["remote", "add", "origin", origin], checkout).exitCode).toBe(0)
+	const candidateSha = git(["rev-parse", "HEAD"], checkout).stdout.toString().trim()
+	const execute = (sha: string) =>
+		Bun.spawnSync({
+			cmd: ["bash", "-euo", "pipefail", "-c", tagScript as string],
+			cwd: checkout,
+			env: { ...process.env, MODE: "publish", CANDIDATE_SHA: sha, RELEASE_TAG: "v0.1.0" },
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+	expect(execute(candidateSha).exitCode).toBe(0)
+	expect(execute(candidateSha).exitCode).toBe(0)
+	writeFileSync(join(checkout, "payload"), "two\n")
+	expect(git(["add", "payload"], checkout).exitCode).toBe(0)
+	expect(
+		git(
+			["-c", "user.name=Release Test", "-c", "user.email=release@example.invalid", "commit", "-m", "two"],
+			checkout,
+		).exitCode,
+	).toBe(0)
+	const reboundSha = git(["rev-parse", "HEAD"], checkout).stdout.toString().trim()
+	const rebound = execute(reboundSha)
+	expect(rebound.exitCode).toBe(1)
+	expect(rebound.stderr.toString()).toContain("Immutable remote tag")
 })
 
 test("publication candidate admission binds one merged Release Please PR to github.sha", () => {
