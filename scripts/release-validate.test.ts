@@ -246,6 +246,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(uploadStepStart).toBeGreaterThan(compareStepStart)
 	expect(attestationStepStart).toBeGreaterThan(uploadStepStart)
 	expect(compareStep).toContain("asset-actions.tsv")
+	expect(compareStep).toContain("expected-assets.txt")
+	expect(compareStep).toContain("comm -13 expected-assets.txt remote-assets.txt")
 	expect(compareStep).not.toContain("gh release upload")
 	expect(uploadStep).toContain("gh release upload")
 	expect(uploadStep).not.toContain("gh release download")

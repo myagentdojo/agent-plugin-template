@@ -4,7 +4,6 @@ on:
   pull_request_target:
 
 permissions:
-  checks: write
   contents: read
 
 concurrency:
@@ -16,22 +15,9 @@ jobs:
     name: Classify publishing-system paths
     runs-on: ubuntu-24.04
     outputs:
-      check_run_id: ${{ steps.check.outputs.check_run_id }}
       required: ${{ steps.classify.outputs.required }}
       triggers: ${{ steps.classify.outputs.triggers }}
     steps:
-      - name: Start required check on the pull request head
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          check_run_id=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/check-runs" \
-            -f name="Hosted public and private Git canaries" \
-            -f head_sha="$HEAD_SHA" \
-            -f status="in_progress" \
-            --jq .id)
-          printf 'check_run_id=%s\n' "$check_run_id" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -102,7 +88,7 @@ jobs:
           bun run ship:canary -- --execute --source-root candidate --ref "$SOURCE_SHA" --json
 
   result:
-    name: Publish hosted-canary check result
+    name: Hosted public and private Git canaries
     if: always()
     needs:
       - classify
@@ -111,8 +97,6 @@ jobs:
     steps:
       - name: Enforce conditional qualification
         env:
-          GH_TOKEN: ${{ github.token }}
-          CHECK_RUN_ID: ${{ needs.classify.outputs.check_run_id }}
           CANARIES_REQUIRED: ${{ needs.classify.outputs.required }}
           CLASSIFICATION_RESULT: ${{ needs.classify.result }}
           QUALIFICATION_RESULT: ${{ needs.qualify.result }}
@@ -129,10 +113,6 @@ jobs:
           elif [ "$CANARIES_REQUIRED" = "true" ]; then
             summary="Hosted public and private Git canaries passed for: ${TRIGGERING_PATHS}"
           fi
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}" \
-            -f status="completed" \
-            -f conclusion="$conclusion" \
-            -f "output[title]=Hosted canary qualification" \
-            -f "output[summary]=$summary" >/dev/null
           printf '%s\n' "$summary"
+          printf '### Hosted canary qualification\n\n%s\n' "$summary" >> "$GITHUB_STEP_SUMMARY"
           test "$conclusion" = "success"

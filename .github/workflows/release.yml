@@ -430,6 +430,18 @@ jobs:
           mkdir -p remote-assets
           : > asset-actions.tsv
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > remote-assets.txt
+          : > expected-assets.txt
+          for asset in dist/*.tar.gz dist/*.checksums.json; do
+            basename "$asset" >> expected-assets.txt
+          done
+          sort -u -o expected-assets.txt expected-assets.txt
+          sort -u -o remote-assets.txt remote-assets.txt
+          unexpected_assets=$(comm -13 expected-assets.txt remote-assets.txt)
+          if [[ -n "$unexpected_assets" ]]; then
+            echo "GitHub Release contains unexpected unproven assets:" >&2
+            printf '%s\n' "$unexpected_assets" >&2
+            exit 1
+          fi
           for asset in dist/*.tar.gz dist/*.checksums.json; do
             name=$(basename "$asset")
             local_digest=$(sha256sum "$asset" | awk '{print $1}')
