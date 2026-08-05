@@ -8,7 +8,8 @@ Use `plugin/` as the sole installable subtree.
 
 - Share skills, launcher, QuickJS executables, and generated JavaScript.
 - Keep Claude Code and Codex manifests separate.
-- Keep hook declarations separate.
+- Keep hook declarations at explicit host-specific paths. Never use the shared
+  `hooks/hooks.json` default because both hosts auto-discover it.
 - Route both declarations into the same pure command implementation.
 - Point both marketplace catalogs at `./plugin`.
 - Package only `plugin/`.

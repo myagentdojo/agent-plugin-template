@@ -12,6 +12,10 @@ import { copyPluginPayload } from "./plugin-files"
 const root = resolve(import.meta.dir, "..")
 const pluginRoot = join(root, "plugin")
 const pluginName = "harness-native-plugin-prototype"
+const productionPluginId = `${pluginName}@${pluginName}`
+const claudeSessionSettings = JSON.stringify({
+	enabledPlugins: { [productionPluginId]: false },
+})
 const developmentMarketplaceName = "harness-native-plugin-dev"
 const developmentRoot = join(root, ".dev", "codex-marketplace")
 const stagedPluginRoot = join(developmentRoot, "plugins", pluginName)
@@ -160,7 +164,7 @@ async function runClaude(options: Options): Promise<void> {
 	}
 	if (!options.launch) {
 		console.log(
-			`Claude source is ready. Launch with: claude --plugin-dir ${JSON.stringify(pluginRoot)}`,
+			`Claude source is ready. Launch with: claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`,
 		)
 		return
 	}
@@ -184,13 +188,16 @@ async function runClaude(options: Options): Promise<void> {
 		}),
 	)
 
-	const claude = Bun.spawn(["claude", "--plugin-dir", pluginRoot], {
-		cwd: root,
-		env: process.env,
-		stdin: "inherit",
-		stdout: "inherit",
-		stderr: "inherit",
-	})
+	const claude = Bun.spawn(
+		["claude", "--settings", claudeSessionSettings, "--plugin-dir", pluginRoot],
+		{
+			cwd: root,
+			env: process.env,
+			stdin: "inherit",
+			stdout: "inherit",
+			stderr: "inherit",
+		},
+	)
 	const exitCode = await claude.exited
 	for (const watcher of watchers) watcher.close()
 	process.exitCode = exitCode
@@ -224,7 +231,7 @@ if (options.dryRun) {
 		source: options.harness === "claude" ? pluginRoot : stagedPluginRoot,
 		install:
 			options.harness === "claude"
-				? `claude --plugin-dir ${JSON.stringify(pluginRoot)}`
+				? `claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`
 				: `codex plugin add ${pluginName}@${developmentMarketplaceName}`,
 		reload:
 			options.harness === "claude"

@@ -16,8 +16,8 @@ plugin/
 ├── .codex-plugin/plugin.json
 ├── skills/hello-world/SKILL.md
 ├── hooks/
-│   ├── hooks.json
-│   └── claude/hooks.json
+│   ├── claude/hooks.json
+│   └── codex/hooks.json
 ├── bin/hello-world
 ├── QUICKJS-LICENSE
 └── runtime/
@@ -65,6 +65,7 @@ bun run dev:claude
 ```
 
 This builds and launches `claude --plugin-dir ./plugin`. Save source, let the watcher rebuild, then run `/reload-plugins`.
+The launch applies a session-only settings override for the production plugin ID, so an installed marketplace copy cannot contribute stale skills or hooks. Persistent Claude settings remain unchanged.
 
 Codex:
 
@@ -73,6 +74,20 @@ bun run dev:codex
 ```
 
 This copies the exact canonical plugin into ignored staging, changes only the staged Codex version with a local cachebuster, reinstalls from a local marketplace, and launches Codex. Start a fresh task after edits.
+
+## Marketplace install proof
+
+The public Git repository is directly installable in both hosts:
+
+```sh
+claude plugin marketplace add myagentdojo/agent-plugin-template
+claude plugin install harness-native-plugin-prototype@harness-native-plugin-prototype
+
+codex plugin marketplace add myagentdojo/agent-plugin-template --ref main
+codex plugin add harness-native-plugin-prototype@harness-native-plugin-prototype
+```
+
+See `docs/prototypes/0001-marketplace-install-and-dev-mode.md` for the live install and edit-reload evidence.
 
 Inspect without changing harness state:
 
