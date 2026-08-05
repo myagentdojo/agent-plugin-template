@@ -14,7 +14,8 @@
       "author": {
         "name": "Prototype"
       },
-      "source": "./plugin"
+      "source": "./plugin",
+      "defaultEnabled": false
     }
   ]
 }

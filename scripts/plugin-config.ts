@@ -50,70 +50,252 @@ export interface GeneratedFile {
 	contents: string
 }
 
+/** Directory text checks plus an explicit boundary around deferred publication work. */
+export interface DirectoryReadinessReport {
+	/** Named subset evaluated by this report. */
+	profile: "directory-readiness text subset"
+	/** Whether every text limit in the subset passed. */
+	ok: boolean
+	/** Human-readable failures owned by the subset. */
+	errors: string[]
+	/** Public-directory work deliberately outside this metadata check. */
+	notEvaluated: string[]
+}
+
+/** Claude Code compatibility boundary for disabled-on-install behavior. */
+export const CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY = {
+	minimumVersion: "2.1.154",
+	warning: "Earlier Claude Code clients ignore defaultEnabled and may enable plugins on install.",
+} as const
+
+const packageContractProfile = "required local/repo git-marketplace package contract"
+const directoryReadinessProfile = "directory-readiness text subset" as const
+const directoryReadinessNotEvaluated = [
+	"public ZIP",
+	"assets",
+	"identity",
+	"portal review",
+	"approval",
+	"publication",
+]
+const strictSemver =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*)))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+const unsupportedSingleLineCharacters = /[\u0000-\u001F\u007F]/
+const unsupportedLongDescriptionCharacters = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/
+const unsupportedUrlCharacters = /[^\u0021-\u007E]|["<>\\^`{|}]/
+const codexCategories = new Set([
+	"Productivity",
+	"Creativity",
+	"Developer Tools",
+	"Business & Operations",
+	"Data & Analytics",
+	"Communication",
+	"Education & Research",
+	"Security",
+	"Finance",
+	"Healthcare",
+	"Travel",
+	"Entertainment",
+	"Other",
+])
+
 function serialize(value: unknown): string {
 	return `${JSON.stringify(value, null, 2)}\n`
 }
 
-function validateConfig(config: PluginConfig): void {
-	const strictSemver =
-		/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
-	const codexCategories = new Set([
-		"Productivity",
-		"Creativity",
-		"Developer Tools",
-		"Business & Operations",
-		"Data & Analytics",
-		"Communication",
-		"Education & Research",
-		"Security",
-		"Finance",
-		"Healthcare",
-		"Travel",
-		"Entertainment",
-		"Other",
-	])
-	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.name) || config.name.length > 64) {
-		throw new Error("plugin name must be kebab-case and at most 64 characters")
+function packageContractError(message: string): Error {
+	return new Error(`${packageContractProfile}: ${message}`)
+}
+
+function normalizedText(value: string): string {
+	return value.trim().replace(/\s+/g, " ")
+}
+
+function hasNormalizedDuplicates(values: string[], caseInsensitive = false): boolean {
+	const normalized = values.map((value) => {
+		const text = normalizedText(value)
+		return caseInsensitive ? text.toLocaleLowerCase("en-US") : text
+	})
+	return new Set(normalized).size !== normalized.length
+}
+
+function isSupportedSingleLine(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		Boolean(value.trim()) &&
+		!unsupportedSingleLineCharacters.test(value)
+	)
+}
+
+function validateRepository(repository: unknown): void {
+	if (
+		typeof repository !== "string" ||
+		repository.length > 2_048 ||
+		unsupportedUrlCharacters.test(repository) ||
+		/%(?![0-9A-Fa-f]{2})/.test(repository)
+	) {
+		throw packageContractError(
+			"repository must be an absolute HTTPS URL with supported characters and at most 2048 characters",
+		)
+	}
+
+	let parsed: URL
+	try {
+		parsed = new URL(repository)
+	} catch {
+		throw packageContractError("repository must be an absolute HTTPS URL with a host")
+	}
+	if (parsed.protocol !== "https:" || !parsed.host) {
+		throw packageContractError("repository must be an absolute HTTPS URL with a host")
+	}
+	if (parsed.username || parsed.password) {
+		throw packageContractError("repository must not contain embedded credentials")
+	}
+}
+
+/**
+ * Validate metadata required for local and repository Git marketplace packages.
+ *
+ * @param config - Canonical metadata projected into native manifests
+ * @throws {Error} When a generated package field violates the required contract
+ *
+ * @example
+ * ```typescript
+ * validatePackageContract(config)
+ * ```
+ */
+export function validatePackageContract(config: PluginConfig): void {
+	if (
+		typeof config.name !== "string" ||
+		!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(config.name) ||
+		config.name.length > 64
+	) {
+		throw packageContractError("plugin name must be kebab-case and at most 64 characters")
+	}
+	if (typeof config.version !== "string" || config.version.length > 64) {
+		throw packageContractError(
+			"plugin version must use semantic versioning and be at most 64 characters",
+		)
 	}
 	if (!strictSemver.test(config.version)) {
-		throw new Error("plugin version must use semantic versioning")
-	}
-	if (!config.displayName.trim() || !config.description.trim() || !config.author.name.trim()) {
-		throw new Error("displayName, description, and author.name are required")
-	}
-	if (config.displayName.length > 30) {
-		throw new Error("displayName must be at most 30 characters for Codex directory submission")
-	}
-	if (config.author.name.length > 80) {
-		throw new Error("author.name must be at most 80 characters for Codex directory submission")
+		throw packageContractError("plugin version must use semantic versioning")
 	}
 	if (
-		!config.shortDescription.trim() ||
-		config.shortDescription.includes("\n") ||
-		config.shortDescription.length > 30
+		!isSupportedSingleLine(config.displayName) ||
+		!isSupportedSingleLine(config.description) ||
+		!isSupportedSingleLine(config.author?.name)
 	) {
-		throw new Error("shortDescription must be one non-empty line of at most 30 characters")
+		throw packageContractError("displayName, description, and author.name are required single-line text")
 	}
-	if (!config.longDescription.trim() || config.longDescription.length > 4_000) {
-		throw new Error("longDescription must be non-empty and at most 4000 characters")
+	if (config.description.length > 1_024) {
+		throw packageContractError("description must be at most 1024 characters")
+	}
+	if (!isSupportedSingleLine(config.shortDescription)) {
+		throw packageContractError("shortDescription must be one non-empty line of supported text")
+	}
+	if (
+		typeof config.longDescription !== "string" ||
+		!config.longDescription.trim() ||
+		config.longDescription.length > 1_024 ||
+		unsupportedLongDescriptionCharacters.test(config.longDescription)
+	) {
+		throw packageContractError(
+			"longDescription must be non-empty supported text of at most 1024 characters",
+		)
 	}
 	if (!codexCategories.has(config.category)) {
-		throw new Error("category must be a supported Codex directory category")
+		throw packageContractError("category must be a supported Codex directory category")
 	}
 	if (
+		!Array.isArray(config.capabilities) ||
 		config.capabilities.length > 20 ||
-		config.capabilities.some((capability) => !capability.trim() || capability.length > 120)
+		config.capabilities.some(
+			(capability) => !isSupportedSingleLine(capability) || capability.length > 120,
+		) ||
+		hasNormalizedDuplicates(config.capabilities, true)
 	) {
-		throw new Error("capabilities accepts at most 20 non-empty entries of at most 120 characters")
+		throw packageContractError(
+			"capabilities accepts at most 20 unique, non-empty, single-line entries of at most 120 characters",
+		)
 	}
-	if (!config.repository.startsWith("https://")) {
-		throw new Error("repository must be an absolute HTTPS URL")
+	validateRepository(config.repository)
+	if (!isSupportedSingleLine(config.license) || !/^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/.test(config.license)) {
+		throw packageContractError("license must be a supported SPDX identifier of at most 64 characters")
 	}
-	if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.canary.owner)) {
-		throw new Error("canary.owner must be a GitHub account name")
+	if (
+		!Array.isArray(config.keywords) ||
+		config.keywords.length > 20 ||
+		config.keywords.some(
+			(keyword) =>
+				!isSupportedSingleLine(keyword) ||
+				keyword.length > 64 ||
+				!/^[A-Za-z0-9][A-Za-z0-9 ._+-]*$/.test(keyword),
+		) ||
+		hasNormalizedDuplicates(config.keywords, true)
+	) {
+		throw packageContractError(
+			"keywords accepts at most 20 unique, supported, single-line entries of at most 64 characters",
+		)
 	}
-	if (config.defaultPrompts.length > 3 || config.defaultPrompts.some((prompt) => prompt.length > 128)) {
-		throw new Error("defaultPrompts accepts at most three entries of at most 128 characters")
+	if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.canary?.owner)) {
+		throw packageContractError("canary.owner must be a GitHub account name")
+	}
+	if (
+		!Array.isArray(config.defaultPrompts) ||
+		config.defaultPrompts.length > 3 ||
+		config.defaultPrompts.some(
+			(prompt) => !isSupportedSingleLine(prompt) || prompt.trimStart().startsWith("@"),
+		) ||
+		hasNormalizedDuplicates(config.defaultPrompts)
+	) {
+		throw packageContractError(
+			"defaultPrompts accepts at most three unique, non-empty, single-line entries that do not start with @mentions",
+		)
+	}
+}
+
+/**
+ * Report the stricter Codex directory text subset without claiming public submission readiness.
+ *
+ * @param config - Canonical metadata whose directory text limits are checked
+ * @returns Text-limit results plus the public-directory work not evaluated
+ *
+ * @example
+ * ```typescript
+ * const report = checkDirectoryReadiness(config)
+ * if (!report.ok) console.error(report.errors)
+ * ```
+ */
+export function checkDirectoryReadiness(config: PluginConfig): DirectoryReadinessReport {
+	const errors: string[] = []
+	if (typeof config.displayName !== "string" || config.displayName.length > 30) {
+		errors.push("displayName must be at most 30 characters")
+	}
+	if (typeof config.author?.name !== "string" || config.author.name.length > 80) {
+		errors.push("author.name must be at most 80 characters")
+	}
+	if (typeof config.shortDescription !== "string" || config.shortDescription.length > 30) {
+		errors.push("shortDescription must be at most 30 characters")
+	}
+	if (
+		!Array.isArray(config.defaultPrompts) ||
+		config.defaultPrompts.some((prompt) => typeof prompt !== "string" || prompt.length > 128)
+	) {
+		errors.push("defaultPrompts entries must be at most 128 characters")
+	}
+	return {
+		profile: directoryReadinessProfile,
+		ok: errors.length === 0,
+		errors,
+		notEvaluated: [...directoryReadinessNotEvaluated],
+	}
+}
+
+function validateConfig(config: PluginConfig): void {
+	validatePackageContract(config)
+	const directoryReadiness = checkDirectoryReadiness(config)
+	if (!directoryReadiness.ok) {
+		throw new Error(`${directoryReadiness.profile}: ${directoryReadiness.errors.join("; ")}`)
 	}
 }
 
@@ -140,6 +322,7 @@ function claudeMarketplace(config: PluginConfig): GeneratedFile {
 					description: config.description,
 					author: config.author,
 					source: "./plugin",
+					defaultEnabled: false,
 				},
 			],
 		}),
@@ -171,6 +354,7 @@ function claudeManifest(config: PluginConfig): GeneratedFile {
 			name: config.name,
 			displayName: config.displayName,
 			version: config.version,
+			defaultEnabled: false,
 			description: config.description,
 			author: config.author,
 			repository: config.repository,

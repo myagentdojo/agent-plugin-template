@@ -151,8 +151,17 @@ test("template user initializes both harness manifests from one metadata source"
 		name: "dojo-hello",
 		displayName: "Dojo Hello",
 		version: templateVersion,
+		defaultEnabled: false,
 		skills: "./skills/",
 		hooks: "./hooks/claude/hooks.json",
+	})
+	const claudeMarketplace = JSON.parse(
+		readFileSync(join(temporaryRoot, ".claude-plugin", "marketplace.json"), "utf8"),
+	)
+	expect(claudeMarketplace.plugins[0]).toMatchObject({
+		name: "dojo-hello",
+		source: "./plugin",
+		defaultEnabled: false,
 	})
 
 	const codexManifest = JSON.parse(
@@ -281,6 +290,31 @@ test("generated manifest check detects drift from canonical metadata", () => {
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("plugin/.codex-plugin/plugin.json")
 	expect(result.stderr.toString()).toContain("bun run generate")
+})
+
+test("invalid metadata is rejected before initialization writes generated files", () => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-invalid-metadata-")
+	const before = readResetTargets(temporaryRoot)
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"init",
+			"--",
+			"--name",
+			"dojo-hello",
+			"--repository",
+			"https://user:secret@example.com/dojo-hello",
+			"--force",
+		],
+		cwd: temporaryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).not.toBe(0)
+	expect(result.stderr.toString()).toContain("repository must not contain embedded credentials")
+	expect(readResetTargets(temporaryRoot)).toEqual(before)
 })
 
 test("test fixtures can reinitialize a customized recipient", () => {

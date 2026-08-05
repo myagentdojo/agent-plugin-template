@@ -3,7 +3,13 @@ import { join, resolve } from "node:path"
 
 import { expect, test } from "bun:test"
 
-import { renderGeneratedFiles, type PluginConfig } from "./plugin-config"
+import {
+	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
+	checkDirectoryReadiness,
+	renderGeneratedFiles,
+	type PluginConfig,
+	validatePackageContract,
+} from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
 const pluginRoot = join(root, "plugin")
@@ -14,11 +20,16 @@ const claudeManifest = JSON.parse(
 const codexManifest = JSON.parse(
 	readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 )
-
-const strictSemver =
-	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+const claudeMarketplace = JSON.parse(
+	readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf8"),
+)
+const codexMarketplace = JSON.parse(
+	readFileSync(join(root, ".agents", "plugins", "marketplace.json"), "utf8"),
+)
 
 test("checked-in native manifests satisfy the published harness contracts", () => {
+	expect(() => validatePackageContract(config)).not.toThrow()
+
 	for (const field of [
 		"name",
 		"version",
@@ -38,6 +49,7 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 		name: config.name,
 		displayName: config.displayName,
 		version: config.version,
+		defaultEnabled: false,
 		description: config.description,
 		author: config.author,
 		repository: config.repository,
@@ -54,7 +66,6 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 		keywords: config.keywords,
 	})
 
-	expect(config.version).toMatch(strictSemver)
 	expect(config.displayName.length).toBeLessThanOrEqual(30)
 	expect(codexManifest.interface).toMatchObject({
 		displayName: config.displayName,
@@ -67,7 +78,7 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 	})
 	expect(config.shortDescription).not.toContain("\n")
 	expect(config.shortDescription.length).toBeLessThanOrEqual(30)
-	expect(config.longDescription.length).toBeLessThanOrEqual(4_000)
+	expect(config.longDescription.length).toBeLessThanOrEqual(1_024)
 	expect(config.capabilities.length).toBeLessThanOrEqual(20)
 	expect(config.defaultPrompts.length).toBeLessThanOrEqual(3)
 	expect(config.defaultPrompts.every((prompt: string) => prompt.length <= 128)).toBe(true)
@@ -81,27 +92,157 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 	}
 })
 
+test("native marketplace projections preserve identity, source, policy, and activation safety", () => {
+	expect(claudeMarketplace.metadata.version).toBe(config.version)
+	expect(claudeMarketplace.plugins[0]).toMatchObject({
+		name: config.name,
+		source: "./plugin",
+		defaultEnabled: false,
+	})
+	expect(claudeManifest).toMatchObject({
+		name: claudeMarketplace.plugins[0].name,
+		version: claudeMarketplace.metadata.version,
+		defaultEnabled: false,
+	})
+
+	expect(codexMarketplace.plugins[0]).toMatchObject({
+		name: config.name,
+		source: { source: "local", path: "./plugin" },
+		policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+		category: config.category,
+	})
+	expect(codexMarketplace).not.toHaveProperty("version")
+	expect(codexMarketplace.plugins[0]).not.toHaveProperty("version")
+	expect(codexMarketplace.plugins[0].policy.installation).not.toBe("INSTALLED_BY_DEFAULT")
+})
+
+test("disabled-on-install behavior names its Claude Code compatibility boundary", () => {
+	expect(CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY).toEqual({
+		minimumVersion: "2.1.154",
+		warning: "Earlier Claude Code clients ignore defaultEnabled and may enable plugins on install.",
+	})
+})
+
+test.each([
+	["stable", "1.2.3"],
+	["prerelease", "1.2.3-rc.1"],
+	["build", "1.2.3+build.5"],
+] as const)("accepts a valid %s semantic version", (_name, version) => {
+	const valid = structuredClone(config)
+	valid.version = version
+	expect(() => renderGeneratedFiles(valid)).not.toThrow()
+})
+
+test.each([
+	"https://github.com/myagentdojo/agent-plugin-template",
+	"https://git.example.com:8443/team/plugin.git?ref=main#source",
+] as const)("accepts the valid HTTPS repository URL %s", (repository) => {
+	const valid = structuredClone(config)
+	valid.repository = repository
+	expect(() => renderGeneratedFiles(valid)).not.toThrow()
+})
+
 test.each([
 	["name", (value: PluginConfig) => (value.name = "Not Valid"), "plugin name"],
-	["semantic version", (value: PluginConfig) => (value.version = "01.0.0"), "semantic versioning"],
+	["leading-zero core version", (value: PluginConfig) => (value.version = "01.0.0"), "semantic versioning"],
+	["leading-zero prerelease", (value: PluginConfig) => (value.version = "1.2.3-01"), "semantic versioning"],
+	["invalid prerelease", (value: PluginConfig) => (value.version = "1.2.3-rc_1"), "semantic versioning"],
+	["invalid build", (value: PluginConfig) => (value.version = "1.2.3+build_5"), "semantic versioning"],
+	["missing version component", (value: PluginConfig) => (value.version = "1.2"), "semantic versioning"],
+	["version length", (value: PluginConfig) => (value.version = `1.2.3-${"a".repeat(59)}`), "64 characters"],
 	["required display name", (value: PluginConfig) => (value.displayName = ""), "are required"],
+	["multiline display name", (value: PluginConfig) => (value.displayName = "Two\nLines"), "displayName"],
 	["display name", (value: PluginConfig) => (value.displayName = "x".repeat(31)), "displayName"],
 	["developer name", (value: PluginConfig) => (value.author.name = "x".repeat(81)), "author.name"],
+	["multiline developer name", (value: PluginConfig) => (value.author.name = "Two\nLines"), "author.name"],
+	["description length", (value: PluginConfig) => (value.description = "x".repeat(1_025)), "description"],
+	["description control text", (value: PluginConfig) => (value.description = "unsafe\u0000text"), "description"],
 	["empty short description", (value: PluginConfig) => (value.shortDescription = ""), "shortDescription"],
 	["short description line", (value: PluginConfig) => (value.shortDescription = "two\nlines"), "shortDescription"],
 	["short description length", (value: PluginConfig) => (value.shortDescription = "x".repeat(31)), "shortDescription"],
 	["long description", (value: PluginConfig) => (value.longDescription = ""), "longDescription"],
-	["long description length", (value: PluginConfig) => (value.longDescription = "x".repeat(4_001)), "longDescription"],
+	["long description length", (value: PluginConfig) => (value.longDescription = "x".repeat(1_025)), "longDescription"],
+	["long description control text", (value: PluginConfig) => (value.longDescription = "unsafe\u0000text"), "longDescription"],
 	["category", (value: PluginConfig) => (value.category = "Unknown"), "category"],
 	["capability count", (value: PluginConfig) => (value.capabilities = Array(21).fill("Read")), "capabilities"],
 	["empty capability", (value: PluginConfig) => (value.capabilities = [""]), "capabilities"],
 	["capability length", (value: PluginConfig) => (value.capabilities = ["x".repeat(121)]), "capabilities"],
-	["repository", (value: PluginConfig) => (value.repository = "git@example.com:plugin.git"), "repository"],
+	["duplicate capability", (value: PluginConfig) => (value.capabilities = ["Read files", " Read   files "]), "capabilities"],
+	["multiline capability", (value: PluginConfig) => (value.capabilities = ["Read\nfiles"]), "capabilities"],
+	["license", (value: PluginConfig) => (value.license = ""), "license"],
+	["unsupported license", (value: PluginConfig) => (value.license = "MIT OR Apache-2.0"), "license"],
+	["empty keyword", (value: PluginConfig) => (value.keywords = [""]), "keywords"],
+	["duplicate keyword", (value: PluginConfig) => (value.keywords = ["Agent Plugin", " agent   plugin "]), "keywords"],
+	["unsupported keyword", (value: PluginConfig) => (value.keywords = ["agent/plugin"]), "keywords"],
+	["non-HTTPS repository", (value: PluginConfig) => (value.repository = "http://example.com/plugin.git"), "repository"],
+	["repository without host", (value: PluginConfig) => (value.repository = "https://"), "repository"],
+	["repository credentials", (value: PluginConfig) => (value.repository = "https://user:secret@example.com/plugin.git"), "repository"],
+	["repository unsupported text", (value: PluginConfig) => (value.repository = "https://example.com/plugin name.git"), "repository"],
 	["canary owner", (value: PluginConfig) => (value.canary.owner = "not_valid"), "canary.owner"],
 	["prompt count", (value: PluginConfig) => (value.defaultPrompts = Array(4).fill("Run")), "defaultPrompts"],
 	["prompt length", (value: PluginConfig) => (value.defaultPrompts = ["x".repeat(129)]), "defaultPrompts"],
+	["empty prompt", (value: PluginConfig) => (value.defaultPrompts = [""]), "defaultPrompts"],
+	["whitespace prompt", (value: PluginConfig) => (value.defaultPrompts = ["   "]), "defaultPrompts"],
+	["multiline prompt", (value: PluginConfig) => (value.defaultPrompts = ["Run\nthis"]), "defaultPrompts"],
+	["duplicate prompt", (value: PluginConfig) => (value.defaultPrompts = ["Run this", " Run   this "]), "defaultPrompts"],
+	["mention prompt", (value: PluginConfig) => (value.defaultPrompts = ["@agent run this"]), "defaultPrompts"],
 ] as const)("rejects invalid published %s metadata", (_name, mutate, message) => {
 	const invalid = structuredClone(config)
 	mutate(invalid)
 	expect(() => renderGeneratedFiles(invalid)).toThrow(message)
 })
+
+test("directory-readiness text subset reports its limits without claiming publication readiness", () => {
+	expect(checkDirectoryReadiness(config)).toEqual({
+		ok: true,
+		profile: "directory-readiness text subset",
+		errors: [],
+		notEvaluated: [
+			"public ZIP",
+			"assets",
+			"identity",
+			"portal review",
+			"approval",
+			"publication",
+		],
+	})
+})
+
+test("package validation and directory-readiness text limits remain separate boundaries", () => {
+	const packageReady = structuredClone(config)
+	packageReady.displayName = "x".repeat(31)
+
+	expect(() => validatePackageContract(packageReady)).not.toThrow()
+	expect(checkDirectoryReadiness(packageReady)).toMatchObject({
+		profile: "directory-readiness text subset",
+		ok: false,
+		errors: ["displayName must be at most 30 characters"],
+	})
+	expect(() => renderGeneratedFiles(packageReady)).toThrow("directory-readiness text subset")
+})
+
+test("generated Codex hook commands bind the canonical plugin version", () => {
+	const codexHooks = JSON.parse(
+		readFileSync(join(pluginRoot, "hooks", "codex", "hooks.json"), "utf8"),
+	)
+	for (const event of ["SessionStart", "Stop"]) {
+		expect(codexHooks.hooks[event][0].hooks[0].command).toContain(
+			`--plugin-version ${config.version}`,
+		)
+	}
+})
+
+const claudeExecutable = Bun.which("claude") ?? "/Users/nathanvale/.local/bin/claude"
+if (existsSync(claudeExecutable)) {
+	test("checked-in Claude plugin passes strict native validation", () => {
+		const result = Bun.spawnSync({
+			cmd: [claudeExecutable, "plugin", "validate", "--strict", pluginRoot],
+			cwd: root,
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+		expect(result.exitCode, `${result.stdout.toString()}${result.stderr.toString()}`).toBe(0)
+	})
+} else {
+	test.skip("checked-in Claude plugin passes strict native validation (Claude CLI unavailable)", () => {})
+}
