@@ -169,18 +169,22 @@ test("canary dry-run proves identity, visibility, and source without publishing"
 
 test("publishing-system paths require both hosted canaries and report every trigger", () => {
 	expect(PUBLISHING_SYSTEM_PATHS).toEqual([
+		"package.json",
 		"scripts/package.ts",
 		"scripts/release-validate.ts",
 		"scripts/release-impact.ts",
+		"scripts/release-projection.ts",
 		"scripts/repository-readiness.ts",
 		"scripts/prove-distribution.ts",
 		"scripts/prove-harness-install.ts",
+		"scripts/harness-install-codex.ts",
 		"scripts/ship-canary.ts",
 		"scripts/plugin-config.ts",
 		"scripts/plugin-files.ts",
 		"scripts/init.ts",
 		".github/workflows/release.yml",
 		".github/workflows/plugin-ci.yml",
+		".github/workflows/hosted-canary.yml",
 		".github/workflows/pull-request-title.yml",
 		".github/release-please-config.json",
 	])
@@ -365,12 +369,12 @@ function installEvidence(target: Target, sourceSha: string): CandidateInstallEvi
 		checkoutSha: sourceSha,
 		manifestVersion: "0.1.0",
 		claude: {
-			mode: "native-local-marketplace",
+			mode: "native-hosted-marketplace",
 			version: "0.1.0",
 			cachedPayloadMatches: true,
 		},
 		codex: {
-			mode: "native-local-marketplace",
+			mode: "native-hosted-marketplace",
 			version: "0.1.0",
 			cachedPayloadMatches: true,
 		},
@@ -469,15 +473,32 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 	})
 })
 
-test("workflow gates publishing-system PRs and candidate branches without recipient fan-out", () => {
+test("untrusted PR workflow always reports without canary credentials", () => {
 	const workflow = readFileSync(join(root, ".github", "workflows", "plugin-ci.yml"), "utf8")
 
+	expect(workflow).toContain("pull_request:")
+	expect(workflow).not.toContain("pull_request:\n    paths:")
 	expect(workflow).toContain("candidate/**")
-	expect(workflow).toContain("canary-classification")
-	expect(workflow).toContain("hosted-canaries")
-	expect(workflow).toContain("CANARY_GH_TOKEN")
-	expect(workflow).toContain("CANARY_SSH_PRIVATE_KEY")
+	expect(workflow).not.toContain("CANARY_GH_TOKEN")
+	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
+	expect(workflow).not.toContain("environment: hosted-canary-qualification")
+})
+
+test("privileged canary workflow executes trusted code and treats the PR checkout as data", () => {
+	const workflow = readFileSync(join(root, ".github", "workflows", "hosted-canary.yml"), "utf8")
+
+	expect(workflow).toContain("pull_request_target:")
+	expect(workflow).toContain("checks: write")
+	expect(workflow).toContain("/check-runs")
+	expect(workflow).toContain("head_sha")
+	expect(workflow).toContain('name="Hosted public and private Git canaries"')
+	expect(workflow).toContain("ref: ${{ github.event.pull_request.base.sha }}")
+	expect(workflow).toContain("ref: ${{ github.event.pull_request.head.sha }}")
+	expect(workflow).toContain("path: candidate")
+	expect(workflow).toContain("persist-credentials: false")
+	expect(workflow).toContain("--source-root candidate")
+	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
+	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("environment: hosted-canary-qualification")
-	expect(workflow).toContain("needs.canary-classification.outputs.required == 'true'")
-	expect(workflow).toContain("Hosted canaries not required")
+	expect(workflow).toContain("CHECK_RUN_ID")
 })

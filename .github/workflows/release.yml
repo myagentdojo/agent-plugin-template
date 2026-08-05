@@ -6,9 +6,17 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      operation:
+        description: Maintain the release PR or repair an admitted immutable release
+        required: true
+        default: maintenance
+        type: choice
+        options:
+          - maintenance
+          - repair
       release_tag:
         description: Existing vX.Y.Z tag whose incomplete publication needs repair
-        required: true
+        required: false
         type: string
       replace_mismatched_assets:
         description: Replace mismatched same-tag assets after release-environment approval
@@ -39,18 +47,39 @@ jobs:
       release_target_sha: ${{ steps.resolve.outputs.release_target_sha }}
       record_reused: ${{ steps.resolve.outputs.record_reused }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
       - name: Resolve unique candidate or immutable repair tag
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_BRANCH: main
           EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
-          ALLOWED_RELEASE_PATHS: '[".claude-plugin/marketplace.json",".github/.release-please-manifest.json","CHANGELOG.md","package.json","plugin.config.json","plugin/.claude-plugin/plugin.json","plugin/.codex-plugin/plugin.json","plugin/hooks/codex/hooks.json","plugin/runtime/hello-world.js"]'
           REPAIR_TAG: ${{ inputs.release_tag }}
+          OPERATION: ${{ inputs.operation }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$OPERATION" == "maintenance" ]]; then
+              {
+                echo "mode=maintenance"
+                echo "candidate_sha="
+                echo "release_tag="
+                echo "version="
+                echo "release_target_sha="
+                echo "record_reused=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$OPERATION" != "repair" ]]; then
+              echo "Unsupported manual operation: ${OPERATION}." >&2
+              exit 1
+            fi
             if [[ -z "$REPAIR_TAG" ]]; then
               echo "Manual repair requires release_tag." >&2
               exit 1
@@ -113,15 +142,14 @@ jobs:
 
           projection=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" \
             | jq -sc 'add | map({filename,status,sha}) | sort_by(.filename)')
-          changed_paths=$(jq -c '[.[].filename] | sort' <<< "$projection")
-          unexpected_paths=$(jq -cn --argjson changed "$changed_paths" --argjson allowed "$ALLOWED_RELEASE_PATHS" \
-            '$changed - $allowed')
-          unsupported_statuses=$(jq -c '[.[] | select(.status != "modified")]' <<< "$projection")
-          if [[ "$changed_paths" == "[]" || "$unexpected_paths" != "[]" || "$unsupported_statuses" != "[]" ]]; then
-            echo "Release Please candidate changed files outside the allowed projection or used an unsupported file status." >&2
-            exit 1
-          fi
-          projection_digest=$(printf '%s' "$projection" | sha256sum | awk '{print $1}')
+          printf '%s\n' "$projection" > release-projection.json
+          base_parent=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.parents[0].sha')
+          projection_result=$(bun run scripts/release-projection.ts \
+            --base "$base_parent" \
+            --head "$GITHUB_SHA" \
+            --projection release-projection.json \
+            --json)
+          projection_digest=$(jq -r .projectionDigest <<< "$projection_result")
           version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${GITHUB_SHA}" --jq .content \
             | tr -d '\n' | base64 --decode | jq -r .version)
           release_tag="v${version}"
@@ -129,43 +157,6 @@ jobs:
             echo "Candidate tag ${release_tag} already exists; use manual incomplete-publication repair." >&2
             exit 1
           fi
-
-          base_parent=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.parents[0].sha')
-          projection_root=$(mktemp -d)
-          fetch_projection_file() {
-            local ref=$1
-            local path=$2
-            local output=$3
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=${ref}" --jq .content \
-              | tr -d '\n' | base64 --decode > "$output"
-          }
-          compare_json_except_version() {
-            local path=$1
-            local filter=$2
-            fetch_projection_file "$base_parent" "$path" "$projection_root/base.json"
-            fetch_projection_file "$GITHUB_SHA" "$path" "$projection_root/candidate.json"
-            jq -S "$filter" "$projection_root/base.json" > "$projection_root/base.normalized"
-            jq -S "$filter" "$projection_root/candidate.json" > "$projection_root/candidate.normalized"
-            cmp --silent "$projection_root/base.normalized" "$projection_root/candidate.normalized"
-          }
-          compare_json_except_version "package.json" 'del(.version)'
-          compare_json_except_version "plugin.config.json" 'del(.version)'
-          compare_json_except_version ".claude-plugin/marketplace.json" '.metadata |= del(.version)'
-          compare_json_except_version "plugin/.claude-plugin/plugin.json" 'del(.version)'
-          compare_json_except_version "plugin/.codex-plugin/plugin.json" 'del(.version)'
-          compare_json_except_version ".github/.release-please-manifest.json" 'del(.["."])'
-
-          fetch_projection_file "$base_parent" "plugin/hooks/codex/hooks.json" "$projection_root/base-hooks.json"
-          fetch_projection_file "$GITHUB_SHA" "plugin/hooks/codex/hooks.json" "$projection_root/candidate-hooks.json"
-          sed -E 's/--plugin-version [^" ]+/--plugin-version VERSION/g' "$projection_root/base-hooks.json" > "$projection_root/base-hooks.normalized"
-          sed -E 's/--plugin-version [^" ]+/--plugin-version VERSION/g' "$projection_root/candidate-hooks.json" > "$projection_root/candidate-hooks.normalized"
-          cmp --silent "$projection_root/base-hooks.normalized" "$projection_root/candidate-hooks.normalized"
-
-          fetch_projection_file "$base_parent" "plugin/runtime/hello-world.js" "$projection_root/base-runtime.js"
-          fetch_projection_file "$GITHUB_SHA" "plugin/runtime/hello-world.js" "$projection_root/candidate-runtime.js"
-          sed -E 's/(const PLUGIN_VERSION = )"[^"]+";/\1"VERSION";/' "$projection_root/base-runtime.js" > "$projection_root/base-runtime.normalized"
-          sed -E 's/(const PLUGIN_VERSION = )"[^"]+";/\1"VERSION";/' "$projection_root/candidate-runtime.js" > "$projection_root/candidate-runtime.normalized"
-          cmp --silent "$projection_root/base-runtime.normalized" "$projection_root/candidate-runtime.normalized"
 
           jq -nS \
             --arg repository "$GITHUB_REPOSITORY" \
@@ -227,13 +218,26 @@ jobs:
       - name: Validate manual repair binding before proof
         if: steps.resolve.outputs.mode == 'repair'
         env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.resolve.outputs.candidate_sha }}
           REPAIR_TAG: ${{ steps.resolve.outputs.release_tag }}
           RELEASE_TARGET_SHA: ${{ steps.resolve.outputs.release_target_sha }}
         run: |
           set -euo pipefail
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=publication-candidate-${CANDIDATE_SHA}" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')
+          if [[ -z "$artifact_id" ]]; then
+            echo "Repair requires the persisted publication candidate for ${CANDIDATE_SHA}." >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > publication-candidate.zip
+          unzip -p publication-candidate.zip candidate.json > persisted-candidate.json
           checkout_sha=$(git rev-parse HEAD)
           tag_sha=$(git ls-remote --refs origin "refs/tags/${REPAIR_TAG}" | awk '{print $1}')
-          CHECKOUT_SHA="$checkout_sha" TAG_SHA="$tag_sha" bun run release:validate -- --repair --json
+          CHECKOUT_SHA="$checkout_sha" \
+          TAG_SHA="$tag_sha" \
+          PUBLICATION_CANDIDATE_PATH=persisted-candidate.json \
+            bun run release:validate -- --repair --repository "$GITHUB_REPOSITORY" --json
 
   maintain:
     name: Maintain Release Please PR only
@@ -293,6 +297,8 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
+      - name: Install pinned native marketplace CLIs
+        run: bun add --global "@anthropic-ai/claude-code@2.1.222" "@openai/codex@0.146.1"
       - name: Validate and prove release payload
         env:
           SOURCE_COMMIT: ${{ needs.resolve.outputs.candidate_sha }}
@@ -311,11 +317,11 @@ jobs:
           checksums=$(find dist -maxdepth 1 -name '*.checksums.json' -print -quit)
           [[ -n "$checksums" ]]
           jq -e \
-            --arg repository "$GITHUB_REPOSITORY" \
+            --arg repository "https://github.com/${GITHUB_REPOSITORY}" \
             --arg sourceCommit "$CANDIDATE_SHA" \
             --arg tag "$RELEASE_TAG" \
             --arg version "$VERSION" \
-            '.sourceCommit == $sourceCommit and .tag == $tag and .version == $version and (.repository | endswith($repository))' \
+            '.sourceCommit == $sourceCommit and .tag == $tag and .version == $version and .repository == $repository' \
             "$checksums"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

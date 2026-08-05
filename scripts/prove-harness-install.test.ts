@@ -8,6 +8,7 @@ import {
 	assertReplacementAdmission,
 	codexHookTrustEvidence,
 	proveHarnessInstall,
+	redactTemporaryEvidencePath,
 } from "./prove-harness-install"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
@@ -48,12 +49,51 @@ test("both isolated harness installs report the tagged manifest version", () => 
 	expect(proof.versionAgreement).toBe(true)
 })
 
-test("proof command is standalone and does not make prove:all depend on installed harness CLIs", () => {
+test("release proof requires both native harness CLIs", () => {
 	const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
 	expect(packageJson.scripts["prove:harness-install"]).toBe(
 		"bun run scripts/prove-harness-install.ts",
 	)
-	expect(packageJson.scripts["prove:all"]).not.toContain("prove:harness-install")
+	expect(packageJson.scripts["prove:all"]).toContain("prove:harness-install -- --require-native")
+})
+
+test("strict CLI fails closed instead of reporting fixture-copy qualification", () => {
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "run", "scripts/prove-harness-install.ts", "--require-native", "--json"],
+		cwd: root,
+		env: { ...process.env, PATH: "/usr/bin:/bin" },
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("native harness CLIs are required")
+})
+
+test("default CLI also fails closed when native CLIs are unavailable", () => {
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "run", "scripts/prove-harness-install.ts", "--json"],
+		cwd: root,
+		env: { ...process.env, PATH: "/usr/bin:/bin" },
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("native harness CLIs are required")
+})
+
+test("cleaned CLI evidence redacts direct and macOS-aliased temporary paths", () => {
+	const temporaryRoot = "/var/folders/example/harness-install-proof-abc"
+	expect(redactTemporaryEvidencePath(`${temporaryRoot}/codex/home`, temporaryRoot)).toBe(
+		"[cleaned temporary evidence: codex/home]",
+	)
+	expect(
+		redactTemporaryEvidencePath(
+			"/private/var/folders/example/harness-install-proof-abc/codex/home",
+			temporaryRoot,
+		),
+	).toBe("[cleaned temporary evidence: codex/home]")
 })
 
 claudeNativeTest("AE6: Claude native scopes preserve state (Claude CLI required; fallback proves bytes)", () => {

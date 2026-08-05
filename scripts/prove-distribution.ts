@@ -118,9 +118,11 @@ if (helloResult.message !== "Hello, packaged!" || helloResult.sideEffects !== "n
 }
 
 for (const harness of ["claude", "codex"] as const) {
+	const hookArguments = ["hook", "--harness", harness, "--event", "SessionStart"]
+	if (harness === "codex") hookArguments.push("--plugin-version", pluginConfig.version)
 	const hook = runPackaged(
 		launcher,
-		["hook", "--harness", harness, "--event", "SessionStart"],
+		hookArguments,
 		'{"session_id":"packaged-offline-proof"}\n',
 	)
 	if (hook.exitCode !== 0 || !hook.stderr.includes(`hello-world hook: ${harness} SessionStart`)) {

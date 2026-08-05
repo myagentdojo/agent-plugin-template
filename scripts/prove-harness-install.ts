@@ -12,8 +12,12 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
+import {
+	proveCodexFixtureCopy as runCodexFixtureCopy,
+	proveCodexNative as runCodexNative,
+} from "./harness-install-codex"
 import { copyPluginPayload, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
@@ -25,11 +29,13 @@ import {
 const help = `Prove tagged plugin installation in isolated Claude and Codex homes.
 
 Usage:
-  bun run prove:harness-install [--json]
+  bun run prove:harness-install [--allow-fixture-copy] [--json]
   bun run prove:harness-install --help
 
 Options:
   --json       Emit the proof report as JSON. This is also the default output.
+  --require-native  Explicitly require both native CLIs (the default).
+  --allow-fixture-copy  Development-only byte proof when native CLIs are unavailable.
   -h, --help   Show this help.
 
 Safety:
@@ -37,10 +43,10 @@ Safety:
   Never reads or writes the operator's Claude or Codex plugin state.
 `
 
-type HarnessMode = "native-local-marketplace" | "fixture-copy"
+type HarnessMode = "native-local-marketplace" | "native-hosted-marketplace" | "fixture-copy"
 type ClaudeScope = "user" | "project" | "local"
 
-interface TaggedCheckout {
+export interface TaggedCheckout {
 	requestedRef: string
 	resolvedSha: string
 	checkoutRoot: string
@@ -48,7 +54,7 @@ interface TaggedCheckout {
 	inventory: string[]
 }
 
-interface FixtureRelease {
+export interface FixtureRelease {
 	repositoryRoot: string
 	base: TaggedCheckout
 	target: TaggedCheckout
@@ -74,7 +80,7 @@ interface TransportInput {
 	tokenEnvironmentOnly?: boolean
 }
 
-interface ReplacementAdmissionInput {
+export interface ReplacementAdmissionInput {
 	target: TaggedCheckout
 	restoration: TaggedCheckout
 	allowedRefs: string[]
@@ -165,7 +171,7 @@ interface CodexPluginListJson {
 	available: unknown[]
 }
 
-interface CodexInstallState {
+export interface CodexInstallState {
 	marketplaceAdd: CodexMarketplaceAddJson
 	add: CodexPluginAddJson
 	marketplace: CodexMarketplaceListJson
@@ -173,7 +179,7 @@ interface CodexInstallState {
 	plugin: CodexInstalledPlugin
 }
 
-interface CodexProof {
+export interface CodexProof {
 	mode: HarnessMode
 	version: string
 	installedPath: string
@@ -228,6 +234,22 @@ interface HarnessInstallProof {
 	trustDefinitionChanged: true
 	skips: HarnessSkip[]
 	nextAction: string
+}
+
+export interface HarnessInstallProofOptions {
+	/** Require both real harness CLIs; fixture copies cannot qualify CI or release. */
+	requireNative?: boolean
+}
+
+/** Replace a temporary evidence path with an explicit cleaned marker, including macOS /var aliases. */
+export function redactTemporaryEvidencePath(value: unknown, temporaryRoot: string): unknown {
+	if (typeof value !== "string") return value
+	const directRelative = value.startsWith(temporaryRoot) ? relative(temporaryRoot, value) : undefined
+	const temporaryName = basename(temporaryRoot)
+	const aliasIndex = value.indexOf(temporaryName)
+	const aliasRelative = aliasIndex === -1 ? undefined : value.slice(aliasIndex + temporaryName.length + 1)
+	const evidencePath = directRelative ?? aliasRelative
+	return evidencePath === undefined ? value : `[cleaned temporary evidence: ${evidencePath}]`
 }
 
 function command(
@@ -741,9 +763,13 @@ function installCodex(
 	pluginId: string,
 	environment: Record<string, string | undefined>,
 	cwd: string,
+	ref?: string,
 ): CodexInstallState {
+	const marketplaceArguments = [codexExecutable, "plugin", "marketplace", "add", marketplaceRoot]
+	if (ref) marketplaceArguments.push("--ref", ref)
+	marketplaceArguments.push("--json")
 	const addMarketplace = jsonCommand<CodexMarketplaceAddJson>(
-		[codexExecutable, "plugin", "marketplace", "add", marketplaceRoot, "--json"],
+		marketplaceArguments,
 		{ cwd, env: environment },
 	)
 	const add = jsonCommand<CodexPluginAddJson>([codexExecutable, "plugin", "add", pluginId, "--json"], {
@@ -756,6 +782,111 @@ function installCodex(
 	)
 	const listed = findCodexPlugin(codexExecutable, environment, cwd, pluginId)
 	return { marketplaceAdd: addMarketplace, add, marketplace, list: listed.raw, plugin: listed.plugin }
+}
+
+/** Native install evidence fetched independently from one hosted marketplace ref. */
+export interface HostedHarnessInstallProof {
+	temporaryRoot: string
+	claude: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
+	codex: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
+}
+
+/**
+ * Install one hosted marketplace ref through both native CLIs in isolated homes.
+ *
+ * The candidate checkout supplies expected bytes only. Both harnesses fetch the hosted repository
+ * independently, so a local fixture cannot satisfy this proof.
+ */
+export function proveHostedHarnessInstall(
+	sourceRoot: string,
+	repository: string,
+	ref: string,
+	expectedSha: string,
+): HostedHarnessInstallProof {
+	if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+		throw new Error(`hosted marketplace repository must be owner/repo: ${repository}`)
+	}
+	if (!ref || !/^[a-f0-9]{40}$/.test(expectedSha)) {
+		throw new Error("hosted marketplace proof requires a ref and full expected commit SHA")
+	}
+	const claudeExecutable = Bun.which("claude")
+	const codexExecutable = Bun.which("codex")
+	if (!claudeExecutable || !codexExecutable) {
+		throw new Error("native harness CLIs are required for hosted marketplace proof")
+	}
+	const repositoryRoot = resolve(sourceRoot)
+	const config = loadPluginConfig(repositoryRoot)
+	const expected: TaggedCheckout = {
+		requestedRef: ref,
+		resolvedSha: expectedSha,
+		checkoutRoot: repositoryRoot,
+		manifestVersion: config.version,
+		inventory: pluginPayloadInventory(repositoryRoot),
+	}
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "hosted-harness-install-proof-"))
+	try {
+		const claudeHome = join(temporaryRoot, "claude", "home")
+		const claudeProject = join(temporaryRoot, "claude", "project")
+		mkdirSync(claudeHome, { recursive: true })
+		mkdirSync(claudeProject, { recursive: true })
+		const claudeEnv = claudeEnvironment(claudeHome)
+		addClaudeMarketplace(
+			claudeExecutable,
+			`${repository}@${ref}`,
+			"user",
+			claudeEnv,
+			claudeProject,
+		)
+		const pluginId = `${config.name}@${config.name}`
+		command([claudeExecutable, "plugin", "install", pluginId, "--scope", "user"], {
+			cwd: claudeProject,
+			env: claudeEnv,
+		})
+		const claudeInstall = findClaudeInstall(
+			claudeExecutable,
+			claudeEnv,
+			claudeProject,
+			pluginId,
+			"user",
+		)
+		if (claudeInstall.version !== config.version) {
+			throw new Error("Claude hosted install reported the wrong manifest version")
+		}
+		const claudeInventory = comparePayload(expected, claudeInstall.activeCachePath)
+
+		const codexHome = join(temporaryRoot, "codex", "home")
+		const codexProject = join(temporaryRoot, "codex", "project")
+		mkdirSync(codexHome, { recursive: true })
+		mkdirSync(codexProject, { recursive: true })
+		const codexInstall = installCodex(
+			codexExecutable,
+			repository,
+			pluginId,
+			codexEnvironment(codexHome),
+			codexProject,
+			ref,
+		)
+		if (codexInstall.add.version !== config.version) {
+			throw new Error("Codex hosted install reported the wrong manifest version")
+		}
+		const codexInventory = comparePayload(expected, codexInstall.add.installedPath)
+		return {
+			temporaryRoot,
+			claude: {
+				mode: "native-hosted-marketplace",
+				version: claudeInstall.version,
+				inventory: claudeInventory,
+			},
+			codex: {
+				mode: "native-hosted-marketplace",
+				version: codexInstall.add.version,
+				inventory: codexInventory,
+			},
+		}
+	} catch (error) {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+		throw error
+	}
 }
 
 function removeCodex(
@@ -773,188 +904,6 @@ function removeCodex(
 		[codexExecutable, "plugin", "marketplace", "remove", marketplaceName, "--json"],
 		{ cwd, env: environment },
 	)
-}
-
-function proveCodexNative(
-	fixture: FixtureRelease,
-	pluginName: string,
-	codexExecutable: string,
-	temporaryRoot: string,
-): CodexProof {
-	const marketplaceName = pluginName
-	const pluginId = `${pluginName}@${marketplaceName}`
-	const home = join(temporaryRoot, "codex", "home")
-	const project = join(temporaryRoot, "codex", "project")
-	mkdirSync(home, { recursive: true })
-	mkdirSync(project, { recursive: true })
-	const environment = codexEnvironment(home)
-	const initial = installCodex(
-		codexExecutable,
-		fixture.base.checkoutRoot,
-		pluginId,
-		environment,
-		project,
-	)
-	if (initial.add.version !== fixture.base.manifestVersion) {
-		throw new Error("Codex install reported the wrong tagged manifest version")
-	}
-	const initialInventory = comparePayload(fixture.base, initial.add.installedPath)
-	const initialRuntimeDigest = digestFile(join(initial.add.installedPath, "runtime", "hello-world.js"))
-
-	assertReplacementAdmission({
-		target: fixture.target,
-		restoration: fixture.base,
-		allowedRefs: [fixture.base.requestedRef, fixture.target.requestedRef],
-		managed: false,
-		removable: true,
-	})
-	removeCodex(codexExecutable, pluginId, marketplaceName, environment, project)
-	const upgraded = installCodex(
-		codexExecutable,
-		fixture.target.checkoutRoot,
-		pluginId,
-		environment,
-		project,
-	)
-	const upgradedInventory = comparePayload(fixture.target, upgraded.add.installedPath)
-	const upgradedRuntimeDigest = digestFile(join(upgraded.add.installedPath, "runtime", "hello-world.js"))
-	if (initialRuntimeDigest === upgradedRuntimeDigest) {
-		throw new Error("Codex local reinstall did not change installed bytes")
-	}
-
-	removeCodex(codexExecutable, pluginId, marketplaceName, environment, project)
-	let restored = installCodex(
-		codexExecutable,
-		fixture.base.checkoutRoot,
-		pluginId,
-		environment,
-		project,
-	)
-	const restoredInventory = comparePayload(fixture.base, restored.add.installedPath)
-	if (restored.plugin.enabled !== initial.plugin.enabled) {
-		throw new Error("Codex rollback did not restore the prior enabled state")
-	}
-	removeCodex(codexExecutable, pluginId, marketplaceName, environment, project)
-	let failureRestored = false
-	try {
-		throw new Error("injected Codex failure after marketplace removal")
-	} catch {
-		restored = installCodex(
-			codexExecutable,
-			fixture.base.checkoutRoot,
-			pluginId,
-			environment,
-			project,
-		)
-		failureRestored =
-			restored.add.version === fixture.base.manifestVersion &&
-			restored.plugin.enabled === initial.plugin.enabled
-	}
-	if (!failureRestored) throw new Error("Codex injected-failure restoration did not recover state")
-	const marketplaceState = restored.marketplace.marketplaces.find(
-		(entry: { name?: string }) => entry.name === marketplaceName,
-	)
-	if (!marketplaceState) throw new Error("Codex marketplace JSON omitted the active marketplace")
-	if (marketplaceState.marketplaceSource.sourceType !== "local") {
-		throw new Error("Codex local proof did not report a local marketplace cache source")
-	}
-	const hookPath = join(restored.add.installedPath, "hooks", "codex", "hooks.json")
-	const hookSource = readFileSync(hookPath, "utf8")
-	if (!hookSource.includes(`--plugin-version ${fixture.base.manifestVersion}`)) {
-		throw new Error("Codex installed hook is not bound to the tagged plugin version")
-	}
-	return {
-		mode: "native-local-marketplace" as HarnessMode,
-		version: restored.add.version,
-		installedPath: restored.add.installedPath,
-		inventory: restoredInventory,
-		requestedRef: fixture.base.requestedRef,
-		resolvedSha: fixture.base.resolvedSha,
-		marketplaceIdentity: marketplaceName,
-		configuredSource: fixture.repositoryRoot,
-		configuredRef: fixture.base.requestedRef,
-		installedMarketplaceRoot: marketplaceState.root,
-		enabled: restored.plugin.enabled,
-		installPolicy: restored.plugin.installPolicy,
-		authPolicy: restored.plugin.authPolicy,
-		marketplaceCacheVersion: "local",
-		jsonEvidence: {
-			marketplaceAdd: restored.marketplaceAdd,
-			marketplaceList: restored.marketplace,
-			pluginAdd: restored.add,
-			pluginList: restored.list,
-		},
-		localRefresh: {
-			initialInstalledPath: initial.add.installedPath,
-			upgradedInstalledPath: upgraded.add.installedPath,
-			initialInventory,
-			upgradedInventory,
-			bytesChanged: true,
-			rolledBack: true,
-			enabledStateRestored: true,
-			failureRestored,
-		},
-		trust: {
-			pluginEnabled: restored.plugin.enabled,
-			hookDefinitionPresent: true,
-			hookTrusted: false,
-			preTrustExecution: "skipped",
-			separateFromEnablement: true,
-			interactiveAcceptance: "skipped: /hooks trust acceptance requires a human interactive task",
-		},
-	}
-}
-
-function proveCodexFixtureCopy(
-	fixture: FixtureRelease,
-	pluginName: string,
-	temporaryRoot: string,
-): CodexProof {
-	const installedPath = join(
-		temporaryRoot,
-		"codex-fixture-home",
-		"plugins",
-		"cache",
-		pluginName,
-		pluginName,
-		fixture.base.manifestVersion,
-	)
-	copyPluginPayload(fixture.base.checkoutRoot, installedPath)
-	return {
-		mode: "fixture-copy" as HarnessMode,
-		version: fixture.base.manifestVersion,
-		installedPath,
-		inventory: comparePayload(fixture.base, installedPath),
-		requestedRef: fixture.base.requestedRef,
-		resolvedSha: fixture.base.resolvedSha,
-		marketplaceIdentity: pluginName,
-		configuredSource: fixture.repositoryRoot,
-		configuredRef: fixture.base.requestedRef,
-		installedMarketplaceRoot: fixture.base.checkoutRoot,
-		enabled: true,
-		installPolicy: "AVAILABLE",
-		authPolicy: "ON_INSTALL",
-		marketplaceCacheVersion: "local",
-		jsonEvidence: null,
-		localRefresh: {
-			bytesChanged: false,
-			rolledBack: false,
-			enabledStateRestored: false,
-			failureRestored: false,
-		},
-		trust: {
-			pluginEnabled: true,
-			hookDefinitionPresent: true,
-			hookTrusted: false,
-			preTrustExecution: "skipped",
-			separateFromEnablement: true,
-			interactiveAcceptance: "skipped: Codex CLI unavailable",
-		},
-	}
-}
-
-function digestFile(path: string): string {
-	return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
 /**
@@ -1063,7 +1012,11 @@ export function codexHookTrustEvidence(pluginRoot: string): {
 	}
 }
 
-function runHarnessInstallProof(repositoryRoot: string, temporaryRoot: string): HarnessInstallProof {
+function runHarnessInstallProof(
+	repositoryRoot: string,
+	temporaryRoot: string,
+	options: HarnessInstallProofOptions,
+): HarnessInstallProof {
 	const fixture = createFixtureRelease(repositoryRoot, temporaryRoot)
 	admitGitTransport({
 		source: fixture.repositoryRoot,
@@ -1092,6 +1045,11 @@ function runHarnessInstallProof(repositoryRoot: string, temporaryRoot: string): 
 		},
 	]
 	const claudeExecutable = Bun.which("claude")
+	const codexExecutable = Bun.which("codex")
+	if (options.requireNative && (!claudeExecutable || !codexExecutable)) {
+		const missing = [!claudeExecutable && "claude", !codexExecutable && "codex"].filter(Boolean)
+		throw new Error(`native harness CLIs are required; missing: ${missing.join(", ")}`)
+	}
 	const claude = claudeExecutable
 		? proveClaudeNative(fixture, pluginConfig.name, claudeExecutable, temporaryRoot)
 		: proveClaudeFixtureCopy(fixture, pluginConfig.name, temporaryRoot)
@@ -1101,10 +1059,15 @@ function runHarnessInstallProof(repositoryRoot: string, temporaryRoot: string): 
 			reason: "Claude CLI unavailable; isolated direct-copy cache evidence remains byte-complete.",
 		})
 	}
-	const codexExecutable = Bun.which("codex")
 	const codex = codexExecutable
-		? proveCodexNative(fixture, pluginConfig.name, codexExecutable, temporaryRoot)
-		: proveCodexFixtureCopy(fixture, pluginConfig.name, temporaryRoot)
+		? runCodexNative(fixture, pluginConfig.name, codexExecutable, temporaryRoot, {
+				install: installCodex,
+				remove: removeCodex,
+				comparePayload,
+				environment: codexEnvironment,
+				assertReplacementAdmission,
+			})
+		: runCodexFixtureCopy(fixture, pluginConfig.name, temporaryRoot, comparePayload)
 	if (!codexExecutable) {
 		skips.push({
 			case: "Native Codex marketplace installation",
@@ -1152,12 +1115,15 @@ function runHarnessInstallProof(repositoryRoot: string, temporaryRoot: string): 
  * if (!proof.ok) process.exit(1)
  * ```
  */
-export function proveHarnessInstall(sourceRoot: string): HarnessInstallProof {
+export function proveHarnessInstall(
+	sourceRoot: string,
+	options: HarnessInstallProofOptions = {},
+): HarnessInstallProof {
 	const repositoryRoot = resolve(sourceRoot)
 	pluginPayloadInventory(repositoryRoot)
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "harness-install-proof-"))
 	try {
-		return runHarnessInstallProof(repositoryRoot, temporaryRoot)
+		return runHarnessInstallProof(repositoryRoot, temporaryRoot, options)
 	} catch (error) {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 		throw error
@@ -1171,17 +1137,22 @@ if (import.meta.main) {
 		process.exit(0)
 	}
 	for (const argument of arguments_) {
-		if (argument !== "--json") {
+		if (argument !== "--json" && argument !== "--require-native" && argument !== "--allow-fixture-copy") {
 			console.error(`Error: unknown option: ${argument}`)
 			console.error("Run `bun run prove:harness-install -- --help` for usage.")
 			process.exit(2)
 		}
 	}
 	try {
-		const proof = proveHarnessInstall(resolve(import.meta.dir, ".."))
-		const serializedProof = JSON.stringify(proof)
+		const proof = proveHarnessInstall(resolve(import.meta.dir, ".."), {
+			requireNative: !arguments_.includes("--allow-fixture-copy"),
+		})
+		const temporaryRoot = proof.temporaryRoot
+		const serializedProof = JSON.stringify(proof, (_key, value) =>
+			redactTemporaryEvidencePath(value, temporaryRoot),
+		)
 		rmSync(proof.temporaryRoot, { recursive: true, force: true })
-		console.log(serializedProof)
+		console.log(serializedProof.replace('"ok":true', '"ok":true,"evidenceRetained":false'))
 	} catch (error) {
 		console.error(
 			JSON.stringify({

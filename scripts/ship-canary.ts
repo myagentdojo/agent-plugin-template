@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { loadPluginConfig } from "./plugin-config"
-import { proveHarnessInstall } from "./prove-harness-install"
+import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
+import { proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
 const help = `Qualify publishing-system changes through public and private Git canaries.
@@ -11,13 +11,14 @@ const help = `Qualify publishing-system changes through public and private Git c
 Usage:
   bun run ship:canary -- --classify --base <git-ref> --head <git-ref> [--json]
   bun run ship:canary -- --dry-run [--ref <git-ref>] [--json]
-  bun run ship:canary -- --execute [--ref <git-ref>] [--json]
+  bun run ship:canary -- --execute [--ref <git-ref>] [--source-root <path>] [--json]
 
 Options:
   --classify         Classify base-to-head paths without repository writes
   --base <git-ref>   Base ref for --classify
   --head <git-ref>   Head ref for --classify
   --ref <git-ref>    Source ref to qualify (default: origin/main)
+  --source-root <path>  Candidate checkout to inspect as data (default: repository root)
   --dry-run          Prove identities, source, visibility, and immutable refs without writes
   --execute          Publish immutable candidate refs, wait for CI, and prove harness installs
   --json             Emit one JSON result on stdout
@@ -38,6 +39,7 @@ interface PublishOptions {
 	dryRun: boolean
 	execute: boolean
 	json: boolean
+	sourceRoot: string
 }
 
 interface ClassifyOptions {
@@ -51,18 +53,22 @@ type Options = PublishOptions | ClassifyOptions
 
 /** Paths whose changes alter how the template publishes or proves a plugin. */
 export const PUBLISHING_SYSTEM_PATHS = [
+	"package.json",
 	"scripts/package.ts",
 	"scripts/release-validate.ts",
 	"scripts/release-impact.ts",
+	"scripts/release-projection.ts",
 	"scripts/repository-readiness.ts",
 	"scripts/prove-distribution.ts",
 	"scripts/prove-harness-install.ts",
+	"scripts/harness-install-codex.ts",
 	"scripts/ship-canary.ts",
 	"scripts/plugin-config.ts",
 	"scripts/plugin-files.ts",
 	"scripts/init.ts",
 	".github/workflows/release.yml",
 	".github/workflows/plugin-ci.yml",
+	".github/workflows/hosted-canary.yml",
 	".github/workflows/pull-request-title.yml",
 	".github/release-please-config.json",
 ] as const
@@ -94,12 +100,12 @@ export interface CandidateInstallEvidence {
 	checkoutSha: string
 	manifestVersion: string
 	claude: {
-		mode: "native-local-marketplace" | "fixture-copy"
+		mode: "native-hosted-marketplace"
 		version: string
 		cachedPayloadMatches: boolean
 	}
 	codex: {
-		mode: "native-local-marketplace" | "fixture-copy"
+		mode: "native-hosted-marketplace"
 		version: string
 		cachedPayloadMatches: boolean
 	}
@@ -287,7 +293,7 @@ function parseOptions(arguments_: string[]): Options | null {
 		return null
 	}
 	const classify = arguments_.includes("--classify")
-	const valueOptions = classify ? ["--base", "--head"] : ["--ref"]
+	const valueOptions = classify ? ["--base", "--head"] : ["--ref", "--source-root"]
 	const flags = classify
 		? ["--classify", "--json"]
 		: ["--dry-run", "--execute", "--json"]
@@ -324,6 +330,7 @@ function parseOptions(arguments_: string[]): Options | null {
 		dryRun,
 		execute,
 		json: arguments_.includes("--json"),
+		sourceRoot: resolve(root, optionValue(arguments_, "--source-root", ".")),
 	}
 }
 
@@ -331,10 +338,11 @@ function commandOutput(
 	command: string[],
 	input?: string,
 	environment?: Record<string, string | undefined>,
+	cwd = root,
 ): CommandOutput {
 	const result = Bun.spawnSync({
 		cmd: command,
-		cwd: root,
+		cwd,
 		env: environment,
 		stdin: input === undefined ? "ignore" : new Blob([input]),
 		stdout: "pipe",
@@ -347,8 +355,8 @@ function commandOutput(
 	}
 }
 
-function processResult(command: string[], allowFailure = false): string | undefined {
-	const result = commandOutput(command)
+function processResult(command: string[], allowFailure = false, cwd = root): string | undefined {
+	const result = commandOutput(command, undefined, undefined, cwd)
 	if (result.exitCode !== 0) {
 		if (allowFailure) return undefined
 		throw new CanaryError(
@@ -620,7 +628,7 @@ async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun>
 function installCandidate(target: Target, sourceSha: string): CandidateInstallEvidence {
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "hosted-canary-install-"))
 	const checkoutRoot = join(temporaryRoot, "candidate")
-	let proof: ReturnType<typeof proveHarnessInstall> | undefined
+	let proof: ReturnType<typeof proveHostedHarnessInstall> | undefined
 	try {
 		const branch = target.candidateRef.replace(/^refs\/heads\//, "")
 		processResult([
@@ -643,7 +651,12 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 			)
 		}
 		const manifestVersion = loadPluginConfig(checkoutRoot).version
-		proof = proveHarnessInstall(checkoutRoot)
+		proof = proveHostedHarnessInstall(
+			checkoutRoot,
+			target.repository,
+			target.candidateRef.replace(/^refs\/heads\//, ""),
+			sourceSha,
+		)
 		return {
 			repository: target.repository,
 			candidateRef: target.candidateRef,
@@ -683,8 +696,8 @@ function assertCandidateInstall(
 		evidence.repository === target.repository &&
 		evidence.candidateRef === target.candidateRef &&
 		evidence.checkoutSha === sourceSha &&
-		evidence.claude.mode === "native-local-marketplace" &&
-		evidence.codex.mode === "native-local-marketplace" &&
+		evidence.claude.mode === "native-hosted-marketplace" &&
+		evidence.codex.mode === "native-hosted-marketplace" &&
 		evidence.claude.version === evidence.manifestVersion &&
 		evidence.codex.version === evidence.manifestVersion &&
 		evidence.claude.cachedPayloadMatches &&
@@ -744,9 +757,13 @@ export async function qualifyTargets(
 }
 
 function preflight(options: PublishOptions): Preflight {
-	const config = loadPluginConfig(root)
+	const config = loadPluginConfig(options.sourceRoot)
 	const identity = processResult(["gh", "api", "user", "--jq", ".login"]) || ""
-	const dirty = processResult(["git", "status", "--porcelain", "--untracked-files=no"])
+	const dirty = processResult(
+		["git", "status", "--porcelain", "--untracked-files=no"],
+		false,
+		options.sourceRoot,
+	)
 	if (dirty) {
 		throw new CanaryError(
 			"dirty_checkout",
@@ -755,8 +772,13 @@ function preflight(options: PublishOptions): Preflight {
 			false,
 		)
 	}
-	const sourceSha = processResult(["git", "rev-parse", "--verify", `${options.ref}^{commit}`]) || ""
-	const headSha = processResult(["git", "rev-parse", "--verify", "HEAD^{commit}"])
+	const sourceSha =
+		processResult(["git", "rev-parse", "--verify", `${options.ref}^{commit}`], false, options.sourceRoot) || ""
+	const headSha = processResult(
+		["git", "rev-parse", "--verify", "HEAD^{commit}"],
+		false,
+		options.sourceRoot,
+	)
 	if (headSha !== sourceSha) {
 		throw new CanaryError(
 			"source_not_checked_out",
@@ -765,7 +787,15 @@ function preflight(options: PublishOptions): Preflight {
 			false,
 		)
 	}
-	processResult([process.execPath, "run", "generate:check"])
+	const generated = checkGeneratedFiles(options.sourceRoot, config)
+	if (generated.length > 0) {
+		throw new CanaryError(
+			"generated_files_stale",
+			`candidate generated files differ from plugin.config.json: ${generated.join(", ")}`,
+			"regenerate and commit the candidate manifests before qualifying canaries",
+			false,
+		)
+	}
 	const origin = processResult(["git", "remote", "get-url", "origin"]) || ""
 	const resolvedTransport = resolveTransportIdentity(origin)
 	const boundTransport = bindTransportIdentity(

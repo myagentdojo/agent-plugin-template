@@ -1,17 +1,21 @@
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { RELEASE_PROJECTION_PATH_SET } from "./release-projection"
+
 const root = resolve(import.meta.dir, "..")
 
 const help = `Validate release metadata and workflow invariants.
 
 Usage:
   bun run release:validate [--json]
-  bun run release:validate --repair --tag vX.Y.Z --checkout-sha SHA --tag-sha SHA [--release-target-sha SHA] [--json]
+  bun run release:validate --repair --candidate candidate.json --repository owner/repo --tag vX.Y.Z --checkout-sha SHA --tag-sha SHA [--release-target-sha SHA] [--json]
   bun run release:validate --help
 
 Options:
   --repair                    Validate an existing immutable tag before repair.
+  --candidate PATH            Persisted publication-candidate record required for repair.
+  --repository OWNER/REPO     Current GitHub repository identity.
   --tag TAG                   Existing vX.Y.Z tag. Falls back to REPAIR_TAG.
   --checkout-sha SHA          Checked-out commit. Falls back to CHECKOUT_SHA.
   --tag-sha SHA               Resolved immutable tag commit. Falls back to TAG_SHA.
@@ -23,17 +27,7 @@ Side effects: none. Reads repository files only.
 `
 
 /** Files a Release Please version projection may change before publication admission. */
-export const ALLOWED_RELEASE_PROJECTION = new Set([
-	".claude-plugin/marketplace.json",
-	".github/.release-please-manifest.json",
-	"CHANGELOG.md",
-	"package.json",
-	"plugin.config.json",
-	"plugin/.claude-plugin/plugin.json",
-	"plugin/.codex-plugin/plugin.json",
-	"plugin/hooks/codex/hooks.json",
-	"plugin/runtime/hello-world.js",
-])
+export const ALLOWED_RELEASE_PROJECTION = RELEASE_PROJECTION_PATH_SET
 
 /** Merged pull-request facts resolved from GitHub before any release proof. */
 export interface ReleasePullRequestCandidate {
@@ -143,12 +137,30 @@ function recordsEqual(left: PublicationCandidateRecord, right: PublicationCandid
 	return JSON.stringify(left) === JSON.stringify(right)
 }
 
-function repositoryIdentity(repository: string): string {
+export function canonicalGitHubRepositoryIdentity(repository: string): string {
+	const slug = /^(?<owner>[A-Za-z0-9_.-]+)\/(?<name>[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(repository)
+	if (slug?.groups) return `github.com/${slug.groups.owner}/${slug.groups.name}`.toLowerCase()
+	let url: URL
 	try {
-		return new URL(repository).pathname.replace(/^\//, "").replace(/\.git$/, "")
+		url = new URL(repository)
 	} catch {
-		return repository.replace(/^\//, "").replace(/\.git$/, "")
+		throw new Error(`repository is not a canonical GitHub repository: ${repository}`)
 	}
+	if (
+		url.hostname.toLowerCase() !== "github.com" ||
+		url.username ||
+		url.password ||
+		url.port ||
+		url.search ||
+		url.hash
+	) {
+		throw new Error(`repository is not a canonical GitHub repository: ${repository}`)
+	}
+	const path = url.pathname.replace(/^\//, "").replace(/\.git$/, "")
+	if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(path)) {
+		throw new Error(`repository is not a canonical GitHub repository: ${repository}`)
+	}
+	return `github.com/${path}`.toLowerCase()
 }
 
 /**
@@ -245,8 +257,11 @@ export function validatePublicationBinding(
 	if (checksums.tag !== candidate.tag || checksums.version !== candidate.version) {
 		throw new Error("packaged tag or version does not match publication candidate")
 	}
-	if (repositoryIdentity(checksums.repository) !== repositoryIdentity(candidate.repository)) {
-		throw new Error("packaged repository does not match publication candidate")
+	if (
+		canonicalGitHubRepositoryIdentity(checksums.repository) !==
+		canonicalGitHubRepositoryIdentity(candidate.repository)
+	) {
+		throw new Error("packaged GitHub repository does not match publication candidate")
 	}
 	return candidate
 }
@@ -275,6 +290,29 @@ export function validateRepairBinding(
 		throw new Error("existing GitHub Release target does not match checkout SHA")
 	}
 	return { tag: input.tag, commit: input.checkoutSha, version: input.manifestVersion }
+}
+
+/** Bind a manual repair to its original immutable publication admission record. */
+export function validateRepairCandidateBinding(
+	input: RepairBindingInput & {
+		candidate: PublicationCandidateRecord
+		repository: string
+	},
+): { tag: string; commit: string; version: string } {
+	if (
+		canonicalGitHubRepositoryIdentity(input.candidate.repository) !==
+		canonicalGitHubRepositoryIdentity(input.repository)
+	) {
+		throw new Error("repair repository does not match publication candidate")
+	}
+	if (
+		input.candidate.tag !== input.tag ||
+		input.candidate.mergeCommit !== input.checkoutSha ||
+		input.candidate.version !== input.manifestVersion
+	) {
+		throw new Error("repair tag, commit, or version does not match publication candidate")
+	}
+	return validateRepairBinding(input)
 }
 
 function readJson(repositoryRoot: string, path: string): Record<string, any> {
@@ -398,9 +436,8 @@ function validateRepository(repositoryRoot: string) {
 		"publication-candidate-${GITHUB_SHA}",
 		"merge_commit_sha",
 		"EXPECTED_RELEASE_PLEASE_LOGIN",
-		"ALLOWED_RELEASE_PATHS",
 		"parent_count",
-		"compare_json_except_version",
+		"scripts/release-projection.ts",
 		'expectedTagState:"absent"',
 		"bun run prove:all",
 		"git diff --exit-code -- plugin/runtime/hello-world.js plugin/hooks/codex/hooks.json",
@@ -450,6 +487,8 @@ interface ParsedArguments {
 	checkoutSha?: string
 	tagSha?: string
 	releaseTargetSha?: string
+	candidatePath?: string
+	repository?: string
 }
 
 function parseArguments(arguments_: string[]): ParsedArguments {
@@ -459,14 +498,16 @@ function parseArguments(arguments_: string[]): ParsedArguments {
 		if (argument === "--json") parsed.json = true
 		else if (argument === "--repair") parsed.repair = true
 		else if (argument === "--help" || argument === "-h") parsed.help = true
-		else if (["--tag", "--checkout-sha", "--tag-sha", "--release-target-sha"].includes(argument)) {
+		else if (["--tag", "--checkout-sha", "--tag-sha", "--release-target-sha", "--candidate", "--repository"].includes(argument)) {
 			const value = arguments_[index + 1]
 			if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`)
 			index += 1
 			if (argument === "--tag") parsed.tag = value
 			else if (argument === "--checkout-sha") parsed.checkoutSha = value
 			else if (argument === "--tag-sha") parsed.tagSha = value
-			else parsed.releaseTargetSha = value
+			else if (argument === "--release-target-sha") parsed.releaseTargetSha = value
+			else if (argument === "--candidate") parsed.candidatePath = value
+			else parsed.repository = value
 		} else throw new Error(`unknown option: ${argument}`)
 	}
 	return parsed
@@ -489,7 +530,14 @@ function main(): void {
 	try {
 		const result = validateRepository(root)
 		if (parsed.repair) {
-			const repair = validateRepairBinding({
+			const candidatePath = parsed.candidatePath ?? process.env.PUBLICATION_CANDIDATE_PATH
+			if (!candidatePath) throw new Error("publication candidate record is required for repair")
+			const candidate = JSON.parse(readFileSync(candidatePath, "utf8")) as PublicationCandidateRecord
+			const repository = parsed.repository ?? process.env.GITHUB_REPOSITORY
+			if (!repository) throw new Error("repository identity is required for repair")
+			const repair = validateRepairCandidateBinding({
+				candidate,
+				repository,
 				tag: parsed.tag ?? process.env.REPAIR_TAG ?? "",
 				checkoutSha: parsed.checkoutSha ?? process.env.CHECKOUT_SHA ?? "",
 				tagSha: parsed.tagSha ?? process.env.TAG_SHA ?? "",

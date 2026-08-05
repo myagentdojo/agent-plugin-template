@@ -55,6 +55,7 @@ export interface WorkflowSource {
 export const REQUIRED_STATUS_CHECKS = [
 	"Conventional Commit title",
 	"Release impact",
+	"Hosted public and private Git canaries",
 	"Compatibility (linux-x64)",
 	"Compatibility (linux-arm64)",
 	"Compatibility (darwin-arm64)",

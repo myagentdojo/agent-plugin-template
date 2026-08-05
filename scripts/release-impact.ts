@@ -4,23 +4,10 @@ const generatedPayloadPaths = new Set([
 	".claude-plugin/marketplace.json",
 	"plugin.config.json",
 ])
-const releasePleaseProjectionPaths = new Set([
-	"package.json",
-	"plugin.config.json",
-	".claude-plugin/marketplace.json",
-	"plugin/.claude-plugin/plugin.json",
-	"plugin/.codex-plugin/plugin.json",
-	"plugin/runtime/hello-world.js",
-	"plugin/hooks/codex/hooks.json",
-	".github/.release-please-manifest.json",
-	"CHANGELOG.md",
-])
-const jsonVersionPaths = new Set([
-	"package.json",
-	"plugin.config.json",
-	"plugin/.claude-plugin/plugin.json",
-	"plugin/.codex-plugin/plugin.json",
-])
+import {
+	RELEASE_PROJECTION_PATH_SET,
+	isReleaseProjectionVersionOnlyChange,
+} from "./release-projection"
 const releasableTitle =
 	/^(?:(?:feat|fix|perf)(?:\([a-z0-9._/-]+\))?!?|[a-z][a-z0-9-]*(?:\([a-z0-9._/-]+\))?!): .+$/
 
@@ -120,27 +107,6 @@ function isPayloadPath(path: string): boolean {
 	)
 }
 
-function normalizedJsonVersion(path: string, contents: string): string | undefined {
-	try {
-		const value = JSON.parse(contents) as Record<string, unknown>
-		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
-		if (path === ".claude-plugin/marketplace.json") {
-			const metadata = value.metadata
-			if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined
-			delete (metadata as Record<string, unknown>).version
-		} else if (path === ".github/.release-please-manifest.json") {
-			delete value["."]
-		} else if (jsonVersionPaths.has(path)) {
-			delete value.version
-		} else {
-			return undefined
-		}
-		return JSON.stringify(value)
-	} catch {
-		return undefined
-	}
-}
-
 /**
  * Compare one projection file after removing only its Release Please-owned version field.
  *
@@ -159,24 +125,7 @@ export function isReleasePleaseVersionOnlyChange(
 	before: string,
 	after: string,
 ): boolean {
-	if (!releasePleaseProjectionPaths.has(path)) return false
-	if (path === "CHANGELOG.md") return true
-	if (path === "plugin/hooks/codex/hooks.json") {
-		const normalize = (contents: string): string =>
-			contents.replace(/--plugin-version\s+[^"\s]+/g, "--plugin-version VERSION")
-		return normalize(before) === normalize(after)
-	}
-	if (path === "plugin/runtime/hello-world.js") {
-		const normalize = (contents: string): string =>
-			contents.replace(
-				/const PLUGIN_VERSION = "[^"]+";/g,
-				'const PLUGIN_VERSION = "VERSION";',
-			)
-		return normalize(before) === normalize(after)
-	}
-	const normalizedBefore = normalizedJsonVersion(path, before)
-	const normalizedAfter = normalizedJsonVersion(path, after)
-	return normalizedBefore !== undefined && normalizedBefore === normalizedAfter
+	return isReleaseProjectionVersionOnlyChange(path, before, after)
 }
 
 /**
@@ -208,7 +157,7 @@ export function classifyReleaseImpact(input: ReleaseImpactInput): ReleaseImpactR
 		payloadChanged &&
 		input.changedFiles.length > 0 &&
 		input.changedFiles.every(
-			(file) => releasePleaseProjectionPaths.has(file.path) && file.versionOnly === true,
+			(file) => RELEASE_PROJECTION_PATH_SET.has(file.path) && file.versionOnly === true,
 		)
 	const titleIsReleasable = releasableTitle.test(input.title)
 

@@ -7,6 +7,7 @@ import { expect, test } from "bun:test"
 import {
 	admitPublicationCandidate,
 	validatePublicationBinding,
+	validateRepairCandidateBinding,
 	validateRepairBinding,
 } from "./release-validate"
 
@@ -204,16 +205,20 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(actionReferences.every((reference) => /^[a-f0-9]{40}$/.test(reference))).toBe(true)
 	expect(workflow).toContain("skip-github-release")
 	expect(workflow).toContain("publication-candidate-${GITHUB_SHA}")
+	expect(workflow).toContain("operation:")
+	expect(workflow).toContain("PUBLICATION_CANDIDATE_PATH")
+	expect(workflow).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(workflow).toContain("merge_commit_sha")
 	expect(workflow).toContain("EXPECTED_RELEASE_PLEASE_LOGIN")
-	expect(workflow).toContain("ALLOWED_RELEASE_PATHS")
-	expect(workflow).toContain("'$changed - $allowed'")
-	expect(workflow).toContain('select(.status != "modified")')
+	expect(workflow).toContain("scripts/release-projection.ts")
+	expect(workflow).not.toContain("ALLOWED_RELEASE_PATHS")
 	expect(workflow).not.toContain("missing_paths")
 	expect(workflow).toContain("parent_count")
-	expect(workflow).toContain("compare_json_except_version")
+	expect(workflow).not.toContain("compare_json_except_version")
 	expect(workflow).toContain('expectedTagState:"absent"')
 	expect(workflow).toContain("bun run prove:all")
+	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
+	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("SOURCE_COMMIT")
 	expect(workflow).toContain("ref: ${{ needs.resolve.outputs.candidate_sha }}")
 	expect(workflow).toContain("git tag \"$RELEASE_TAG\" \"$CANDIDATE_SHA\"")
@@ -232,6 +237,7 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("actions/attest")
 	expect(workflow).not.toContain("ref: ${{ inputs.release_tag || github.sha }}")
 	expect(workflow).not.toContain("*.provenance.json")
+	expect(workflow).not.toContain("endswith($repository)")
 })
 
 test("publication candidate admission binds one merged Release Please PR to github.sha", () => {
@@ -381,6 +387,51 @@ test("publication binding rejects an artifact proven from SHA A under a tag for 
 	).toThrow("tag target")
 })
 
+test("publication binding rejects a lookalike repository on another host", () => {
+	const candidate = admitPublicationCandidate(admissionInput())
+	expect(() =>
+		validatePublicationBinding({
+			candidate,
+			tag: "v0.1.0",
+			tagSha: "a".repeat(40),
+			manifestVersion: "0.1.0",
+			releaseTargetSha: "a".repeat(40),
+			checksums: {
+				repository: "https://evil.example/myagentdojo/agent-plugin-template",
+				sourceCommit: "a".repeat(40),
+				tag: "v0.1.0",
+				version: "0.1.0",
+			},
+		}),
+	).toThrow("GitHub repository")
+})
+
+test("manual repair requires the original publication candidate record", () => {
+	const candidate = admitPublicationCandidate(admissionInput())
+	expect(
+		validateRepairCandidateBinding({
+			candidate,
+			repository: "myagentdojo/agent-plugin-template",
+			tag: "v0.1.0",
+			checkoutSha: "a".repeat(40),
+			tagSha: "a".repeat(40),
+			manifestVersion: "0.1.0",
+			releaseTargetSha: "a".repeat(40),
+		}),
+	).toEqual({ tag: "v0.1.0", commit: "a".repeat(40), version: "0.1.0" })
+
+	expect(() =>
+		validateRepairCandidateBinding({
+			candidate,
+			repository: "myagentdojo/agent-plugin-template",
+			tag: "v0.1.0",
+			checkoutSha: "c".repeat(40),
+			tagSha: "c".repeat(40),
+			manifestVersion: "0.1.0",
+		}),
+	).toThrow("publication candidate")
+})
+
 test("manual repair rejects a missing tag", () => {
 	expect(() =>
 		validateRepairBinding({
@@ -427,9 +478,16 @@ test("manual repair rejects a Release targeting another SHA", () => {
 })
 
 test("manual repair CLI emits one bound JSON result", () => {
+	const temporaryRoot = copyRepository()
 	const sha = "a".repeat(40)
-	const result = validateWithArguments(root, [
+	const candidatePath = join(temporaryRoot, "candidate.json")
+	writeFileSync(candidatePath, `${JSON.stringify(admitPublicationCandidate(admissionInput()))}\n`)
+	const result = validateWithArguments(temporaryRoot, [
 		"--repair",
+		"--candidate",
+		candidatePath,
+		"--repository",
+		"myagentdojo/agent-plugin-template",
 		"--tag",
 		"v0.1.0",
 		"--checkout-sha",
@@ -447,4 +505,21 @@ test("manual repair CLI emits one bound JSON result", () => {
 		tag: "v0.1.0",
 		repair: { tag: "v0.1.0", commit: sha, version: "0.1.0" },
 	})
+})
+
+test("manual repair CLI fails closed without a persisted publication candidate", () => {
+	const sha = "a".repeat(40)
+	const result = validateWithArguments(root, [
+		"--repair",
+		"--tag",
+		"v0.1.0",
+		"--checkout-sha",
+		sha,
+		"--tag-sha",
+		sha,
+		"--json",
+	])
+
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("publication candidate record is required")
 })
