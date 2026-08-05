@@ -1,4 +1,14 @@
-import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { afterAll, beforeAll, expect, test } from "bun:test"
@@ -94,6 +104,56 @@ test("default CLI also fails closed when native CLIs are unavailable", () => {
 
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("native harness CLIs are required")
+})
+
+test("strict CLI checks native CLIs before fixture Git work", () => {
+	const executableRoot = mkdtempSync(join(tmpdir(), "harness-native-path-"))
+	const gitMarker = join(executableRoot, "git-called")
+	const gitExecutable = join(executableRoot, "git")
+	writeFileSync(gitExecutable, `#!/bin/sh\n: > ${JSON.stringify(gitMarker)}\nexit 99\n`)
+	chmodSync(gitExecutable, 0o755)
+	try {
+		const result = Bun.spawnSync({
+			cmd: [
+				process.execPath,
+				"run",
+				"scripts/prove-harness-install.ts",
+				"--require-native",
+				"--json",
+			],
+			cwd: root,
+			env: { ...process.env, PATH: executableRoot },
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain("native harness CLIs are required")
+		expect(existsSync(gitMarker)).toBe(false)
+	} finally {
+		rmSync(executableRoot, { recursive: true, force: true })
+	}
+})
+
+test("CLI rejects conflicting native proof modes as usage", () => {
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"scripts/prove-harness-install.ts",
+			"--require-native",
+			"--allow-fixture-copy",
+			"--json",
+		],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).toBe(2)
+	expect(result.stderr.toString()).toContain(
+		"--require-native cannot be combined with --allow-fixture-copy",
+	)
 })
 
 test("cleaned CLI evidence redacts direct and macOS-aliased temporary paths", () => {

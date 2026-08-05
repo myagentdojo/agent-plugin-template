@@ -60,13 +60,13 @@ export function pluginPayloadInventory(sourceRoot: string): string[] {
 			const status = lstatSync(absolutePath)
 
 			if (status.isSymbolicLink()) throw unsafeEntry(relativePath, "symlink")
+			if (!status.isDirectory() && !status.isFile()) {
+				throw unsafeEntry(relativePath, "special file (FIFO, device, or socket)")
+			}
 			assertRealpathContained(pluginRealRoot, absolutePath, relativePath)
 			if (status.isDirectory()) {
 				walk(absolutePath, relativePath)
 				continue
-			}
-			if (!status.isFile()) {
-				throw unsafeEntry(relativePath, "special file (FIFO, device, or socket)")
 			}
 			inventory.push(relativePath)
 		}

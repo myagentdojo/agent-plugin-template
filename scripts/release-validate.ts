@@ -413,6 +413,11 @@ function validateRepository(repositoryRoot: string) {
 			throw new Error(`release-please extra-files is missing ${expected}`)
 		}
 	}
+	for (const configured of configuredExtraFiles) {
+		if (!expectedExtraFiles.has(configured)) {
+			throw new Error(`release-please extra-files is unexpected: ${configured}`)
+		}
+	}
 
 	for (const marker of [
 		"x-release-please-start-version",

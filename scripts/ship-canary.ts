@@ -54,6 +54,7 @@ type Options = PublishOptions | ClassifyOptions
 /** Paths whose changes alter how the template publishes or proves a plugin. */
 export const PUBLISHING_SYSTEM_PATHS = [
 	"package.json",
+	"plugin.config.json",
 	"scripts/package.ts",
 	"scripts/release-validate.ts",
 	"scripts/release-impact.ts",

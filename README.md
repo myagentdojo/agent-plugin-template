@@ -368,7 +368,7 @@ flowchart LR
 
 1. Open **Settings → Actions → General → Workflow permissions**. Keep the default workflow permission read-only and allow GitHub Actions to create and approve pull requests.
 2. Enable squash merging for normal PRs and merge commits for release PRs. Publication admits only a two-parent release-PR merge commit.
-3. Protect `main`. Require `Conventional Commit title`, `Release impact`, all four `Compatibility` checks, and `Deterministic package`.
+3. Protect `main`. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
 4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
 6. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
@@ -392,9 +392,18 @@ The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflo
 
 Do not hand-edit versions or `CHANGELOG.md`. Do not create the tag first. Do not publish to npm.
 
-### Repair an incomplete publication
+### Manually maintain or repair release state
 
-Manual dispatch is repair-only. It requires `release_tag` set to the exact existing `vX.Y.Z` tag; there is no empty-input normal mode. This repairs an incomplete publication; it does not create a new release.
+Manual dispatch accepts two operation values. `maintenance` is the default; it only updates the standing release PR and never publishes. `repair` requires `release_tag` set to the exact existing `vX.Y.Z` tag. This repairs an incomplete publication; it does not create a new release.
+
+Run release-PR maintenance explicitly with:
+
+```sh
+gh workflow run Release \
+  --repo OWNER/REPOSITORY \
+  --ref main \
+  -f operation=maintenance
+```
 
 Start a compare-before-write repair with mismatched replacement disabled:
 

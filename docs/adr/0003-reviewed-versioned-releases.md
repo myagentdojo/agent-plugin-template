@@ -20,7 +20,7 @@ Packaging emits a deterministic `tar.gz` and `*.checksums.json`. The JSON binds 
 
 ## Repair contract
 
-Manual dispatch requires `release_tag` naming an existing `vX.Y.Z` tag. Repair begins from the immutable tag, repeats the complete proof, and validates any existing GitHub Release target. It compares each asset before writing: matching assets remain untouched, missing assets are added, and mismatches fail closed. A mismatched asset may be replaced only when `replace_mismatched_assets=true` is approved through the protected `release` environment. Repair never moves the tag and never represents a new release.
+Manual dispatch accepts `operation=maintenance` or `operation=repair`. Maintenance is the default and only updates the standing release PR. Repair requires `operation=repair` plus `release_tag` naming an existing `vX.Y.Z` tag. Repair begins from the immutable tag, repeats the complete proof, and validates any existing GitHub Release target. It compares each asset before writing: matching assets remain untouched, missing assets are added, and mismatches fail closed. A mismatched asset may be replaced only when `replace_mismatched_assets=true` is approved through the protected `release` environment. Repair never moves the tag and never represents a new release.
 
 ## Human-owned safeguards
 

@@ -181,6 +181,11 @@ test.each([
 	["repository query", (value: PluginConfig) => (value.repository = "https://github.com/team/plugin.git?ref=main"), "canonical GitHub"],
 	["repository unsupported text", (value: PluginConfig) => (value.repository = "https://example.com/plugin name.git"), "repository"],
 	["canary owner", (value: PluginConfig) => (value.canary.owner = "not_valid"), "canary.owner"],
+	[
+		"missing canary owner",
+		(value: PluginConfig) => delete (value.canary as { owner?: string }).owner,
+		"canary.owner",
+	],
 	["prompt count", (value: PluginConfig) => (value.defaultPrompts = Array(4).fill("Run")), "defaultPrompts"],
 	["prompt length", (value: PluginConfig) => (value.defaultPrompts = ["x".repeat(129)]), "defaultPrompts"],
 	["empty prompt", (value: PluginConfig) => (value.defaultPrompts = [""]), "defaultPrompts"],
@@ -234,8 +239,8 @@ test("generated Codex hook commands bind the canonical plugin version", () => {
 	}
 })
 
-const claudeExecutable = Bun.which("claude") ?? "/Users/nathanvale/.local/bin/claude"
-if (existsSync(claudeExecutable)) {
+const claudeExecutable = Bun.which("claude")
+if (claudeExecutable) {
 	test("checked-in Claude plugin passes strict native validation", () => {
 		const result = Bun.spawnSync({
 			cmd: [claudeExecutable, "plugin", "validate", "--strict", pluginRoot],

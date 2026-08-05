@@ -100,6 +100,7 @@ jobs:
           CANARIES_REQUIRED: ${{ needs.classify.outputs.required }}
           CLASSIFICATION_RESULT: ${{ needs.classify.result }}
           QUALIFICATION_RESULT: ${{ needs.qualify.result }}
+          SAME_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           TRIGGERING_PATHS: ${{ needs.classify.outputs.triggers }}
         run: |
           conclusion=success
@@ -107,6 +108,9 @@ jobs:
           if [ "$CLASSIFICATION_RESULT" != "success" ]; then
             conclusion=failure
             summary="Publishing-system classification failed."
+          elif [ "$CANARIES_REQUIRED" = "true" ] && [ "$SAME_REPOSITORY" != "true" ]; then
+            conclusion=failure
+            summary="Hosted canaries were required for this fork pull request. A maintainer must run qualification from a same-repository branch. Publishing-system triggers: ${TRIGGERING_PATHS}"
           elif [ "$CANARIES_REQUIRED" = "true" ] && [ "$QUALIFICATION_RESULT" != "success" ]; then
             conclusion=failure
             summary="Hosted canaries were required but did not qualify. Publishing-system triggers: ${TRIGGERING_PATHS}"

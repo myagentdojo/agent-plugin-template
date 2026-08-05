@@ -172,6 +172,7 @@ test("canary dry-run proves identity, visibility, and source without publishing"
 test("publishing-system paths require both hosted canaries and report every trigger", () => {
 	expect(PUBLISHING_SYSTEM_PATHS).toEqual([
 		"package.json",
+		"plugin.config.json",
 		"scripts/package.ts",
 		"scripts/release-validate.ts",
 		"scripts/release-impact.ts",
@@ -192,6 +193,7 @@ test("publishing-system paths require both hosted canaries and report every trig
 		".github/release-please-config.json",
 	])
 	const changedPaths = [
+		"plugin.config.json",
 		"scripts/package.ts",
 		"scripts/release-validate.ts",
 		"scripts/release-impact.ts",
@@ -550,4 +552,19 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("environment: hosted-canary-qualification")
 	expect(workflow).not.toContain("CHECK_RUN_ID")
+})
+
+test("hosted canary workflow gives fork authors a same-repository qualification path", () => {
+	const workflow = readFileSync(join(root, ".github", "workflows", "hosted-canary.yml"), "utf8")
+
+	expect(workflow).toContain(
+		"SAME_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name == github.repository }}",
+	)
+	expect(workflow).toContain('if [ "$CLASSIFICATION_RESULT" != "success" ]; then')
+	expect(workflow).toContain(
+		'elif [ "$CANARIES_REQUIRED" = "true" ] && [ "$SAME_REPOSITORY" != "true" ]; then',
+	)
+	expect(workflow).toContain(
+		"Hosted canaries were required for this fork pull request. A maintainer must run qualification from a same-repository branch.",
+	)
 })

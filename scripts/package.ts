@@ -22,18 +22,29 @@ const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
 
 function resolveSourceCommit(): string {
-	const configured = process.env.SOURCE_COMMIT || process.env.GITHUB_SHA
-	if (configured) return configured
+	const sourceCommit = process.env.SOURCE_COMMIT
+	if (sourceCommit !== undefined) return validateSourceCommit(sourceCommit, "SOURCE_COMMIT")
+	const githubSha = process.env.GITHUB_SHA
+	if (githubSha !== undefined) return validateSourceCommit(githubSha, "GITHUB_SHA")
 	const git = Bun.spawnSync({
 		cmd: ["git", "rev-parse", "HEAD"],
 		cwd: root,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
-	return git.exitCode === 0 ? git.stdout.toString().trim() : "unknown"
+	if (git.exitCode !== 0) throw new Error("Unable to resolve the package source commit from git")
+	return validateSourceCommit(git.stdout.toString().trim(), "git HEAD")
+}
+
+function validateSourceCommit(value: string, source: string): string {
+	if (!/^[0-9a-f]{40}$/.test(value)) {
+		throw new Error(`${source} must be exactly 40 lowercase hexadecimal characters`)
+	}
+	return value
 }
 
 try {
+	const sourceCommit = resolveSourceCommit()
 	mkdirSync(outputRoot, { recursive: true })
 	const inventory = copyPluginPayload(root, packageRoot)
 
@@ -111,7 +122,7 @@ try {
 		`${JSON.stringify(
 			{
 				repository: pluginConfig.repository,
-				sourceCommit: resolveSourceCommit(),
+				sourceCommit,
 				tag: `v${version}`,
 				plugin: pluginConfig.name,
 				version,

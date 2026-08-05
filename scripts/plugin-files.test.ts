@@ -1,4 +1,5 @@
 import * as fileSystem from "node:fs"
+import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -80,21 +81,30 @@ test("copy rejects a nested realpath escape before copying payload content", () 
 	)
 })
 
-const mkfifoSync = (
-	fileSystem as typeof fileSystem & { mkfifoSync?: (path: string, mode?: number) => void }
-).mkfifoSync
-
-if (mkfifoSync) {
-	test("copy rejects a FIFO before copying payload content", () => {
-		expectUnsafeEntryRejected(
-			"z-pipe",
-			({ pluginRoot }) => mkfifoSync(join(pluginRoot, "z-pipe"), 0o600),
-			"special file",
+test("copy rejects a Unix-domain socket before copying payload content", async () => {
+	const fixture = pluginFixture()
+	const socketPath = join(fixture.pluginRoot, "z-socket")
+	const server = createServer()
+	try {
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject)
+			server.listen(socketPath, () => {
+				server.off("error", reject)
+				resolve()
+			})
+		})
+		expect(() => copyPluginPayload(fixture.sourceRoot, fixture.targetRoot)).toThrow(
+			/z-socket.*special file/,
 		)
-	})
-} else {
-	test.skip("copy rejects a FIFO (mkfifoSync unavailable in this runtime)", () => {})
-}
+		expect(fileSystem.existsSync(fixture.targetRoot)).toBe(false)
+	} finally {
+		if (server.listening) {
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => (error ? reject(error) : resolve()))
+			})
+		}
+	}
+})
 
 test("copy preserves every regular file path, mode, and byte", () => {
 	const { sourceRoot, pluginRoot, targetRoot } = pluginFixture()

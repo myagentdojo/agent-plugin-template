@@ -427,11 +427,19 @@ jobs:
           REPLACE_MISMATCHED_ASSETS: ${{ inputs.replace_mismatched_assets || false }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
           mkdir -p remote-assets
           : > asset-actions.tsv
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > remote-assets.txt
+          archives=(dist/*.tar.gz)
+          checksums=(dist/*.checksums.json)
+          if (( ${#archives[@]} != 1 || ${#checksums[@]} != 1 )); then
+            echo "Expected exactly one dist/*.tar.gz and one dist/*.checksums.json release asset." >&2
+            exit 1
+          fi
+          assets=("${archives[@]}" "${checksums[@]}")
           : > expected-assets.txt
-          for asset in dist/*.tar.gz dist/*.checksums.json; do
+          for asset in "${assets[@]}"; do
             basename "$asset" >> expected-assets.txt
           done
           sort -u -o expected-assets.txt expected-assets.txt
@@ -442,7 +450,7 @@ jobs:
             printf '%s\n' "$unexpected_assets" >&2
             exit 1
           fi
-          for asset in dist/*.tar.gz dist/*.checksums.json; do
+          for asset in "${assets[@]}"; do
             name=$(basename "$asset")
             local_digest=$(sha256sum "$asset" | awk '{print $1}')
             if grep -Fxq "$name" remote-assets.txt; then

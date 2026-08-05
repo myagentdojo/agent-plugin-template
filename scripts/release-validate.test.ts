@@ -33,9 +33,18 @@ function validate(cwd: string): ReturnType<typeof Bun.spawnSync> {
 }
 
 function validateWithArguments(cwd: string, arguments_: string[]): ReturnType<typeof Bun.spawnSync> {
+	const {
+		PUBLICATION_CANDIDATE_PATH: _candidatePath,
+		REPAIR_TAG: _repairTag,
+		CHECKOUT_SHA: _checkoutSha,
+		TAG_SHA: _tagSha,
+		RELEASE_TARGET_SHA: _releaseTargetSha,
+		...environment
+	} = process.env
 	return Bun.spawnSync({
 		cmd: [process.execPath, "run", "scripts/release-validate.ts", ...arguments_],
 		cwd,
+		env: environment,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
@@ -122,6 +131,24 @@ test("release validation rejects a drifted version surface", () => {
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("package.json version")
 	expect(result.stderr.toString()).toContain("plugin.config.json")
+})
+
+test("release validation rejects unexpected release-please extra-files", () => {
+	const temporaryRoot = copyRepository()
+	const configPath = join(temporaryRoot, ".github", "release-please-config.json")
+	const config = JSON.parse(readFileSync(configPath, "utf8"))
+	config.packages["."]["extra-files"].push({
+		type: "json",
+		path: "package.json",
+		jsonpath: "$.version",
+	})
+	writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain(
+		"release-please extra-files is unexpected: package.json::$.version",
+	)
 })
 
 test("release validation rejects an empty manifest after v0.1.0", () => {

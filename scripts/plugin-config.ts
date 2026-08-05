@@ -248,7 +248,10 @@ export function validatePackageContract(config: PluginConfig): void {
 			"keywords accepts at most 20 unique, supported, single-line entries of at most 64 characters",
 		)
 	}
-	if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.canary?.owner)) {
+	if (
+		typeof config.canary?.owner !== "string" ||
+		!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.canary.owner)
+	) {
 		throw packageContractError("canary.owner must be a GitHub account name")
 	}
 	if (

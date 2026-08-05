@@ -29,7 +29,7 @@ import {
 const help = `Prove tagged plugin installation in isolated Claude and Codex homes.
 
 Usage:
-  bun run prove:harness-install [--allow-fixture-copy] [--json]
+  bun run prove:harness-install [--require-native | --allow-fixture-copy] [--json]
   bun run prove:harness-install --help
 
 Options:
@@ -239,6 +239,11 @@ interface HarnessInstallProof {
 export interface HarnessInstallProofOptions {
 	/** Require both real harness CLIs; fixture copies cannot qualify CI or release. */
 	requireNative?: boolean
+}
+
+interface NativeHarnessExecutables {
+	claude?: string
+	codex?: string
 }
 
 /** Replace a temporary evidence path with an explicit cleaned marker, including macOS /var aliases. */
@@ -1042,7 +1047,7 @@ export function codexHookTrustEvidence(pluginRoot: string): {
 function runHarnessInstallProof(
 	repositoryRoot: string,
 	temporaryRoot: string,
-	options: HarnessInstallProofOptions,
+	executables: NativeHarnessExecutables,
 ): HarnessInstallProof {
 	const fixture = createFixtureRelease(repositoryRoot, temporaryRoot)
 	admitGitTransport({
@@ -1071,12 +1076,7 @@ function runHarnessInstallProof(
 			reason: "A fresh Codex task requires live model access; local native JSON and installedPath bytes prove selection offline.",
 		},
 	]
-	const claudeExecutable = Bun.which("claude")
-	const codexExecutable = Bun.which("codex")
-	if (options.requireNative && (!claudeExecutable || !codexExecutable)) {
-		const missing = [!claudeExecutable && "claude", !codexExecutable && "codex"].filter(Boolean)
-		throw new Error(`native harness CLIs are required; missing: ${missing.join(", ")}`)
-	}
+	const { claude: claudeExecutable, codex: codexExecutable } = executables
 	const claude = claudeExecutable
 		? proveClaudeNative(fixture, pluginConfig.name, claudeExecutable, temporaryRoot)
 		: proveClaudeFixtureCopy(fixture, pluginConfig.name, temporaryRoot)
@@ -1146,11 +1146,19 @@ export function proveHarnessInstall(
 	sourceRoot: string,
 	options: HarnessInstallProofOptions = {},
 ): HarnessInstallProof {
+	const executables: NativeHarnessExecutables = {
+		claude: Bun.which("claude") ?? undefined,
+		codex: Bun.which("codex") ?? undefined,
+	}
+	if (options.requireNative && (!executables.claude || !executables.codex)) {
+		const missing = [!executables.claude && "claude", !executables.codex && "codex"].filter(Boolean)
+		throw new Error(`native harness CLIs are required; missing: ${missing.join(", ")}`)
+	}
 	const repositoryRoot = resolve(sourceRoot)
 	pluginPayloadInventory(repositoryRoot)
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "harness-install-proof-"))
 	try {
-		return runHarnessInstallProof(repositoryRoot, temporaryRoot, options)
+		return runHarnessInstallProof(repositoryRoot, temporaryRoot, executables)
 	} catch (error) {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 		throw error
@@ -1169,6 +1177,11 @@ if (import.meta.main) {
 			console.error("Run `bun run prove:harness-install -- --help` for usage.")
 			process.exit(2)
 		}
+	}
+	if (arguments_.includes("--require-native") && arguments_.includes("--allow-fixture-copy")) {
+		console.error("Error: --require-native cannot be combined with --allow-fixture-copy")
+		console.error("Run `bun run prove:harness-install -- --help` for usage.")
+		process.exit(2)
 	}
 	try {
 		const proof = proveHarnessInstall(resolve(import.meta.dir, ".."), {

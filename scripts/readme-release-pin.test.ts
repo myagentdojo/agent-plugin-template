@@ -31,8 +31,12 @@ test("release documentation names checksum evidence and exact repair identity", 
 	expect(readme.toLowerCase()).not.toContain("provenance")
 	expect(readme).toContain("*.checksums.json")
 	expect(release).toContain("incomplete-publication repair")
+	expect(release).toContain("`maintenance` is the default")
+	expect(release).toContain("it only updates the standing release PR and never publishes")
+	expect(release).toContain("`repair` requires `release_tag`")
 	expect(release).toContain("exact existing `vX.Y.Z` tag")
 	expect(release).toContain("This repairs an incomplete publication; it does not create a new release.")
+	expect(release.match(/-f operation=maintenance/g)).toHaveLength(1)
 	expect(release.match(/-f operation=repair/g)).toHaveLength(2)
 })
 

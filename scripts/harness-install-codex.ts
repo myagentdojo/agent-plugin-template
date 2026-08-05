@@ -117,7 +117,7 @@ export function proveCodexNative(
 		(entry: { name?: string }) => entry.name === marketplaceName,
 	)
 	if (!marketplaceState) throw new Error("Codex marketplace JSON omitted the active marketplace")
-	if (marketplaceState.marketplaceSource.sourceType !== "local") {
+	if (marketplaceState.marketplaceSource?.sourceType !== "local") {
 		throw new Error("Codex local proof did not report a local marketplace cache source")
 	}
 	const hookSource = readFileSync(

@@ -347,11 +347,12 @@ test("initialized repository packages the configured plugin identity", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-package-")
 	const init = initializeTemplate(temporaryRoot)
 	expect(init.exitCode, init.stderr.toString()).toBe(0)
+	const sourceCommit = "a".repeat(40)
 
 	const packaged = Bun.spawnSync({
 		cmd: ["bun", "run", "package"],
 		cwd: temporaryRoot,
-		env: { ...process.env, SOURCE_COMMIT: undefined, GITHUB_SHA: undefined },
+		env: { ...process.env, SOURCE_COMMIT: sourceCommit, GITHUB_SHA: undefined },
 		stdout: "pipe",
 		stderr: "pipe",
 	})
@@ -362,7 +363,7 @@ test("initialized repository packages the configured plugin identity", () => {
 	const checksums = JSON.parse(readFileSync(result.checksums, "utf8"))
 	expect(checksums).toMatchObject({
 		repository: "https://github.com/myagentdojo/dojo-hello",
-		sourceCommit: "unknown",
+		sourceCommit,
 		tag: `v${templateVersion}`,
 		plugin: "dojo-hello",
 		version: templateVersion,
@@ -373,6 +374,32 @@ test("initialized repository packages the configured plugin identity", () => {
 			"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
 	})
 })
+
+test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(
+	"package rejects an invalid explicit %s",
+	(sourceVariable) => {
+		const temporaryRoot = copyTemplate("agent-plugin-template-package-source-")
+		const init = initializeTemplate(temporaryRoot)
+		expect(init.exitCode, init.stderr.toString()).toBe(0)
+
+		const packaged = Bun.spawnSync({
+			cmd: [process.execPath, "run", "scripts/package.ts"],
+			cwd: temporaryRoot,
+			env: {
+				...process.env,
+				SOURCE_COMMIT: undefined,
+				GITHUB_SHA: undefined,
+				[sourceVariable]: "A".repeat(40),
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+		expect(packaged.exitCode).not.toBe(0)
+		expect(packaged.stderr.toString()).toContain(
+			`${sourceVariable} must be exactly 40 lowercase hexadecimal characters`,
+		)
+	},
+)
 
 test("initialized repository development plan uses configured plugin identity", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-dev-")
