@@ -430,10 +430,14 @@ describe("release impact", () => {
 	})
 
 	test("pull request gate executes trusted base code against the fetched head", () => {
-		const workflow = readFileSync(join(root, ".github", "workflows", "pull-request-title.yml"), "utf8")
+		const workflow = readFileSync(join(root, ".github", "workflows", "release-impact.yml"), "utf8")
 
+		expect(workflow).toContain("pull_request_target:")
+		expect(workflow).toContain("statuses: write")
 		expect(workflow).toContain("ref: ${{ github.event.pull_request.base.sha }}")
 		expect(workflow).toContain('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"')
+		expect(workflow).toContain('--raw-field state=pending')
+		expect(workflow).toContain('IMPACT_OUTCOME: ${{ steps.impact.outcome }}')
 		expect(workflow.indexOf("ref: ${{ github.event.pull_request.base.sha }}")).toBeLessThan(
 			workflow.indexOf("bun run scripts/release-impact.ts"),
 		)

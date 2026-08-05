@@ -70,6 +70,7 @@ export const PUBLISHING_SYSTEM_PATHS = [
 	".github/workflows/plugin-ci.yml",
 	".github/workflows/hosted-canary.yml",
 	".github/workflows/pull-request-title.yml",
+	".github/workflows/release-impact.yml",
 	".github/release-please-config.json",
 ] as const
 

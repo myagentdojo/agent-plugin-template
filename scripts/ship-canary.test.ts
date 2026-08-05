@@ -188,6 +188,7 @@ test("publishing-system paths require both hosted canaries and report every trig
 		".github/workflows/plugin-ci.yml",
 		".github/workflows/hosted-canary.yml",
 		".github/workflows/pull-request-title.yml",
+		".github/workflows/release-impact.yml",
 		".github/release-please-config.json",
 	])
 	const changedPaths = [
