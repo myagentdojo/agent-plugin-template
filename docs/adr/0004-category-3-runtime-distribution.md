@@ -2,8 +2,15 @@
 
 ## Status
 
-Accepted — 2026-08-05. Supersedes the interim "three categories" framing
-with a two-tier model.
+Superseded by ADR 0006 (2026-08-06). This ADR recommended two runtime tiers
+(QuickJS-sandboxed default, Bun-OS-integrated escalation). ADR 0006 collapses
+that to a single Bun tier once the deciding factors were settled: the plugins
+are first-party and self-hosted (so QuickJS's by-construction sandbox is
+low-value), isolation belongs at the architecture layer (container/VM/agent
+sandbox) rather than the plugin runtime, and the measured bootstrap cost is
+small. The evidence sections below (QuickJS host-global ceiling, bundler
+parity, measured bootstrap cost, Bun/Python facts) remain accurate and are
+cited by 0006; only the two-tier *decision* is superseded.
 
 ## Context
 
