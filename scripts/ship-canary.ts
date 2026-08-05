@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
+import { loadPluginConfig } from "./plugin-config"
 import { proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
@@ -651,13 +651,13 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 				false,
 			)
 		}
-		const manifestVersion = loadPluginConfig(checkoutRoot).version
 		proof = proveHostedHarnessInstall(
 			checkoutRoot,
-			target.repository,
+			target.remote,
 			target.candidateRef.replace(/^refs\/heads\//, ""),
 			sourceSha,
 		)
+		const manifestVersion = proof.preflight.manifestVersion
 		return {
 			repository: target.repository,
 			candidateRef: target.candidateRef,
@@ -685,6 +685,30 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 	} finally {
 		if (proof?.temporaryRoot) rmSync(proof.temporaryRoot, { recursive: true, force: true })
 		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+}
+
+function candidateCanaryTargets(sourceRoot: string): {
+	owner?: unknown
+	publicRepository?: unknown
+	privateRepository?: unknown
+} {
+	try {
+		const candidate = JSON.parse(readFileSync(join(sourceRoot, "plugin.config.json"), "utf8")) as {
+			canary?: {
+				owner?: unknown
+				publicRepository?: unknown
+				privateRepository?: unknown
+			}
+		}
+		return candidate.canary ?? {}
+	} catch (error) {
+		throw new CanaryError(
+			"candidate_config_invalid",
+			`candidate plugin.config.json is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+			"repair the candidate metadata in the unprivileged pull-request checkout",
+			false,
+		)
 	}
 }
 
@@ -758,9 +782,13 @@ export async function qualifyTargets(
 }
 
 function preflight(options: PublishOptions): Preflight {
-	const config = loadPluginConfig(options.sourceRoot)
 	const trustedConfig = loadPluginConfig(root)
-	if (JSON.stringify(config.canary) !== JSON.stringify(trustedConfig.canary)) {
+	const candidateCanary = candidateCanaryTargets(options.sourceRoot)
+	if (
+		candidateCanary.owner !== trustedConfig.canary.owner ||
+		candidateCanary.publicRepository !== trustedConfig.canary.publicRepository ||
+		candidateCanary.privateRepository !== trustedConfig.canary.privateRepository
+	) {
 		throw new CanaryError(
 			"canary_target_mismatch",
 			"candidate canary targets differ from the trusted driver checkout",
@@ -794,15 +822,6 @@ function preflight(options: PublishOptions): Preflight {
 			"source_not_checked_out",
 			`checked-out HEAD ${headSha} does not match ${options.ref} ${sourceSha}`,
 			`check out ${options.ref} in a clean worktree before publishing`,
-			false,
-		)
-	}
-	const generated = checkGeneratedFiles(options.sourceRoot, config)
-	if (generated.length > 0) {
-		throw new CanaryError(
-			"generated_files_stale",
-			`candidate generated files differ from plugin.config.json: ${generated.join(", ")}`,
-			"regenerate and commit the candidate manifests before qualifying canaries",
 			false,
 		)
 	}

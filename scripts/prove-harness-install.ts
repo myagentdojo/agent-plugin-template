@@ -787,8 +787,23 @@ function installCodex(
 /** Native install evidence fetched independently from one hosted marketplace ref. */
 export interface HostedHarnessInstallProof {
 	temporaryRoot: string
+	preflight: TaggedCheckout
 	claude: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
 	codex: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
+}
+
+/** Bind each native client to the same transport-specific hosted Git remote and ref. */
+export function hostedMarketplaceSources(
+	remote: string,
+	ref: string,
+): { claude: string; codex: string; ref: string } {
+	const supportedRemote =
+		/^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/.test(remote) ||
+		/^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git$/.test(remote)
+	if (!supportedRemote || !/^[A-Za-z0-9._/-]+$/.test(ref)) {
+		throw new Error("hosted marketplace proof requires an SSH or HTTPS Git remote and a supported ref")
+	}
+	return { claude: `${remote}#${ref}`, codex: remote, ref }
 }
 
 /**
@@ -799,28 +814,39 @@ export interface HostedHarnessInstallProof {
  */
 export function proveHostedHarnessInstall(
 	sourceRoot: string,
-	repository: string,
+	remote: string,
 	ref: string,
 	expectedSha: string,
 ): HostedHarnessInstallProof {
-	if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
-		throw new Error(`hosted marketplace repository must be owner/repo: ${repository}`)
-	}
 	if (!ref || !/^[a-f0-9]{40}$/.test(expectedSha)) {
 		throw new Error("hosted marketplace proof requires a ref and full expected commit SHA")
 	}
+	const sources = hostedMarketplaceSources(remote, ref)
 	const claudeExecutable = Bun.which("claude")
 	const codexExecutable = Bun.which("codex")
 	if (!claudeExecutable || !codexExecutable) {
 		throw new Error("native harness CLIs are required for hosted marketplace proof")
 	}
 	const repositoryRoot = resolve(sourceRoot)
-	const config = loadPluginConfig(repositoryRoot)
+	const claudeManifest = JSON.parse(
+		readFileSync(join(repositoryRoot, "plugin", ".claude-plugin", "plugin.json"), "utf8"),
+	) as { name?: unknown; version?: unknown }
+	const codexManifest = JSON.parse(
+		readFileSync(join(repositoryRoot, "plugin", ".codex-plugin", "plugin.json"), "utf8"),
+	) as { name?: unknown; version?: unknown }
+	if (
+		typeof claudeManifest.name !== "string" ||
+		typeof claudeManifest.version !== "string" ||
+		claudeManifest.name !== codexManifest.name ||
+		claudeManifest.version !== codexManifest.version
+	) {
+		throw new Error("hosted Claude and Codex manifest identities differ")
+	}
 	const expected: TaggedCheckout = {
 		requestedRef: ref,
 		resolvedSha: expectedSha,
 		checkoutRoot: repositoryRoot,
-		manifestVersion: config.version,
+		manifestVersion: claudeManifest.version,
 		inventory: pluginPayloadInventory(repositoryRoot),
 	}
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "hosted-harness-install-proof-"))
@@ -832,12 +858,12 @@ export function proveHostedHarnessInstall(
 		const claudeEnv = claudeEnvironment(claudeHome)
 		addClaudeMarketplace(
 			claudeExecutable,
-			`${repository}@${ref}`,
+			sources.claude,
 			"user",
 			claudeEnv,
 			claudeProject,
 		)
-		const pluginId = `${config.name}@${config.name}`
+		const pluginId = `${claudeManifest.name}@${claudeManifest.name}`
 		command([claudeExecutable, "plugin", "install", pluginId, "--scope", "user"], {
 			cwd: claudeProject,
 			env: claudeEnv,
@@ -849,7 +875,7 @@ export function proveHostedHarnessInstall(
 			pluginId,
 			"user",
 		)
-		if (claudeInstall.version !== config.version) {
+		if (claudeInstall.version !== claudeManifest.version) {
 			throw new Error("Claude hosted install reported the wrong manifest version")
 		}
 		const claudeInventory = comparePayload(expected, claudeInstall.activeCachePath)
@@ -860,18 +886,19 @@ export function proveHostedHarnessInstall(
 		mkdirSync(codexProject, { recursive: true })
 		const codexInstall = installCodex(
 			codexExecutable,
-			repository,
+			sources.codex,
 			pluginId,
 			codexEnvironment(codexHome),
 			codexProject,
 			ref,
 		)
-		if (codexInstall.add.version !== config.version) {
+		if (codexInstall.add.version !== claudeManifest.version) {
 			throw new Error("Codex hosted install reported the wrong manifest version")
 		}
 		const codexInventory = comparePayload(expected, codexInstall.add.installedPath)
 		return {
 			temporaryRoot,
+			preflight: expected,
 			claude: {
 				mode: "native-hosted-marketplace",
 				version: claudeInstall.version,

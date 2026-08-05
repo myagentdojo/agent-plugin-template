@@ -473,7 +473,7 @@ bun run ship:canary -- --dry-run --ref origin/main
 bun run ship:canary -- --execute --ref origin/main
 ```
 
-The command binds the active `gh` login and the real SSH or HTTPS Git transport identity to `plugin.config.json`, verifies target visibility and lineage, checks the exact source SHA and generated manifests, and uses `refs/heads/candidate/<source-sha>`. Each candidate ref is unique and immutable: retry may reuse only the same ref at the same SHA. Execute mode publishes the candidate ref, waits for hosted CI, then installs and compares the native Claude and Codex caches in both the public and private repositories. It never force-pushes, deletes, or rewrites candidate history.
+Unprivileged PR CI checks generated manifests with the candidate's own generator. The privileged canary driver never rerenders candidate files with older trusted-base generator code. It binds the active `gh` login and the real SSH or HTTPS Git transport identity to the trusted canary targets, verifies visibility, lineage, and the exact source SHA, and uses `refs/heads/candidate/<source-sha>`. Each candidate ref is unique and immutable: retry may reuse only the same ref at the same SHA. Execute mode publishes the candidate ref, waits for hosted CI, then installs both native Claude and Codex clients through that same proven Git remote and compares their caches with the candidate. It never force-pushes, deletes, or rewrites candidate history.
 
 These canaries prove this repository's Git publishing transport and native Git-marketplace installation path. They do not validate or claim OpenAI universal-directory ZIP acceptance, review, approval, or publication.
 

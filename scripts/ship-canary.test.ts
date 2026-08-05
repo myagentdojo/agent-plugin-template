@@ -527,6 +527,7 @@ test("untrusted PR workflow always reports without canary credentials", () => {
 	expect(workflow).not.toContain("CANARY_GH_TOKEN")
 	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("environment: hosted-canary-qualification")
+	expect(workflow).toContain("bun run generate:check")
 })
 
 test("privileged canary workflow executes trusted code and treats the PR checkout as data", () => {
@@ -544,6 +545,7 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("path: candidate")
 	expect(workflow).toContain("persist-credentials: false")
 	expect(workflow).toContain("--source-root candidate")
+	expect(workflow).not.toContain("bun run generate:check")
 	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("environment: hosted-canary-qualification")

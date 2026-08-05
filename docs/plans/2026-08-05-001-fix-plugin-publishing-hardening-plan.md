@@ -381,7 +381,7 @@ flowchart TB
 - **Requirements:** R21-R22; KTD8, KTD11.
 - **Dependencies:** U3-U6.
 - **Files:** `scripts/ship-canary.ts`, `scripts/ship-canary.test.ts`, `.github/workflows/plugin-ci.yml`, `README.md`.
-- **Approach:** Classify publishing-system paths, require both canary conclusions for those pull requests, and keep recipient releases on hermetic proof alone. Bind authorization to the transport derived from `origin`. Publish the source SHA to a unique immutable candidate ref in each canary repository, trigger proof from that ref, then install the candidate through each harness and compare its cache to the source SHA. Do not delete or reuse candidate refs in this unit; define retention cleanup separately after qualification is stable.
+- **Approach:** Classify publishing-system paths, require both canary conclusions for those pull requests, and keep recipient releases on hermetic proof alone. Verify generated files in unprivileged PR CI with the candidate generator; keep the privileged base-code driver limited to stable target and transport invariants. Bind authorization and both native installs to the transport derived from `origin`. Publish the source SHA to a unique immutable candidate ref in each canary repository, trigger proof from that ref, then install the candidate through each harness and compare its cache to the source SHA. Do not delete or reuse candidate refs in this unit; define retention cleanup separately after qualification is stable.
 - **Patterns to follow:** Existing visibility, lineage, fast-forward-only, and hosted-run checks in `scripts/ship-canary.ts`.
 - **Test scenarios:**
   - Change packaging, release, initialization, manifest generation, install proof, or canary code and verify both hosted canaries become required.

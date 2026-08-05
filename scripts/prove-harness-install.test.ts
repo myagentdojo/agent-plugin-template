@@ -7,6 +7,7 @@ import {
 	admitGitTransport,
 	assertReplacementAdmission,
 	codexHookTrustEvidence,
+	hostedMarketplaceSources,
 	proveHarnessInstall,
 	redactTemporaryEvidencePath,
 } from "./prove-harness-install"
@@ -55,6 +56,18 @@ test("release proof requires both native harness CLIs", () => {
 		"bun run scripts/prove-harness-install.ts",
 	)
 	expect(packageJson.scripts["prove:all"]).toContain("prove:harness-install -- --require-native")
+})
+
+test.each([
+	"git@github.com:myagentdojo/private-canary.git",
+	"https://github.com/myagentdojo/private-canary.git",
+] as const)("hosted native installs preserve the proven Git remote %s", (remote) => {
+	const ref = `candidate/${"a".repeat(40)}`
+	expect(hostedMarketplaceSources(remote, ref)).toEqual({
+		claude: `${remote}#${ref}`,
+		codex: remote,
+		ref,
+	})
 })
 
 test("strict CLI fails closed instead of reporting fixture-copy qualification", () => {
