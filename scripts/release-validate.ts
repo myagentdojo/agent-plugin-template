@@ -477,11 +477,15 @@ function validateRepository(repositoryRoot: string) {
 		"id: bootstrap-version",
 		"jq 'length' .github/.release-please-manifest.json",
 		'release_as="0.1.0"',
+		"token: ${{ secrets.RELEASE_PLEASE_TOKEN }}",
 		"release-as: ${{ steps.bootstrap-version.outputs.release_as }}",
 	]) {
 		if (!maintainJob.includes(required)) {
 			throw new Error(`release workflow maintenance job is missing ${required}`)
 		}
+	}
+	if (maintainJob.includes("secrets.GITHUB_TOKEN")) {
+		throw new Error("release workflow maintenance job must not fall back to GITHUB_TOKEN")
 	}
 	const releaseJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  release:\n"))
 	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {

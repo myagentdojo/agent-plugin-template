@@ -371,12 +371,14 @@ flowchart LR
 3. Protect `main`. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
 4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
-6. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
-7. Enable release automation only after readiness reports `READY`.
+6. Create a fine-grained token or GitHub App token with only repository contents, pull requests, and issues write access. Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`.
+7. Set the repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` to the exact login that token uses to author the release PR.
+8. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
+9. Enable release automation only after readiness reports `READY`.
 
 The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, required checks, Actions permissions, tag ruleset, or workflow authority cannot be proved.
 
-The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflow runs caused by that token, so the release workflow proves a merged release PR before publication. For strict pre-merge checks on the generated release PR, create a fine-grained token or GitHub App token with only repository contents, pull requests, and issues write access. Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`. Separately, set the repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` to the exact login that token uses to author the release PR; both the release-impact gate and publication admission bind that identity.
+Release automation requires `RELEASE_PLEASE_TOKEN`; it does not fall back to `GITHUB_TOKEN`. GitHub suppresses workflow runs caused by `GITHUB_TOKEN`, which would leave the generated release PR without its required checks. The separate repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` records the exact login that owns the token; both the release-impact gate and publication admission bind that identity.
 
 ### Publish a release
 

@@ -33,6 +33,8 @@ test("release documentation names checksum evidence and exact repair identity", 
 	expect(release).toContain("incomplete-publication repair")
 	expect(release).toContain("`RELEASE_PLEASE_TOKEN`")
 	expect(release).toContain("`RELEASE_PLEASE_AUTOMATION_LOGIN`")
+	expect(release).toContain("Release automation requires `RELEASE_PLEASE_TOKEN`")
+	expect(release).toContain("it does not fall back to `GITHUB_TOKEN`")
 	expect(release).toContain("both the release-impact gate and publication admission bind that identity")
 	expect(release).toContain("`maintenance` is the default")
 	expect(release).toContain("it only updates the standing release PR and never publishes")

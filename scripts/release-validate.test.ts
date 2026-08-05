@@ -274,6 +274,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(maintainJob).toContain("id: bootstrap-version")
 	expect(maintainJob).toContain("jq 'length' .github/.release-please-manifest.json")
 	expect(maintainJob).toContain('release_as="0.1.0"')
+	expect(maintainJob).toContain("token: ${{ secrets.RELEASE_PLEASE_TOKEN }}")
+	expect(maintainJob).not.toContain("secrets.GITHUB_TOKEN")
 	expect(maintainJob).toContain("release-as: ${{ steps.bootstrap-version.outputs.release_as }}")
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(finalReleaseJob).toContain("    needs:\n      - resolve\n      - package\n")
