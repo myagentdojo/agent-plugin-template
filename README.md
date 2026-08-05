@@ -221,8 +221,8 @@ flowchart LR
 ### One-time GitHub setup
 
 1. Open **Settings → Actions → General → Workflow permissions**.
-2. Enable read and write workflow permissions.
-3. Allow GitHub Actions to create pull requests.
+2. Keep the default workflow permission read-only; the release job requests narrowly scoped write permissions.
+3. Allow GitHub Actions to create and approve pull requests.
 4. Enable squash merging and keep the enforced Conventional Commit PR title.
 5. Protect `main` and require the plugin CI and title checks for normal PRs.
 
@@ -232,7 +232,7 @@ The zero-secret configuration uses `GITHUB_TOKEN`. GitHub suppresses new workflo
 
 1. Merge normal PRs with valid Conventional Commit titles.
 2. Wait for the `Release` workflow to create or update the release PR.
-3. Review its semantic version and generated `CHANGELOG.md`.
+3. Confirm the first release is `v0.1.0`; review its semantic version and generated `CHANGELOG.md`.
 4. Merge the release PR when the batch is ready.
 5. Wait for the `Release` workflow to validate metadata, prove the four-platform payload, reject generated drift, create `vX.Y.Z`, create the GitHub Release, and attach the deterministic archive plus provenance JSON.
 
@@ -240,7 +240,7 @@ Do not hand-edit versions or `CHANGELOG.md`. Do not create the tag first. Do not
 
 If the tag and GitHub Release exist but asset upload or attestation failed, run the `Release` workflow manually with `release_tag` set to the exact existing `vX.Y.Z` tag. The workflow checks out that tag, repeats the full proof, uploads the archive and provenance with `--clobber`, and recreates the public attestation. Leave the input empty during normal operation.
 
-The release configuration synchronizes:
+Before the first release, `.github/.release-please-manifest.json` stays empty so Release Please bootstraps `v0.1.0`. After that release, the release configuration synchronizes:
 
 - `package.json`
 - `plugin.config.json`

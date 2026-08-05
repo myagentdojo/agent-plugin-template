@@ -6,6 +6,7 @@
   "packages": {
     ".": {
       "release-type": "node",
+      "initial-version": "0.1.0",
       "package-name": "agent-plugin",
       "changelog-path": "CHANGELOG.md",
       "changelog-sections": [

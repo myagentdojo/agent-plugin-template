@@ -31,8 +31,29 @@ test("release metadata has one synchronized semantic version", () => {
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		ok: true,
 		version: expect.any(String),
+		releaseState: "bootstrap",
 		changelog: "CHANGELOG.md",
 		npmPublicationRequired: false,
+	})
+})
+
+test("release validation accepts a synchronized post-bootstrap manifest", () => {
+	const temporaryRoot = copyRepository()
+	const pluginConfig = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
+	writeFileSync(
+		join(temporaryRoot, ".github", ".release-please-manifest.json"),
+		`${JSON.stringify({ ".": pluginConfig.version }, null, 2)}\n`,
+	)
+	writeFileSync(
+		join(temporaryRoot, "CHANGELOG.md"),
+		`# Changelog\n\n## ${pluginConfig.version}\n\nInitial release.\n`,
+	)
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		releaseState: "released",
+		version: pluginConfig.version,
 	})
 })
 
@@ -47,6 +68,58 @@ test("release validation rejects a drifted version surface", () => {
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("package.json version")
 	expect(result.stderr.toString()).toContain("plugin.config.json")
+})
+
+test("release validation rejects an empty manifest after v0.1.0", () => {
+	const temporaryRoot = copyRepository()
+	for (const path of [
+		"package.json",
+		"plugin.config.json",
+		"plugin/.claude-plugin/plugin.json",
+		"plugin/.codex-plugin/plugin.json",
+	]) {
+		const absolutePath = join(temporaryRoot, path)
+		const json = JSON.parse(readFileSync(absolutePath, "utf8"))
+		json.version = "0.2.0"
+		writeFileSync(absolutePath, `${JSON.stringify(json, null, 2)}\n`)
+	}
+	const marketplacePath = join(temporaryRoot, ".claude-plugin", "marketplace.json")
+	const marketplace = JSON.parse(readFileSync(marketplacePath, "utf8"))
+	marketplace.metadata.version = "0.2.0"
+	writeFileSync(marketplacePath, `${JSON.stringify(marketplace, null, 2)}\n`)
+	const runtimePath = join(temporaryRoot, "plugin", "runtime", "hello-world.js")
+	writeFileSync(
+		runtimePath,
+		readFileSync(runtimePath, "utf8").replace('const PLUGIN_VERSION = "0.1.0";', 'const PLUGIN_VERSION = "0.2.0";'),
+	)
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("empty release-please manifest")
+})
+
+test("release validation rejects unexpected manifest packages", () => {
+	const temporaryRoot = copyRepository()
+	writeFileSync(
+		join(temporaryRoot, ".github", ".release-please-manifest.json"),
+		`${JSON.stringify({ unexpected: "0.1.0" }, null, 2)}\n`,
+	)
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("bootstrap release-please manifest must be empty")
+})
+
+test("release validation rejects a duplicate changelog heading", () => {
+	const temporaryRoot = copyRepository()
+	writeFileSync(
+		join(temporaryRoot, "CHANGELOG.md"),
+		"# Changelog\n\n## 0.1.0\n\nInitial release.\n\n## Changelog\n",
+	)
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("duplicate Changelog heading")
 })
 
 test("release workflow is pinned and publishes proven assets after validation", () => {

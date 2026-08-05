@@ -47,18 +47,37 @@ const releaseManifest = readJson(".github/.release-please-manifest.json")
 const releaseConfig = readJson(".github/release-please-config.json")
 const generatedRuntime = readFileSync(join(root, "plugin/runtime/hello-world.js"), "utf8")
 const releaseWorkflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8")
+const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8")
 
 const version = pluginConfig.version
+const releasedVersion = releaseManifest["."]
+const releaseState = releasedVersion === undefined ? "bootstrap" : "released"
+const releaseManifestKeys = Object.keys(releaseManifest)
 const versionSurfaces = [
 	["package.json", packageJson.version],
 	["Claude marketplace metadata", claudeMarketplace.metadata?.version],
 	["Claude manifest", claudeManifest.version],
 	["Codex manifest", codexManifest.version],
-	["release-please manifest", releaseManifest["."]],
 ] as const
 
 for (const [name, actual] of versionSurfaces) {
 	if (actual !== version) fail(`${name} version ${String(actual)} does not match plugin.config.json ${version}`)
+}
+
+if (releaseState === "bootstrap") {
+	if (releaseManifestKeys.length !== 0) fail("bootstrap release-please manifest must be empty")
+	if (version !== "0.1.0") fail("an empty release-please manifest is valid only while bootstrapping v0.1.0")
+} else if (releasedVersion !== version) {
+	fail(`release-please manifest version ${String(releasedVersion)} does not match plugin.config.json ${version}`)
+} else if (releaseManifestKeys.length !== 1) {
+	fail("release-please manifest must contain only the root package version")
+}
+
+if (/^## Changelog$/m.test(changelog)) {
+	fail("CHANGELOG.md must not contain a duplicate Changelog heading")
+}
+if (releaseState === "bootstrap" && changelog.trim() !== "# Changelog") {
+	fail("bootstrap CHANGELOG.md must contain only its top-level heading")
 }
 
 if (packageJson.private !== true || "publish" in (packageJson.scripts ?? {})) {
@@ -67,6 +86,9 @@ if (packageJson.private !== true || "publish" in (packageJson.scripts ?? {})) {
 
 const packageRelease = releaseConfig.packages?.["."]
 if (packageRelease?.["release-type"] !== "node") fail("release type must be node")
+if (packageRelease?.["initial-version"] !== "0.1.0") {
+	fail("initial release version must be pinned to 0.1.0")
+}
 if (releaseConfig["include-component-in-tag"] !== false) {
 	fail("release tags must use the single-plugin vX.Y.Z form")
 }
@@ -125,10 +147,14 @@ for (const required of [
 const result = {
 	ok: true,
 	version,
+	releaseState,
 	changelog: "CHANGELOG.md",
 	tag: `v${version}`,
 	npmPublicationRequired: false,
-	versionSurfaces: versionSurfaces.map(([name]) => name),
+	versionSurfaces: [
+		...versionSurfaces.map(([name]) => name),
+		...(releaseState === "released" ? ["release-please manifest"] : []),
+	],
 }
 if (arguments_.includes("--json")) console.log(JSON.stringify(result))
 else console.log(`Release metadata valid for v${version}. No npm publication required.`)
