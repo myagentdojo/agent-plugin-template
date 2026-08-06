@@ -88,6 +88,16 @@ function admissionInput(candidates = [releasePullRequest()]) {
 	}
 }
 
+function writeReleasedMetadata(repositoryRoot: string, changelog: (version: string) => string): string {
+	const pluginConfig = JSON.parse(readFileSync(join(repositoryRoot, "plugin.config.json"), "utf8"))
+	writeFileSync(
+		join(repositoryRoot, ".github", ".release-please-manifest.json"),
+		`${JSON.stringify({ ".": pluginConfig.version }, null, 2)}\n`,
+	)
+	writeFileSync(join(repositoryRoot, "CHANGELOG.md"), changelog(pluginConfig.version))
+	return pluginConfig.version
+}
+
 test("release metadata has one synchronized semantic version", () => {
 	const result = validate(root)
 	expect(result.exitCode, result.stderr.toString()).toBe(0)
@@ -102,22 +112,26 @@ test("release metadata has one synchronized semantic version", () => {
 
 test("release validation accepts a synchronized post-bootstrap manifest", () => {
 	const temporaryRoot = copyRepository()
-	const pluginConfig = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
-	writeFileSync(
-		join(temporaryRoot, ".github", ".release-please-manifest.json"),
-		`${JSON.stringify({ ".": pluginConfig.version }, null, 2)}\n`,
-	)
-	writeFileSync(
-		join(temporaryRoot, "CHANGELOG.md"),
-		`# Changelog\n\n## ${pluginConfig.version}\n\nInitial release.\n`,
+	const version = writeReleasedMetadata(
+		temporaryRoot,
+		(value) => `# Changelog\n\n## ${value}\n\nInitial release.\n`,
 	)
 
 	const result = validate(temporaryRoot)
 	expect(result.exitCode, result.stderr.toString()).toBe(0)
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		releaseState: "released",
-		version: pluginConfig.version,
+		version,
 	})
+})
+
+test("released metadata rejects a non-canonical changelog header", () => {
+	const temporaryRoot = copyRepository()
+	writeReleasedMetadata(temporaryRoot, (version) => `## ${version}\n\nInitial release.\n`)
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("canonical Changelog heading")
 })
 
 test("release validation rejects a drifted version surface", () => {
@@ -207,13 +221,9 @@ test("release validation rejects a pre-seeded bootstrap changelog heading", () =
 
 test("release validation rejects a duplicate changelog heading", () => {
 	const temporaryRoot = copyRepository()
-	const pluginConfig = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
-	writeFileSync(
-		join(temporaryRoot, ".github", ".release-please-manifest.json"),
-		`${JSON.stringify({ ".": pluginConfig.version }, null, 2)}\n`,
-	)
-	writeFileSync(
-		join(temporaryRoot, "CHANGELOG.md"),
+	writeReleasedMetadata(
+		temporaryRoot,
+		() =>
 		"# Changelog\n\n## 0.1.0\n\nInitial release.\n\n## Changelog\n",
 	)
 
@@ -230,6 +240,14 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	const attestationStepStart = finalReleaseJob.indexOf("      - name: Check for existing matching public attestation\n")
 	const compareStep = finalReleaseJob.slice(compareStepStart, uploadStepStart)
 	const uploadStep = finalReleaseJob.slice(uploadStepStart, attestationStepStart)
+	const repairValidationStep = workflow.slice(
+		workflow.indexOf("      - name: Validate manual repair binding before proof\n"),
+		workflow.indexOf("\n  maintain:\n"),
+	)
+	const persistedCandidateStep = finalReleaseJob.slice(
+		finalReleaseJob.indexOf("      - name: Download persisted publication candidate\n"),
+		finalReleaseJob.indexOf("      - name: Create or verify immutable tag\n"),
+	)
 	const actionReferences = [...workflow.matchAll(/uses: [^@\s]+@([^\s]+)/g)].map(
 		(match) => match[1],
 	)
@@ -241,6 +259,9 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("operation:")
 	expect(workflow).toContain("PUBLICATION_CANDIDATE_PATH")
 	expect(workflow).toContain("publication-candidate-${CANDIDATE_SHA}")
+	expect(workflow).toContain("tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json")
+	expect(workflow).toContain("git for-each-ref --format='%(contents)'")
+	expect(workflow).toContain('git cat-file -t "refs/tags/${REPAIR_TAG}"')
 	expect(workflow).toContain("merge_commit_sha")
 	expect(workflow).toContain("EXPECTED_RELEASE_PLEASE_LOGIN")
 	expect(workflow).toContain("scripts/release-projection.ts")
@@ -255,7 +276,7 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("SOURCE_COMMIT")
 	expect(workflow).toContain("canonicalGitHubRepositoryIdentity")
 	expect(workflow).toContain("ref: ${{ needs.resolve.outputs.candidate_sha }}")
-	expect(workflow).toContain("git tag \"$RELEASE_TAG\" \"$CANDIDATE_SHA\"")
+	expect(workflow).toContain("tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json")
 	expect(workflow).toContain("git push origin \"refs/tags/${RELEASE_TAG}\"")
 	expect(workflow).toContain("remote_tag_sha")
 	expect(workflow).toContain("gh release create")
@@ -285,6 +306,12 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(maintainJob).not.toContain("secrets.GITHUB_TOKEN")
 	expect(maintainJob).toContain("release-as: ${{ steps.bootstrap-version.outputs.release_as }}")
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
+	expect(finalReleaseJob).toContain('if [[ "$MODE" == "repair" ]]')
+	expect(finalReleaseJob).toContain("Immutable release tag carries a different publication admission")
+	expect(repairValidationStep).toContain("git for-each-ref --format='%(contents)'")
+	expect(repairValidationStep).not.toContain("actions/artifacts")
+	expect(persistedCandidateStep).toContain('if [[ "$MODE" == "repair" ]]')
+	expect(persistedCandidateStep).toContain("git for-each-ref --format='%(contents)'")
 	expect(finalReleaseJob).toContain("    needs:\n      - resolve\n      - package\n")
 	expect(finalReleaseJob).toContain(
 		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
@@ -336,6 +363,10 @@ test("immutable tag creation is retry-safe and rejects a rebound candidate", () 
 	).toBe(0)
 	expect(git(["remote", "add", "origin", origin], checkout).exitCode).toBe(0)
 	const candidateSha = git(["rev-parse", "HEAD"], checkout).stdout.toString().trim()
+	writeFileSync(
+		join(checkout, "persisted-candidate.json"),
+		`${JSON.stringify(admitPublicationCandidate(admissionInput()))}\n`,
+	)
 	const execute = (sha: string) =>
 		Bun.spawnSync({
 			cmd: ["bash", "-euo", "pipefail", "-c", tagScript as string],
@@ -345,8 +376,15 @@ test("immutable tag creation is retry-safe and rejects a rebound candidate", () 
 			stderr: "pipe",
 		})
 
-	expect(execute(candidateSha).exitCode).toBe(0)
-	expect(execute(candidateSha).exitCode).toBe(0)
+	const first = execute(candidateSha)
+	expect(first.exitCode, first.stderr.toString()).toBe(0)
+	const retry = execute(candidateSha)
+	expect(retry.exitCode, retry.stderr.toString()).toBe(0)
+	const taggedAdmission = git(
+		["for-each-ref", "--format=%(contents)", "refs/tags/v0.1.0"],
+		checkout,
+	).stdout.toString()
+	expect(JSON.parse(taggedAdmission)).toMatchObject({ tag: "v0.1.0" })
 	writeFileSync(join(checkout, "payload"), "two\n")
 	expect(git(["add", "payload"], checkout).exitCode).toBe(0)
 	expect(

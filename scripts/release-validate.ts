@@ -370,8 +370,13 @@ function validateRepository(repositoryRoot: string) {
 
 	if (releaseState === "bootstrap") {
 		if (changelog !== "") throw new Error("bootstrap CHANGELOG.md must be empty")
-	} else if (/^## Changelog$/m.test(changelog)) {
-		throw new Error("CHANGELOG.md must not contain a duplicate Changelog heading")
+	} else {
+		if (!changelog.startsWith("# Changelog\n\n")) {
+			throw new Error("released CHANGELOG.md must start with the canonical Changelog heading")
+		}
+		if (/^## Changelog$/m.test(changelog)) {
+			throw new Error("CHANGELOG.md must not contain a duplicate Changelog heading")
+		}
 	}
 
 	if (packageJson.private !== true || "publish" in (packageJson.scripts ?? {})) {
@@ -451,7 +456,8 @@ function validateRepository(repositoryRoot: string) {
 		"SOURCE_COMMIT",
 		"ref: ${{ needs.resolve.outputs.candidate_sha }}",
 		"bun run release:validate -- --repair",
-		"git tag \"$RELEASE_TAG\" \"$CANDIDATE_SHA\"",
+		"tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json",
+		"git for-each-ref --format='%(contents)'",
 		"git push origin \"refs/tags/${RELEASE_TAG}\"",
 		"remote_tag_sha",
 		"gh release create",

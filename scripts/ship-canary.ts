@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
+import { loadPluginConfig } from "./plugin-config"
 import { proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
@@ -802,28 +802,6 @@ function preflight(options: PublishOptions): Preflight {
 			"canary_target_mismatch",
 			"candidate canary targets differ from the trusted driver checkout",
 			"restore plugin.config.json canary targets to the trusted base values",
-			false,
-		)
-	}
-	let generatedDrift: string[]
-	try {
-		generatedDrift = checkGeneratedFiles(
-			options.sourceRoot,
-			loadPluginConfig(options.sourceRoot),
-		)
-	} catch (error) {
-		throw new CanaryError(
-			"candidate_metadata_invalid",
-			`trusted driver could not validate candidate metadata: ${error instanceof Error ? error.message : String(error)}`,
-			"repair plugin.config.json and its generated manifests in the candidate checkout",
-			false,
-		)
-	}
-	if (generatedDrift.length > 0) {
-		throw new CanaryError(
-			"generated_drift",
-			`candidate generated manifests differ from plugin.config.json: ${generatedDrift.join(", ")}`,
-			"regenerate and commit the candidate manifests before hosted publication",
 			false,
 		)
 	}

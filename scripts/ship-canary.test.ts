@@ -344,7 +344,7 @@ test("candidate publication pushes from the checkout that owns the source commit
 	)
 })
 
-test("trusted preflight rejects generated drift before candidate publication", async () => {
+test("trusted preflight does not apply the base renderer to candidate-generated files", async () => {
 	const driver = canaryFixture()
 	const candidate = canaryFixture()
 	writeFileSync(join(candidate.temporaryRoot, "plugin", ".codex-plugin", "plugin.json"), "{}\n")
@@ -357,8 +357,8 @@ test("trusted preflight rejects generated drift before candidate publication", a
 	)
 
 	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({ category: "generated_drift" })
-	expect(await Bun.file(driver.log).exists()).toBe(false)
+	expect(JSON.parse(result.stdout.toString())).not.toMatchObject({ category: "generated_drift" })
+	expect(await Bun.file(driver.log).text()).toContain("push")
 })
 
 test("create-only candidate push accepts an identical winner but rejects a conflicting race", () => {

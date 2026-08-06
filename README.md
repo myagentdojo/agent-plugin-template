@@ -387,7 +387,7 @@ Release automation requires `RELEASE_PLEASE_TOKEN`; it does not fall back to `GI
 3. Confirm the first release is `v0.1.0`; review the proposed semantic version, exact version projection, and generated `CHANGELOG.md`.
 4. Merge the release PR into `main` with a merge commit. Do not squash it.
 5. Wait for the workflow to admit exactly one merged release PR bound to `github.sha`: base `main`, configured Release Please automation identity, two parents, and only the allowed version projection.
-6. Confirm the workflow persisted `publication-candidate-<SHA>` before proof and checked out that candidate SHA. Later movement of `main` does not change the candidate.
+6. Confirm the workflow persisted `publication-candidate-<SHA>` before proof and checked out that candidate SHA. Publication embeds that admission record in the annotated immutable release tag, so repair remains possible after the workflow artifact expires. Later movement of `main` does not change the candidate.
 7. Wait for metadata validation, four-platform proof, deterministic packaging, and generated-drift rejection.
 8. Approve the protected `release` environment. The workflow creates `vX.Y.Z` explicitly at the candidate SHA, verifies the remote tag target, then creates the GitHub Release with `--verify-tag --target <candidate-sha>`.
 9. Confirm the Release contains the deterministic archive and `*.checksums.json`. For a public repository, confirm the archive attestation.
@@ -418,7 +418,7 @@ gh workflow run Release \
   -f replace_mismatched_assets=false
 ```
 
-The workflow resolves the existing immutable tag, checks out its commit, validates any existing GitHub Release target, and repeats the complete proof. It compares each archive and checksums asset before writing:
+The workflow resolves the existing immutable annotated tag, recovers and validates its embedded publication admission, checks out its commit, validates any existing GitHub Release target, and repeats the complete proof. The admission does not depend on the 90-day workflow-artifact retention window. It compares each archive and checksums asset before writing:
 
 - Leave matching assets untouched.
 - Add missing assets.
