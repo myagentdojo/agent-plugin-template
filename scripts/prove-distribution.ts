@@ -1,20 +1,28 @@
 import {
+	lstatSync,
 	mkdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
 } from "node:fs"
-import { join, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
 
+import { assertDistributionChecksumIdentity } from "./distribution-checksums"
+import {
+	directoryArchiveEntries,
+	PLUGIN_DIRECTORY,
+	pluginPayloadInventory,
+} from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
 const pluginConfig = loadPluginConfig(root)
 const packageName = `${pluginConfig.name}-${pluginConfig.version}`
+const inventory = pluginPayloadInventory(root)
 
 interface PackageResult {
 	archive: string
-	provenance: string
+	checksums: string
 	archiveBytes: number
 	archiveDigest: string
 }
@@ -60,13 +68,20 @@ if (first.archiveDigest !== second.archiveDigest) {
 	throw new Error(`package is not deterministic: ${first.archiveDigest} != ${second.archiveDigest}`)
 }
 
-const archiveEntries = Bun.spawnSync({
-	cmd: ["tar", "-tzf", second.archive],
-	stdout: "pipe",
+const extractedRoot = join(root, ".dev", "distribution-proof")
+rmSync(extractedRoot, { recursive: true, force: true })
+mkdirSync(extractedRoot, { recursive: true })
+const extract = Bun.spawnSync({
+	cmd: ["tar", "-xzpf", second.archive, "-C", extractedRoot],
+	stdout: "inherit",
 	stderr: "inherit",
 })
-if (archiveEntries.exitCode !== 0) process.exit(archiveEntries.exitCode)
-const entries = archiveEntries.stdout.toString().trim().split("\n")
+if (extract.exitCode !== 0) process.exit(extract.exitCode)
+
+const installedRoot = join(extractedRoot, packageName)
+const entries = directoryArchiveEntries(extractedRoot, "")
+	.slice(1)
+	.map((entry) => entry.slice(1))
 for (const required of [
 	`${packageName}/.claude-plugin/plugin.json`,
 	`${packageName}/.codex-plugin/plugin.json`,
@@ -84,24 +99,48 @@ for (const required of [
 ]) {
 	if (!entries.includes(required)) throw new Error(`package is missing ${required}`)
 }
+const expectedEntries = directoryArchiveEntries(join(root, PLUGIN_DIRECTORY), packageName)
+if (JSON.stringify(entries) !== JSON.stringify(expectedEntries)) {
+	throw new Error(
+		`package entries do not match plugin inventory:\nexpected ${JSON.stringify(expectedEntries)}\nreceived ${JSON.stringify(entries)}`,
+	)
+}
 if (entries.some((entry) => entry.endsWith(".ts") || entry.includes("/.git/"))) {
 	throw new Error("package contains repository source or Git metadata")
 }
 if (entries.some((entry) => entry.startsWith(`${packageName}/scripts/`))) {
 	throw new Error("package contains development scripts")
 }
+for (const entry of expectedEntries) {
+	const installedPath = join(extractedRoot, entry)
+	const status = lstatSync(installedPath)
+	const isDirectory = entry.endsWith("/")
+	if (status.isDirectory() !== isDirectory) {
+		throw new Error(`extracted archive entry has the wrong type: ${entry}`)
+	}
+	let expectedMode = 0o755
+	if (!isDirectory) {
+		const sourcePath = join(root, PLUGIN_DIRECTORY, entry.slice(packageName.length + 1))
+		expectedMode = (statSync(sourcePath).mode & 0o111) !== 0 ? 0o755 : 0o644
+	}
+	if ((status.mode & 0o777) !== expectedMode) {
+		throw new Error(`extracted archive entry has the wrong mode: ${entry}`)
+	}
+	if (Math.trunc(status.mtimeMs / 1000) !== 0) {
+		throw new Error(`extracted archive entry has the wrong mtime: ${entry}`)
+	}
+}
+for (const relativePath of inventory) {
+	const sourcePath = join(root, PLUGIN_DIRECTORY, relativePath)
+	const installedPath = join(installedRoot, relativePath)
+	if (!lstatSync(installedPath).isFile()) {
+		throw new Error(`extracted payload entry is not a regular file: ${relativePath}`)
+	}
+	if (!readFileSync(installedPath).equals(readFileSync(sourcePath))) {
+		throw new Error(`extracted payload bytes differ from plugin inventory: ${relativePath}`)
+	}
+}
 
-const extractedRoot = join(root, ".dev", "distribution-proof")
-rmSync(extractedRoot, { recursive: true, force: true })
-mkdirSync(extractedRoot, { recursive: true })
-const extract = Bun.spawnSync({
-	cmd: ["tar", "-xzf", second.archive, "-C", extractedRoot],
-	stdout: "inherit",
-	stderr: "inherit",
-})
-if (extract.exitCode !== 0) process.exit(extract.exitCode)
-
-const installedRoot = join(extractedRoot, packageName)
 const launcher = join(installedRoot, "bin", "hello-world")
 const version = runPackaged(launcher, ["--version"])
 if (version.exitCode !== 0 || version.stdout.trim() !== pluginConfig.version) {
@@ -115,9 +154,11 @@ if (helloResult.message !== "Hello, packaged!" || helloResult.sideEffects !== "n
 }
 
 for (const harness of ["claude", "codex"] as const) {
+	const hookArguments = ["hook", "--harness", harness, "--event", "SessionStart"]
+	if (harness === "codex") hookArguments.push("--plugin-version", pluginConfig.version)
 	const hook = runPackaged(
 		launcher,
-		["hook", "--harness", harness, "--event", "SessionStart"],
+		hookArguments,
 		'{"session_id":"packaged-offline-proof"}\n',
 	)
 	if (hook.exitCode !== 0 || !hook.stderr.includes(`hello-world hook: ${harness} SessionStart`)) {
@@ -141,10 +182,23 @@ for (const asset of Object.values(assetManifest.assets) as Array<{
 	if (digest !== asset.sha256) throw new Error(`${asset.file} digest mismatch`)
 }
 
-const provenance = JSON.parse(readFileSync(second.provenance, "utf8"))
-if (provenance.archiveSha256 !== second.archiveDigest) {
-	throw new Error("provenance digest does not match the packaged archive")
-}
+const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
+const sourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA ?? Bun.spawnSync({
+	cmd: ["git", "rev-parse", "HEAD"],
+	cwd: root,
+	stdout: "pipe",
+	stderr: "inherit",
+}).stdout.toString().trim()
+assertDistributionChecksumIdentity(checksums, {
+	repository: pluginConfig.repository,
+	sourceCommit,
+	tag: `v${pluginConfig.version}`,
+	plugin: pluginConfig.name,
+	version: pluginConfig.version,
+	archive: basename(second.archive),
+	archiveBytes: second.archiveBytes,
+	archiveSha256: second.archiveDigest,
+})
 
 console.log(
 	JSON.stringify({

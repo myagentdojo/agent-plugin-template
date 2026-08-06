@@ -1,7 +1,7 @@
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
-	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { copyPluginPayload } from "./plugin-files"
+import { copyPluginPayload, directoryArchiveEntries } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
@@ -22,30 +22,58 @@ const packageName = `${pluginConfig.name}-${version}`
 const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
 const packageRoot = join(stagingRoot, packageName)
 
-function archiveEntries(directory: string, prefix: string): string[] {
-	const entries = [prefix]
-	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
-		left.name.localeCompare(right.name),
-	)) {
-		const relativePath = `${prefix}/${entry.name}`
-		entries.push(relativePath)
-		if (entry.isDirectory()) {
-			entries.push(...archiveEntries(join(directory, entry.name), relativePath).slice(1))
+function resolveSourceCommit(): string {
+	const sourceCommit = process.env.SOURCE_COMMIT
+	const githubSha = process.env.GITHUB_SHA
+	const configuredSource =
+		sourceCommit !== undefined
+			? { name: "SOURCE_COMMIT", value: sourceCommit }
+			: githubSha !== undefined
+				? { name: "GITHUB_SHA", value: githubSha }
+				: undefined
+	const configuredCommit = configuredSource
+		? validateSourceCommit(configuredSource.value, configuredSource.name)
+		: undefined
+	const git = Bun.spawnSync({
+		cmd: ["git", "rev-parse", "HEAD"],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (git.exitCode === 0) {
+		const gitHead = validateSourceCommit(git.stdout.toString().trim(), "git HEAD")
+		if (configuredCommit && configuredCommit !== gitHead) {
+			throw new Error(`${configuredSource?.name} does not match git HEAD`)
 		}
+		return gitHead
 	}
-	return entries
+	if (configuredCommit) return configuredCommit
+	throw new Error("Unable to resolve the package source commit from git or an explicit input")
+}
+
+function validateSourceCommit(value: string, source: string): string {
+	if (!/^[0-9a-f]{40}$/.test(value)) {
+		throw new Error(`${source} must be exactly 40 lowercase hexadecimal characters`)
+	}
+	return value
 }
 
 try {
+	const sourceCommit = resolveSourceCommit()
 	mkdirSync(outputRoot, { recursive: true })
 	copyPluginPayload(root, packageRoot)
 
-	const entries = archiveEntries(packageRoot, packageName)
+	const entries = directoryArchiveEntries(packageRoot, packageName)
 	const epoch = new Date(0)
-	for (const relativePath of entries) utimesSync(join(stagingRoot, relativePath), epoch, epoch)
+	for (const relativePath of entries) {
+		const absolutePath = join(stagingRoot, relativePath)
+		const status = statSync(absolutePath)
+		chmodSync(absolutePath, status.isDirectory() ? 0o755 : status.mode & 0o111 ? 0o755 : 0o644)
+		utimesSync(absolutePath, epoch, epoch)
+	}
 
-	const fileList = join(stagingRoot, "entries.txt")
-	writeFileSync(fileList, `${entries.join("\n")}\n`)
+	const fileList = join(stagingRoot, "entries.bin")
+	writeFileSync(fileList, Buffer.from(`${entries.join("\0")}\0`))
 	const uncompressedArchive = join(stagingRoot, `${packageName}.tar`)
 	const tarArguments =
 		process.platform === "darwin"
@@ -68,6 +96,7 @@ try {
 					"--no-fflags",
 					"--no-mac-metadata",
 					"--no-recursion",
+					"--null",
 					"-C",
 					stagingRoot,
 					"-T",
@@ -85,6 +114,7 @@ try {
 					"--no-selinux",
 					"--format=ustar",
 					"--no-recursion",
+					"--null",
 					"-cf",
 					uncompressedArchive,
 					"-C",
@@ -108,22 +138,27 @@ try {
 	const archiveDigest = new Bun.CryptoHasher("sha256")
 		.update(readFileSync(archive))
 		.digest("hex")
-	const provenance = join(outputRoot, `${packageName}.provenance.json`)
+	const checksums = join(outputRoot, `${packageName}.checksums.json`)
 	writeFileSync(
-		provenance,
+		checksums,
 		`${JSON.stringify(
 			{
+				repository: pluginConfig.repository,
+				sourceCommit,
+				tag: `v${version}`,
 				plugin: pluginConfig.name,
 				version,
 				archive: `${packageName}.tar.gz`,
 				archiveBytes,
 				archiveSha256: archiveDigest,
+				evidence:
+					"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
 			},
 			null,
 			2,
 		)}\n`,
 	)
-	console.log(JSON.stringify({ archive, provenance, archiveBytes, archiveDigest }))
+	console.log(JSON.stringify({ archive, checksums, archiveBytes, archiveDigest }))
 } finally {
 	rmSync(stagingRoot, { recursive: true, force: true })
 }

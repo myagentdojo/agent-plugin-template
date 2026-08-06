@@ -1,7 +1,7 @@
 {
   "name": "harness-native-plugin-prototype",
   "interface": {
-    "displayName": "Harness Native Plugin Prototype"
+    "displayName": "Harness Plugin Prototype"
   },
   "plugins": [
     {

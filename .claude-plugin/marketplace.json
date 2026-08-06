@@ -4,7 +4,7 @@
     "name": "Prototype"
   },
   "metadata": {
-    "description": "Marketplace for Harness Native Plugin Prototype",
+    "description": "Marketplace for Harness Plugin Prototype",
     "version": "0.1.0"
   },
   "plugins": [
@@ -14,7 +14,8 @@
       "author": {
         "name": "Prototype"
       },
-      "source": "./plugin"
+      "source": "./plugin",
+      "defaultEnabled": false
     }
   ]
 }

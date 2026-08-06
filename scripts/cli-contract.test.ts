@@ -27,7 +27,8 @@ test("template CLI discovery and rendered help expose the same public commands",
 	const canaryHelp = run(["ship:canary", "--", "--help"])
 	expect(canaryHelp.exitCode).toBe(0)
 	expect(canaryHelp.stdout.toString()).toContain("--execute")
-	expect(canaryHelp.stdout.toString()).toContain("never force-pushes")
+	expect(canaryHelp.stdout.toString()).toContain("create-only compare-and-swap")
+	expect(canaryHelp.stdout.toString()).toContain("never replaced or deleted")
 
 	const releaseHelp = run(["release:validate", "--", "--help"])
 	expect(releaseHelp.exitCode).toBe(0)

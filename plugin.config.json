@@ -1,7 +1,7 @@
 {
   "template": true,
   "name": "harness-native-plugin-prototype",
-  "displayName": "Harness Native Plugin Prototype",
+  "displayName": "Harness Plugin Prototype",
   "version": "0.1.0",
   "description": "Prove native plugin distribution with a Bun-authored portable runtime",
   "author": {
@@ -11,12 +11,13 @@
   "license": "MIT",
   "keywords": ["agent-plugin", "bun", "quickjs"],
   "category": "Developer Tools",
-  "shortDescription": "Run a Bun-authored skill without Bun installed.",
+  "shortDescription": "Run a portable plugin skill",
   "longDescription": "A portability proof with shared skills and runtime code plus native Claude Code and Codex manifests and hooks.",
   "capabilities": ["Read"],
   "defaultPrompts": ["Run the hello-world distribution proof."],
   "canary": {
     "owner": "myagentdojo",
+    "actor": "myagentdojo",
     "publicRepository": "agent-plugin-template-canary-public",
     "privateRepository": "agent-plugin-template-canary-private"
   }

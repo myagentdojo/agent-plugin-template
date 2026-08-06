@@ -30,12 +30,16 @@ function help(): string {
 
 Usage:
   hello-world hello [--name <name>] [--json]
-  hello-world hook --harness <codex|claude> --event <event>
+  hello-world hook --harness claude --event <event>
+  hello-world hook --harness codex --event <event> --plugin-version <version>
   hello-world --help
 
 Commands:
   hello  Print a greeting. No files, network calls, or durable state.
   hook   Accept a harness hook payload on stdin and exit successfully.
+
+Hook options:
+  --plugin-version <version>  Required for Codex hooks only.
 `
 }
 
@@ -83,10 +87,17 @@ export function executeCommand(
 	if (command === "hook") {
 		const harness = optionValue(commandArguments, "--harness")
 		const event = optionValue(commandArguments, "--event")
+		const pluginVersion = optionValue(commandArguments, "--plugin-version")
 		if (harness !== "codex" && harness !== "claude") {
 			return failure("--harness must be codex or claude")
 		}
 		if (!event) return failure("--event is required")
+		if (harness === "codex" && !pluginVersion) {
+			return failure("--plugin-version is required for codex hooks")
+		}
+		if (pluginVersion && pluginVersion !== PLUGIN_VERSION) {
+			return failure(`--plugin-version must be ${PLUGIN_VERSION}`)
+		}
 		if (standardInput.trim()) {
 			try {
 				JSON.parse(standardInput)
