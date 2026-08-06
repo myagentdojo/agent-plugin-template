@@ -6,6 +6,8 @@ const tagRulesetRepair =
 	"Settings > Rules > Rulesets > New tag ruleset: target tags matching v*, enable Restrict deletions and Restrict updates, no bypass actors"
 const defaultBranchRepair = "Settings > Branches > Default branch: change the default branch to main"
 const mergeCommitRepair = "Settings > General > Pull Requests: enable Allow merge commits"
+const mergeHistoryRepair =
+	"Settings > Rules: remove Require linear history from every rule protecting main; release pull requests require two-parent merge commits"
 const actionsRepair =
 	"Settings > Actions > General > Actions permissions: enable the actions and reusable workflows used by this repository"
 const requiredChecksRepair =
@@ -219,6 +221,72 @@ export function classifyRepositorySettings(repository: unknown): ReadinessCheck[
 					mergeCommitRepair,
 				),
 	]
+}
+
+/**
+ * Reject branch policies that prohibit the release design's two-parent merge commit.
+ *
+ * @param branchProtection - Full main branch-protection response, or null when no classic protection exists
+ * @param effectiveRules - Effective GitHub ruleset rules for main
+ * @returns Merge-history policy classification
+ *
+ * @example
+ * ```typescript
+ * classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }])
+ * ```
+ */
+export function classifyMergeHistoryPolicy(
+	branchProtection: unknown,
+	effectiveRules: unknown,
+): ReadinessCheck {
+	if (branchProtection !== null && !isRecord(branchProtection)) {
+		return {
+			name: "merge-history-policy",
+			status: "unavailable",
+			detail: "GitHub returned unreadable main branch protection; merge history policy is unproven",
+			repair: mergeHistoryRepair,
+		}
+	}
+	if (isRecord(branchProtection) && branchProtection.required_linear_history !== undefined) {
+		const linearHistory = branchProtection.required_linear_history
+		if (!isRecord(linearHistory) || typeof linearHistory.enabled !== "boolean") {
+			return {
+				name: "merge-history-policy",
+				status: "unavailable",
+				detail: "GitHub returned unreadable linear-history branch protection; merge commits are unproven",
+				repair: mergeHistoryRepair,
+			}
+		}
+		if (linearHistory.enabled) {
+			return missing(
+				"merge-history-policy",
+				"Classic branch protection requires linear history on main, which prohibits two-parent release merges",
+				mergeHistoryRepair,
+			)
+		}
+	}
+	if (
+		!Array.isArray(effectiveRules) ||
+		effectiveRules.some((rule) => !isRecord(rule) || typeof rule.type !== "string")
+	) {
+		return {
+			name: "merge-history-policy",
+			status: "unavailable",
+			detail: "GitHub returned unreadable effective rules for main; merge history policy is unproven",
+			repair: mergeHistoryRepair,
+		}
+	}
+	if (effectiveRules.some((rule) => rule.type === "required_linear_history")) {
+		return missing(
+			"merge-history-policy",
+			"An active ruleset requires linear history on main, which prohibits two-parent release merges",
+			mergeHistoryRepair,
+		)
+	}
+	return ready(
+		"merge-history-policy",
+		"Neither classic branch protection nor effective rulesets require linear history on main",
+	)
 }
 
 /**
@@ -519,6 +587,10 @@ export function classifyApiFailure(
 	}
 }
 
+function isNotFoundApiFailure(failure: ApiFailure): boolean {
+	return failure.exitCode === 404 || /\b404\b|not found/i.test(failure.stderr)
+}
+
 /**
  * Compute readiness without allowing unknown states to pass.
  *
@@ -685,6 +757,18 @@ function checkTagRuleset(repository: string): ReadinessCheck {
 	return classifyTagRuleset(details)
 }
 
+function checkMergeHistoryPolicy(repository: string): ReadinessCheck {
+	const protection = readApi(`repos/${repository}/branches/main/protection`)
+	if (!protection.ok && !isNotFoundApiFailure(protection)) {
+		return apiFailure("merge-history-policy", protection, mergeHistoryRepair)
+	}
+	const effectiveRules = readApi(`repos/${repository}/rules/branches/main`)
+	if (!effectiveRules.ok) {
+		return apiFailure("merge-history-policy", effectiveRules, mergeHistoryRepair)
+	}
+	return classifyMergeHistoryPolicy(protection.ok ? protection.data : null, effectiveRules.data)
+}
+
 function localWorkflows(): ReadinessCheck {
 	const workflowDirectory = join(root, ".github", "workflows")
 	try {
@@ -729,7 +813,7 @@ function localActionReferences(): string[] {
 }
 
 function runChecks(repository: string): ReadinessCheck[] {
-	const checks: ReadinessCheck[] = [checkTagRuleset(repository)]
+	const checks: ReadinessCheck[] = [checkTagRuleset(repository), checkMergeHistoryPolicy(repository)]
 	const repositoryResponse = readApi(`repos/${repository}`)
 	if (repositoryResponse.ok) checks.push(...classifyRepositorySettings(repositoryResponse.data))
 	else {

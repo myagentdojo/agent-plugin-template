@@ -8,6 +8,7 @@ import {
 	actionReferencesFromWorkflows,
 	classifyActionsPermissions,
 	classifyApiFailure,
+	classifyMergeHistoryPolicy,
 	classifyRepositorySettings,
 	classifyReleaseAutomationConfiguration,
 	classifyReleaseEnvironmentProtection,
@@ -42,6 +43,7 @@ function immutableTagRuleset(overrides: Record<string, unknown> = {}): Record<st
 test("reports ready when every publication safeguard is proven", () => {
 	const checks = [
 		classifyTagRuleset([immutableTagRuleset()]),
+		classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }]),
 		...classifyRepositorySettings({ default_branch: "main", allow_merge_commit: true }),
 		classifyActionsPermissions({ enabled: true, allowed_actions: "all" }),
 		classifyReleaseAutomationConfiguration(
@@ -64,6 +66,52 @@ test("reports ready when every publication safeguard is proven", () => {
 
 	expect(summarizeReadiness(checks)).toEqual({ ok: true, checks })
 	expect(checks.every((check) => check.status === "ready")).toBe(true)
+})
+
+describe("main merge-history policy", () => {
+	test("accepts absent classic protection and effective rules without linear history", () => {
+		expect(classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }])).toMatchObject({
+			name: "merge-history-policy",
+			status: "ready",
+			repair: "",
+		})
+	})
+
+	test("rejects classic branch protection requiring linear history", () => {
+		expect(
+			classifyMergeHistoryPolicy(
+				{ required_linear_history: { enabled: true } },
+				[{ type: "required_status_checks" }],
+			),
+		).toMatchObject({ status: "missing" })
+	})
+
+	test("rejects an effective ruleset requiring linear history", () => {
+		expect(
+			classifyMergeHistoryPolicy(null, [{ type: "required_linear_history" }]),
+		).toMatchObject({ status: "missing" })
+	})
+
+	test("accepts explicitly disabled classic linear-history protection", () => {
+		expect(
+			classifyMergeHistoryPolicy(
+				{ required_linear_history: { enabled: false } },
+				[{ type: "pull_request" }],
+			),
+		).toMatchObject({ status: "ready" })
+	})
+
+	test.each([
+		["classic protection", undefined, []],
+		["classic linear-history rule", { required_linear_history: {} }, []],
+		["effective rules", null, undefined],
+		["malformed effective rule", null, [{}]],
+	] as const)("fails closed for unreadable %s", (_condition, protection, rules) => {
+		expect(classifyMergeHistoryPolicy(protection, rules)).toMatchObject({
+			name: "merge-history-policy",
+			status: "unavailable",
+		})
+	})
 })
 
 describe("release environment required reviewers", () => {

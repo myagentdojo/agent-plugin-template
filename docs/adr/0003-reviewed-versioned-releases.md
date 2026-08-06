@@ -24,9 +24,9 @@ Manual dispatch accepts `operation=maintenance` or `operation=repair`. Maintenan
 
 ## Human-owned safeguards
 
-A human configures an active `v*` tag ruleset that restricts deletion and updates with no bypass actors. A human also configures required `main` checks, merge-commit availability, Actions permissions, and required reviewers on the `release` environment. Release automation receives narrow job permissions and never repository-administration authority.
+A human configures an active `v*` tag ruleset that restricts deletion and updates with no bypass actors. A human also configures required `main` checks, merge-commit availability without linear-history enforcement, Actions permissions, and required reviewers on the `release` environment. Release automation receives narrow job permissions and never repository-administration authority.
 
-`bun run readiness` reads GitHub and local workflow state without mutation. It fails closed unless the default branch is `main`, merge commits are enabled, all release-path checks protect `main`, Actions is enabled, the immutable tag ruleset is active, and no workflow grants repository administration. Automation is enabled only while these safeguards remain ready.
+`bun run readiness` reads GitHub and local workflow state without mutation. It fails closed unless the default branch is `main`, merge commits are enabled, classic protection and effective rulesets permit non-linear history, all release-path checks protect `main`, Actions is enabled, the immutable tag ruleset is active, and no workflow grants repository administration. Automation is enabled only while these safeguards remain ready.
 
 Installable payload changes require a releasable Conventional Commit PR title: `feat`, `fix`, `perf`, or a breaking `!` title. Documentation-, test-, and CI-only changes are exempt. The pure Release Please version projection is exempt because it changes release identity without changing installable behavior.
 

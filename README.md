@@ -380,7 +380,7 @@ flowchart LR
 ### One-time GitHub setup
 
 1. Open **Settings → Actions → General → Workflow permissions**. Keep the default workflow permission read-only and allow GitHub Actions to create and approve pull requests.
-2. Enable squash merging for normal PRs and merge commits for release PRs. Publication admits only a two-parent release-PR merge commit.
+2. Enable squash merging for normal PRs and merge commits for release PRs. Remove any **Require linear history** rule that applies to `main`. Publication admits only a two-parent release-PR merge commit.
 3. Protect `main`. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
 4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
@@ -389,7 +389,7 @@ flowchart LR
 8. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
 9. Enable release automation only after readiness reports `READY`.
 
-The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, required checks, Actions permissions, tag ruleset, or workflow authority cannot be proved.
+The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, effective merge-history policy, required checks, Actions permissions, tag ruleset, or workflow authority cannot be proved.
 
 Release automation requires `RELEASE_PLEASE_TOKEN`; it does not fall back to `GITHUB_TOKEN`. GitHub suppresses workflow runs caused by `GITHUB_TOKEN`, which would leave the generated release PR without its required checks. The separate repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` records the exact login that owns the token; both the release-impact gate and publication admission bind that identity.
 
