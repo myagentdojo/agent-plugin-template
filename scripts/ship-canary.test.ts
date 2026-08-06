@@ -435,10 +435,16 @@ test("sanitized public candidates are deterministic root commits with no reposit
 		const paths = tree.stdout.toString().trim().split("\n")
 		expect(paths).toContain(".claude-plugin/marketplace.json")
 		expect(paths).toContain(".agents/plugins/marketplace.json")
+		expect(paths).toContain(".github/workflows/plugin-ci.yml")
 		expect(paths.some((path) => path.startsWith("plugin/"))).toBe(true)
 		expect(paths).not.toContain("plugin.config.json")
 		expect(paths.some((path) => path.startsWith("scripts/"))).toBe(false)
 		expect(paths).not.toContain("README.md")
+		const workflow = readFileSync(join(first.repositoryRoot, ".github/workflows/plugin-ci.yml"), "utf8")
+		expect(workflow).toContain("name: Prove and package plugin")
+		expect(workflow).toContain('branches:\n      - "candidate/**"')
+		expect(workflow).toContain("persist-credentials: false")
+		expect(workflow).not.toContain("bun run")
 		const parents = Bun.spawnSync({
 			cmd: ["git", "rev-list", "--parents", "-n", "1", first.sha],
 			cwd: first.repositoryRoot,

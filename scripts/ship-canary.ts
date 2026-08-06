@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -6,6 +6,36 @@ import { loadPluginConfig } from "./plugin-config"
 import { copyMarketplaceDistribution, proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
+const HOSTED_PROOF_WORKFLOW_NAME = "Prove and package plugin"
+const PUBLIC_CANARY_WORKFLOW = `name: ${HOSTED_PROOF_WORKFLOW_NAME}
+
+on:
+  push:
+    branches:
+      - "candidate/**"
+
+permissions:
+  contents: read
+
+jobs:
+  distribution:
+    name: Sanitized public distribution
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify marketplace distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s plugin/.claude-plugin/plugin.json
+          test -s plugin/.codex-plugin/plugin.json
+          test -s .claude-plugin/marketplace.json
+          test -s .agents/plugins/marketplace.json
+          test -x plugin/bin/hello-world
+          node -e 'for (const path of process.argv.slice(1)) JSON.parse(require("node:fs").readFileSync(path, "utf8"))' plugin/.claude-plugin/plugin.json plugin/.codex-plugin/plugin.json .claude-plugin/marketplace.json .agents/plugins/marketplace.json
+`
 const help = `Qualify publishing-system changes through public and private Git canaries.
 
 Usage:
@@ -529,6 +559,12 @@ function requireGitObjectId(value: string | undefined, object: "tree" | "commit"
 	return value
 }
 
+function writePublicCanaryWorkflow(repositoryRoot: string): void {
+	const workflowDirectory = join(repositoryRoot, ".github", "workflows")
+	mkdirSync(workflowDirectory, { recursive: true })
+	writeFileSync(join(workflowDirectory, "plugin-ci.yml"), PUBLIC_CANARY_WORKFLOW)
+}
+
 export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: string): {
 	sha: string
 	repositoryRoot: string
@@ -538,6 +574,7 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "public-canary-candidate-"))
 	const repositoryRoot = join(temporaryRoot, "marketplace")
 	copyMarketplaceDistribution(sourceRoot, repositoryRoot)
+	writePublicCanaryWorkflow(repositoryRoot)
 	const environment = {
 		...process.env,
 		GIT_AUTHOR_NAME: "Hosted Canary",
@@ -676,7 +713,7 @@ async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun>
 			"--commit",
 			sourceSha,
 			"--workflow",
-			"Prove and package plugin",
+			HOSTED_PROOF_WORKFLOW_NAME,
 			"--limit",
 			"1",
 			"--json",
