@@ -509,6 +509,7 @@ test("sanitized public candidates are deterministic root commits with no reposit
 	try {
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
+		expect(first.environment.SSH_AUTH_SOCK).toBe(process.env.SSH_AUTH_SOCK)
 		expect(Object.keys(first.environment).sort()).toEqual([
 			"GIT_AUTHOR_DATE",
 			"GIT_AUTHOR_EMAIL",
@@ -520,6 +521,7 @@ test("sanitized public candidates are deterministic root commits with no reposit
 			"GIT_CONFIG_SYSTEM",
 			"HOME",
 			"PATH",
+			"SSH_AUTH_SOCK",
 		])
 		const tree = Bun.spawnSync({
 			cmd: ["git", "ls-tree", "-r", "--name-only", first.sha],
