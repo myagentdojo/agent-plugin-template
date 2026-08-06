@@ -52,6 +52,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
           fetch-depth: 0
       - name: Check out candidate as data
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,26 +69,22 @@ jobs:
         run: bun add --global "@anthropic-ai/claude-code@2.1.222" "@openai/codex@0.146.1"
       - name: Qualify immutable candidates with trusted driver
         env:
-          CANARY_GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
-          CANARY_SSH_KNOWN_HOSTS: ${{ secrets.CANARY_SSH_KNOWN_HOSTS }}
-          CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}
+          GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
           CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
           CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          test -n "$CANARY_GH_TOKEN"
-          test -n "$CANARY_SSH_KNOWN_HOSTS"
-          test -n "$CANARY_SSH_PRIVATE_KEY"
-          export GH_TOKEN="$CANARY_GH_TOKEN"
-          gh auth setup-git
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$CANARY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null' EXIT
-          ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"
-          unset CANARY_GH_TOKEN CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY
-          git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
+          test -n "$GH_TOKEN"
+          credential_root="$(mktemp -d)"
+          chmod 700 "$credential_root"
+          credential_socket="$credential_root/cache.sock"
+          credential_config="$credential_root/gitconfig"
+          git config --file "$credential_config" credential.helper "cache --socket $credential_socket --timeout 1800"
+          export GIT_CONFIG_GLOBAL="$credential_config"
+          export GIT_CONFIG_NOSYSTEM="1"
+          printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n\n' "$GH_TOKEN" | git credential approve
+          trap 'git credential-cache --socket "$credential_socket" exit >/dev/null 2>&1 || true; rm -rf "$credential_root"' EXIT
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
           bun run ship:canary -- --execute --source-root candidate --ref "$SOURCE_SHA" --json
 
   result:

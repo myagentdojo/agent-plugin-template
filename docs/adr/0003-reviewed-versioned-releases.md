@@ -24,7 +24,7 @@ Manual dispatch accepts `operation=maintenance` or `operation=repair`. Maintenan
 
 ## Human-owned safeguards
 
-A human configures an active `v*` tag ruleset that restricts deletion and updates with no bypass actors. A human also configures required `main` checks, merge-commit availability without linear-history enforcement, Actions permissions, required reviewers on the `release` environment, and the `hosted-canary-qualification` environment with its three required environment-secret names. Release automation receives narrow job permissions and never repository-administration authority.
+A human configures an active `v*` tag ruleset that restricts deletion and updates with no bypass actors. A human also configures required `main` checks, merge-commit availability without linear-history enforcement, Actions permissions, required reviewers on the `release` environment, and the `hosted-canary-qualification` environment with its scoped `CANARY_GH_TOKEN` secret. Release automation receives narrow job permissions and never repository-administration authority.
 
 `bun run readiness` reads GitHub and local workflow state without mutation. It fails closed unless the default branch is `main`, merge commits are enabled, classic protection and effective rulesets permit non-linear history, all release-path checks protect `main`, Actions is enabled, the immutable tag ruleset is active, the hosted-canary environment and required secret names exist, and no workflow grants repository administration. Secret values are never read. Automation is enabled only while these safeguards remain ready.
 

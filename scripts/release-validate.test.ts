@@ -102,8 +102,15 @@ function writeReleasedMetadata(repositoryRoot: string, changelog: (version: stri
 	return pluginConfig.version
 }
 
+function writeBootstrapMetadata(repositoryRoot: string): void {
+	writeFileSync(join(repositoryRoot, ".github", ".release-please-manifest.json"), "{}\n")
+	writeFileSync(join(repositoryRoot, "CHANGELOG.md"), "")
+}
+
 test("release metadata has one synchronized semantic version", () => {
-	const result = validate(root)
+	const temporaryRoot = copyRepository()
+	writeBootstrapMetadata(temporaryRoot)
+	const result = validate(temporaryRoot)
 	expect(result.exitCode, result.stderr.toString()).toBe(0)
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		ok: true,
@@ -171,6 +178,7 @@ test("release validation rejects unexpected release-please extra-files", () => {
 
 test("release validation rejects an empty manifest after v0.1.0", () => {
 	const temporaryRoot = copyRepository()
+	writeBootstrapMetadata(temporaryRoot)
 	for (const path of [
 		"package.json",
 		"plugin.config.json",
@@ -216,6 +224,7 @@ test("release validation rejects unexpected manifest packages", () => {
 
 test("release validation rejects a pre-seeded bootstrap changelog heading", () => {
 	const temporaryRoot = copyRepository()
+	writeBootstrapMetadata(temporaryRoot)
 	writeFileSync(join(temporaryRoot, "CHANGELOG.md"), "# Changelog\n")
 
 	const result = validate(temporaryRoot)

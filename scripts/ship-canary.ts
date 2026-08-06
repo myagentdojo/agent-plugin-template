@@ -608,8 +608,8 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 		PATH: process.env.PATH,
 		HOME: process.env.HOME,
 		GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+		GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM,
 		GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
-		SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
 		GIT_AUTHOR_NAME: "Hosted Canary",
 		GIT_AUTHOR_EMAIL: "canary@example.invalid",
 		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
@@ -667,7 +667,10 @@ function buildTargets(
 			visibility: "PUBLIC" as const,
 			candidateSha: publicCandidate.sha,
 			publicationRoot: publicCandidate.repositoryRoot,
-			publicationEnvironment: publicCandidate.environment,
+			publicationEnvironment: {
+				...publicCandidate.environment,
+				GH_TOKEN: process.env.GH_TOKEN,
+			},
 		},
 		{
 			repository: `${owner}/${privateName}`,

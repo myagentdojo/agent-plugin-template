@@ -144,6 +144,7 @@ fi
 if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then exit 0; fi
 if [ "$1" = "push" ]; then
 	printf 'git-push-cwd=%s %s\n' "$(pwd)" "$*" >> "$FAKE_LOG"
+	printf 'git-push-gh-token=%s\n' "\${GH_TOKEN:+present}" >> "$FAKE_LOG"
 	if [ "$FAKE_PUSH_FAIL" = "1" ]; then exit 1; fi
 	exit 0
 fi
@@ -396,7 +397,7 @@ test("public publication uses sanitized bytes while private publication uses the
 		driver,
 		candidate.temporaryRoot,
 		"--execute",
-		{ FAKE_HOSTED_FAILURE: "1" },
+		{ FAKE_HOSTED_FAILURE: "1", GH_TOKEN: "fake" },
 	)
 
 	expect(result.exitCode).toBe(1)
@@ -411,6 +412,7 @@ test("public publication uses sanitized bytes while private publication uses the
 	expect(await Bun.file(driver.log).text()).toContain(
 		"0123456789abcdef0123456789abcdef01234567:refs/heads/candidate/0123456789abcdef0123456789abcdef01234567",
 	)
+	expect((await Bun.file(driver.log).text()).match(/git-push-gh-token=present/g)).toHaveLength(2)
 })
 
 test("trusted preflight does not apply the base renderer to candidate-generated files", async () => {
@@ -509,7 +511,8 @@ test("sanitized public candidates are deterministic root commits with no reposit
 	try {
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
-		expect(first.environment.SSH_AUTH_SOCK).toBe(process.env.SSH_AUTH_SOCK)
+		expect(first.environment).not.toHaveProperty("GH_TOKEN")
+		expect(first.environment).not.toHaveProperty("SSH_AUTH_SOCK")
 		expect(Object.keys(first.environment).sort()).toEqual([
 			"GIT_AUTHOR_DATE",
 			"GIT_AUTHOR_EMAIL",
@@ -518,10 +521,10 @@ test("sanitized public candidates are deterministic root commits with no reposit
 			"GIT_COMMITTER_EMAIL",
 			"GIT_COMMITTER_NAME",
 			"GIT_CONFIG_GLOBAL",
+			"GIT_CONFIG_NOSYSTEM",
 			"GIT_CONFIG_SYSTEM",
 			"HOME",
 			"PATH",
-			"SSH_AUTH_SOCK",
 		])
 		const tree = Bun.spawnSync({
 			cmd: ["git", "ls-tree", "-r", "--name-only", first.sha],
@@ -864,6 +867,7 @@ test("untrusted PR workflow always reports without canary credentials", () => {
 
 test("privileged canary workflow executes trusted code and treats the PR checkout as data", () => {
 	const workflow = readFileSync(join(root, ".github", "workflows", "hosted-canary.yml"), "utf8")
+	const readme = readFileSync(join(root, "README.md"), "utf8")
 
 	expect(workflow).toContain("pull_request_target:")
 	expect(workflow).not.toContain("checks: write")
@@ -886,8 +890,19 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("environment: hosted-canary-qualification")
 	expect(workflow).toContain("CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}")
 	expect(workflow).toContain("CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}")
-	expect(workflow).toContain("unset CANARY_GH_TOKEN CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY")
+	expect(workflow).toContain("GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}")
+	expect(workflow).toContain('credential.helper "cache --socket $credential_socket --timeout 1800"')
+	expect(workflow).toContain('export GIT_CONFIG_NOSYSTEM="1"')
+	expect(workflow).toContain("git credential approve")
+	expect(workflow).toContain('git credential-cache --socket "$credential_socket" exit')
+	expect(workflow).toContain('rm -rf "$credential_root"')
+	expect(workflow).not.toContain("gh auth setup-git")
+	expect(workflow).toContain('git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"')
+	expect(workflow).not.toContain("CANARY_SSH_KNOWN_HOSTS")
+	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("CHECK_RUN_ID")
+	expect(readme).toContain("token-backed GitHub API and HTTPS Git identity")
+	expect(readme).not.toContain("token and SSH identities")
 })
 
 test("hosted canary workflow gives fork authors a same-repository qualification path", () => {

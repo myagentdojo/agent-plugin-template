@@ -532,6 +532,7 @@ export function nativeHarnessEnvironment(
 		"SSH_AGENT_PID",
 		"GIT_SSH_COMMAND",
 		"GIT_CONFIG_GLOBAL",
+		"GIT_CONFIG_NOSYSTEM",
 		"XDG_CONFIG_HOME",
 		"XDG_CACHE_HOME",
 		"XDG_DATA_HOME",
