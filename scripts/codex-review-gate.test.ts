@@ -25,11 +25,14 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 		env: { STATUS_CONTEXT: "Codex review gate" },
 	})
 
-	expect(source.match(/--raw-field state=success/g)).toHaveLength(2)
+	expect(source.match(/--raw-field state=success/g)).toHaveLength(3)
 	expect(source.match(/--raw-field state=pending/g)).toHaveLength(1)
 	expect(source).toContain("collaborators/${COMMENTER}/permission")
 	expect(source).toContain("admin|maintain|write")
 	expect(source).toContain("chatgpt-codex-connector[bot]")
+	expect(source).toContain("github.event.comment.user.login == 'chatgpt-codex-connector[bot]'")
+	expect(source).toContain("reviewed_prefix=")
+	expect(source).toContain('"${HEAD_SHA}" != "${reviewed_prefix}"*')
 	expect(source).toContain('"${REVIEW_SHA}" != "${HEAD_SHA}"')
 	expect(source).not.toContain("actions/checkout")
 })

@@ -96,3 +96,44 @@ jobs:
             --raw-field context="${STATUS_CONTEXT}" \
             --raw-field description="Codex review complete" \
             --raw-field target_url="${PR_URL}"
+
+  complete-comment:
+    name: Release the gate after a clean Codex review comment
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+    runs-on: ubuntu-24.04
+    env:
+      COMMENT_BODY: ${{ github.event.comment.body }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+      REVIEW_MARKER: '^\*\*Reviewed commit:\*\* `([0-9a-f]{10,40})`[[:space:]]*$'
+    steps:
+      - name: Mark the reviewed PR commit successful
+        shell: bash
+        run: |
+          reviewed_prefix=""
+          while IFS= read -r line; do
+            if [[ "${line}" =~ ${REVIEW_MARKER} ]]; then
+              reviewed_prefix="${BASH_REMATCH[1]}"
+              break
+            fi
+          done <<< "${COMMENT_BODY}"
+          if [[ ! "${reviewed_prefix}" =~ ^[0-9a-f]{10,40}$ ]]; then
+            echo "Ignoring a Codex comment without an exact reviewed-commit marker."
+            exit 0
+          fi
+
+          HEAD_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)"
+          if [[ "${HEAD_SHA}" != "${reviewed_prefix}"* ]]; then
+            echo "Ignoring a Codex review comment for a stale PR commit."
+            exit 0
+          fi
+
+          PR_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}"
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            --raw-field state=success \
+            --raw-field context="${STATUS_CONTEXT}" \
+            --raw-field description="Codex review complete" \
+            --raw-field target_url="${PR_URL}"
