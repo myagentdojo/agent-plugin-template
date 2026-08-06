@@ -9,12 +9,20 @@
   },
   "repository": "https://github.com/myagentdojo/agent-plugin-template",
   "license": "MIT",
-  "keywords": ["agent-plugin", "bun", "quickjs"],
+  "keywords": [
+    "agent-plugin",
+    "bun",
+    "quickjs"
+  ],
   "category": "Developer Tools",
   "shortDescription": "Run a portable plugin skill",
   "longDescription": "A portability proof with shared skills and runtime code plus native Claude Code and Codex manifests and hooks.",
-  "capabilities": ["Read"],
-  "defaultPrompts": ["Run the hello-world distribution proof."],
+  "capabilities": [
+    "Read"
+  ],
+  "defaultPrompts": [
+    "Run the hello-world distribution proof."
+  ],
   "canary": {
     "owner": "myagentdojo",
     "actor": "myagentdojo",
