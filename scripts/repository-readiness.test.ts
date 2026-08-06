@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 
 import {
 	REQUIRED_STATUS_CHECKS,
+	actionReferencesFromWorkflows,
 	classifyActionsPermissions,
 	classifyApiFailure,
 	classifyRepositorySettings,
@@ -148,6 +149,27 @@ describe("Actions permissions", () => {
 				requiredActions,
 			),
 		).toMatchObject({ status: "unavailable" })
+	})
+
+	test("discovers both list-item and job-level action references", () => {
+		expect(
+			actionReferencesFromWorkflows([
+				"steps:\n  - uses: oven-sh/setup-bun@pinned\njob:\n  uses: actions/example@pinned\n  - uses: ./local\n",
+			]),
+		).toEqual(["actions/example@pinned", "oven-sh/setup-bun@pinned"])
+	})
+
+	test("real workflows include the pinned setup-bun action", () => {
+		const workflowDirectory = join(root, ".github", "workflows")
+		const references = actionReferencesFromWorkflows(
+			readdirSync(workflowDirectory)
+				.filter((path) => path.endsWith(".yml") || path.endsWith(".yaml"))
+				.map((path) => readFileSync(join(workflowDirectory, path), "utf8")),
+		)
+
+		expect(references).toContain(
+			"oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+		)
 	})
 })
 

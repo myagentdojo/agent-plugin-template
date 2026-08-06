@@ -664,19 +664,26 @@ function localWorkflows(): ReadinessCheck {
 	}
 }
 
-function localActionReferences(): string[] {
-	const workflowDirectory = join(root, ".github", "workflows")
+export function actionReferencesFromWorkflows(workflows: string[]): string[] {
 	return [
 		...new Set(
-			readdirSync(workflowDirectory)
-				.filter((path) => path.endsWith(".yml") || path.endsWith(".yaml"))
-				.flatMap((path) => [
-					...readFileSync(join(workflowDirectory, path), "utf8").matchAll(/^\s*uses:\s*([^\s#]+)/gm),
+			workflows
+				.flatMap((source) => [
+					...source.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm),
 				])
 				.map((match) => match[1])
 				.filter((reference) => !reference.startsWith("./")),
 		),
 	].sort()
+}
+
+function localActionReferences(): string[] {
+	const workflowDirectory = join(root, ".github", "workflows")
+	return actionReferencesFromWorkflows(
+		readdirSync(workflowDirectory)
+			.filter((path) => path.endsWith(".yml") || path.endsWith(".yaml"))
+			.map((path) => readFileSync(join(workflowDirectory, path), "utf8")),
+	)
 }
 
 function runChecks(repository: string): ReadinessCheck[] {
