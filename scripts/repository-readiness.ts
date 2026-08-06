@@ -18,6 +18,15 @@ const releaseAutomationRepair =
 	"Settings > Secrets and variables > Actions: add secret RELEASE_PLEASE_TOKEN and variable RELEASE_PLEASE_AUTOMATION_LOGIN"
 const releaseEnvironmentRepair =
 	"Settings > Environments > release > Deployment protection rules: enable Required reviewers and add at least one reviewer"
+const hostedCanaryRepair =
+	"Settings > Environments > hosted-canary-qualification: create the environment and add secrets CANARY_GH_TOKEN, CANARY_SSH_KNOWN_HOSTS, and CANARY_SSH_PRIVATE_KEY"
+
+const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
+export const REQUIRED_HOSTED_CANARY_SECRETS = [
+	"CANARY_GH_TOKEN",
+	"CANARY_SSH_KNOWN_HOSTS",
+	"CANARY_SSH_PRIVATE_KEY",
+] as const
 
 const help = `Verify human-owned GitHub repository safeguards without changing them.
 
@@ -460,6 +469,57 @@ export function classifyReleaseEnvironmentProtection(environment: unknown): Read
 	)
 }
 
+/** Verify hosted-canary qualification authority from environment and secret names only. */
+export function classifyHostedCanaryConfiguration(
+	environment: unknown,
+	secretsResponse: unknown,
+): ReadinessCheck {
+	if (!isRecord(environment) || environment.name !== HOSTED_CANARY_ENVIRONMENT) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable hosted-canary environment metadata; qualification authority is unproven",
+			repair: hostedCanaryRepair,
+		}
+	}
+	if (!isRecord(secretsResponse) || !Array.isArray(secretsResponse.secrets)) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable hosted-canary secret metadata; qualification credentials are unproven",
+			repair: hostedCanaryRepair,
+		}
+	}
+	if (
+		secretsResponse.secrets.some(
+			(entry) => !isRecord(entry) || typeof entry.name !== "string",
+		)
+	) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned a hosted-canary secret without a readable name; qualification credentials are unproven",
+			repair: hostedCanaryRepair,
+		}
+	}
+	const configured = new Set(
+		secretsResponse.secrets.flatMap((entry) =>
+			isRecord(entry) && typeof entry.name === "string" ? [entry.name] : [],
+		),
+	)
+	const absent = REQUIRED_HOSTED_CANARY_SECRETS.filter((name) => !configured.has(name))
+	return absent.length === 0
+		? ready(
+				"hosted-canary-configuration",
+				`${HOSTED_CANARY_ENVIRONMENT} and all required secret names are configured`,
+			)
+		: missing(
+				"hosted-canary-configuration",
+				`Hosted-canary qualification is missing environment secret${absent.length === 1 ? "" : "s"}: ${absent.join(", ")}`,
+				hostedCanaryRepair,
+			)
+}
+
 /**
  * Verify every status check needed by the release path protects main.
  *
@@ -769,6 +829,20 @@ function checkMergeHistoryPolicy(repository: string): ReadinessCheck {
 	return classifyMergeHistoryPolicy(protection.ok ? protection.data : null, effectiveRules.data)
 }
 
+function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
+	const environment = readApi(`repos/${repository}/environments/${HOSTED_CANARY_ENVIRONMENT}`)
+	if (!environment.ok) {
+		return apiFailure("hosted-canary-configuration", environment, hostedCanaryRepair)
+	}
+	const secrets = readApi(
+		`repos/${repository}/environments/${HOSTED_CANARY_ENVIRONMENT}/secrets`,
+	)
+	if (!secrets.ok) {
+		return apiFailure("hosted-canary-configuration", secrets, hostedCanaryRepair)
+	}
+	return classifyHostedCanaryConfiguration(environment.data, secrets.data)
+}
+
 function localWorkflows(): ReadinessCheck {
 	const workflowDirectory = join(root, ".github", "workflows")
 	try {
@@ -871,6 +945,7 @@ function runChecks(repository: string): ReadinessCheck[] {
 					releaseEnvironmentRepair,
 				),
 	)
+	checks.push(checkHostedCanaryConfiguration(repository))
 	checks.push(localWorkflows())
 	return checks
 }

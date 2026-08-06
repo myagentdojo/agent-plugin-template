@@ -384,12 +384,18 @@ flowchart LR
 3. Protect `main`. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
 4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
-6. Create a fine-grained token or GitHub App token with only repository contents, pull requests, and issues write access. Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`.
-7. Set the repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` to the exact login that token uses to author the release PR.
-8. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
-9. Enable release automation only after readiness reports `READY`.
+6. Create the public and private canary repositories named by `plugin.config.json`, then create the `hosted-canary-qualification` environment. Add these environment secrets:
+   - `CANARY_GH_TOKEN`: a token for the exact configured `canary.actor`, with repository metadata and Actions read access to both canary repositories.
+   - `CANARY_SSH_KNOWN_HOSTS`: the approved GitHub SSH host-key entries used by the qualification runner.
+   - `CANARY_SSH_PRIVATE_KEY`: a dedicated key for that same actor with read and write access to both canary repositories; qualification limits writes to create-only immutable candidate refs.
 
-The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, effective merge-history policy, required checks, Actions permissions, tag ruleset, or workflow authority cannot be proved.
+   Keep secret values out of repository files, logs, and readiness output. `bun run readiness` proves only that the environment and names exist; the hosted qualification binds the token and SSH identities and proves their real access.
+7. Create a fine-grained token or GitHub App token with only repository contents, pull requests, and issues write access. Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`.
+8. Set the repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` to the exact login that token uses to author the release PR.
+9. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
+10. Enable release automation only after readiness reports `READY`.
+
+The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, effective merge-history policy, required checks, Actions permissions, tag ruleset, hosted-canary environment and secret names, or workflow authority cannot be proved. It reads secret metadata only, never secret values.
 
 Release automation requires `RELEASE_PLEASE_TOKEN`; it does not fall back to `GITHUB_TOKEN`. GitHub suppresses workflow runs caused by `GITHUB_TOKEN`, which would leave the generated release PR without its required checks. The separate repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` records the exact login that owns the token; both the release-impact gate and publication admission bind that identity.
 

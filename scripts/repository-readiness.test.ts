@@ -4,10 +4,12 @@ import { join, resolve } from "node:path"
 import { describe, expect, test } from "bun:test"
 
 import {
+	REQUIRED_HOSTED_CANARY_SECRETS,
 	REQUIRED_STATUS_CHECKS,
 	actionReferencesFromWorkflows,
 	classifyActionsPermissions,
 	classifyApiFailure,
+	classifyHostedCanaryConfiguration,
 	classifyMergeHistoryPolicy,
 	classifyRepositorySettings,
 	classifyReleaseAutomationConfiguration,
@@ -55,6 +57,10 @@ test("reports ready when every publication safeguard is proven", () => {
 				{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "release-owner" } }] },
 			],
 		}),
+		classifyHostedCanaryConfiguration(
+			{ name: "hosted-canary-qualification" },
+			{ secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) },
+		),
 		classifyRequiredStatusChecks({ strict: true, contexts: REQUIRED_STATUS_CHECKS }),
 		classifyWorkflowAdminPermissions([
 			{
@@ -137,6 +143,44 @@ describe("release environment required reviewers", () => {
 			name: "release-environment-reviewers",
 			status,
 			repair,
+		})
+	})
+})
+
+describe("hosted-canary qualification configuration", () => {
+	const environment = { name: "hosted-canary-qualification" }
+	const secrets = { secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) }
+
+	test("accepts the environment with all required secret names", () => {
+		expect(classifyHostedCanaryConfiguration(environment, secrets)).toMatchObject({
+			name: "hosted-canary-configuration",
+			status: "ready",
+			repair: "",
+		})
+	})
+
+	test("reports every absent environment secret without reading values", () => {
+		const check = classifyHostedCanaryConfiguration(environment, {
+			secrets: [{ name: "CANARY_GH_TOKEN", value: "must-not-leak" }],
+		})
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.detail).toContain("CANARY_SSH_KNOWN_HOSTS")
+		expect(check.detail).toContain("CANARY_SSH_PRIVATE_KEY")
+		expect(JSON.stringify(check)).not.toContain("must-not-leak")
+	})
+
+	test.each([
+		["environment metadata", undefined, secrets],
+		["wrong environment", { name: "release" }, secrets],
+		["secret response", environment, undefined],
+		["secret name", environment, { secrets: [{}] }],
+	] as const)("fails closed for unreadable %s", (_condition, environmentResponse, secretsResponse) => {
+		expect(
+			classifyHostedCanaryConfiguration(environmentResponse, secretsResponse),
+		).toMatchObject({
+			name: "hosted-canary-configuration",
+			status: "unavailable",
 		})
 	})
 })
