@@ -520,6 +520,7 @@ test("sanitized public candidates are deterministic root commits with no reposit
 			"GIT_COMMITTER_EMAIL",
 			"GIT_COMMITTER_NAME",
 			"GIT_CONFIG_GLOBAL",
+			"GIT_CONFIG_NOSYSTEM",
 			"GIT_CONFIG_SYSTEM",
 			"HOME",
 			"PATH",

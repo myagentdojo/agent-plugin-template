@@ -608,6 +608,7 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 		PATH: process.env.PATH,
 		HOME: process.env.HOME,
 		GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+		GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM,
 		GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
 		GIT_AUTHOR_NAME: "Hosted Canary",
 		GIT_AUTHOR_EMAIL: "canary@example.invalid",
