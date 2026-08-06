@@ -512,6 +512,7 @@ test("sanitized public candidates are deterministic root commits with no reposit
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
 		expect(first.environment).not.toHaveProperty("GH_TOKEN")
+		expect(first.environment).not.toHaveProperty("SSH_AUTH_SOCK")
 		expect(Object.keys(first.environment).sort()).toEqual([
 			"GIT_AUTHOR_DATE",
 			"GIT_AUTHOR_EMAIL",
