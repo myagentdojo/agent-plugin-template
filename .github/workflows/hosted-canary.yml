@@ -75,7 +75,15 @@ jobs:
           CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           test -n "$GH_TOKEN"
-          gh auth setup-git
+          credential_root="$(mktemp -d)"
+          chmod 700 "$credential_root"
+          credential_socket="$credential_root/cache.sock"
+          credential_config="$credential_root/gitconfig"
+          git config --file "$credential_config" credential.helper "cache --socket $credential_socket --timeout 1800"
+          export GIT_CONFIG_GLOBAL="$credential_config"
+          export GIT_CONFIG_NOSYSTEM="1"
+          printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n\n' "$GH_TOKEN" | git credential approve
+          trap 'git credential-cache --socket "$credential_socket" exit >/dev/null 2>&1 || true; rm -rf "$credential_root"' EXIT
           git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
           bun run ship:canary -- --execute --source-root candidate --ref "$SOURCE_SHA" --json
 

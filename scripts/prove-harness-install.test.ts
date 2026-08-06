@@ -89,6 +89,8 @@ test("native harness commands receive no publication credentials", () => {
 	const environment = nativeHarnessEnvironment({
 		PATH: "/usr/bin:/bin",
 		HOME: "/tmp/home",
+		GIT_CONFIG_GLOBAL: "/tmp/credential-lease/gitconfig",
+		GIT_CONFIG_NOSYSTEM: "1",
 		SSH_AUTH_SOCK: "/tmp/agent.sock",
 		GH_TOKEN: "secret",
 		GITHUB_TOKEN: "secret",
@@ -100,6 +102,8 @@ test("native harness commands receive no publication credentials", () => {
 	expect(environment).toEqual({
 		PATH: "/usr/bin:/bin",
 		HOME: "/tmp/home",
+		GIT_CONFIG_GLOBAL: "/tmp/credential-lease/gitconfig",
+		GIT_CONFIG_NOSYSTEM: "1",
 		SSH_AUTH_SOCK: "/tmp/agent.sock",
 	})
 	expect(JSON.stringify(environment)).not.toContain("secret")
