@@ -881,6 +881,9 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("path: candidate")
 	expect(workflow).toContain("persist-credentials: false")
 	expect(workflow).toContain("--source-root candidate")
+	expect(workflow).toMatch(
+		/Check out candidate as data[\s\S]*?persist-credentials: false[\s\S]*?fetch-depth: 0/,
+	)
 	expect(workflow).not.toContain("bun run generate:check")
 	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
 	expect(workflow).toContain("@openai/codex@0.146.1")
