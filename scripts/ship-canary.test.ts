@@ -144,6 +144,7 @@ fi
 if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then exit 0; fi
 if [ "$1" = "push" ]; then
 	printf 'git-push-cwd=%s %s\n' "$(pwd)" "$*" >> "$FAKE_LOG"
+	printf 'git-push-gh-token=%s\n' "\${GH_TOKEN:+present}" >> "$FAKE_LOG"
 	if [ "$FAKE_PUSH_FAIL" = "1" ]; then exit 1; fi
 	exit 0
 fi
@@ -396,7 +397,7 @@ test("public publication uses sanitized bytes while private publication uses the
 		driver,
 		candidate.temporaryRoot,
 		"--execute",
-		{ FAKE_HOSTED_FAILURE: "1" },
+		{ FAKE_HOSTED_FAILURE: "1", GH_TOKEN: "fake" },
 	)
 
 	expect(result.exitCode).toBe(1)
@@ -411,6 +412,7 @@ test("public publication uses sanitized bytes while private publication uses the
 	expect(await Bun.file(driver.log).text()).toContain(
 		"0123456789abcdef0123456789abcdef01234567:refs/heads/candidate/0123456789abcdef0123456789abcdef01234567",
 	)
+	expect((await Bun.file(driver.log).text()).match(/git-push-gh-token=present/g)).toHaveLength(2)
 })
 
 test("trusted preflight does not apply the base renderer to candidate-generated files", async () => {
@@ -509,6 +511,7 @@ test("sanitized public candidates are deterministic root commits with no reposit
 	try {
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
+		expect(first.environment).not.toHaveProperty("GH_TOKEN")
 		expect(Object.keys(first.environment).sort()).toEqual([
 			"GIT_AUTHOR_DATE",
 			"GIT_AUTHOR_EMAIL",

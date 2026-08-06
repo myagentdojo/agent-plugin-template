@@ -666,7 +666,10 @@ function buildTargets(
 			visibility: "PUBLIC" as const,
 			candidateSha: publicCandidate.sha,
 			publicationRoot: publicCandidate.repositoryRoot,
-			publicationEnvironment: publicCandidate.environment,
+			publicationEnvironment: {
+				...publicCandidate.environment,
+				GH_TOKEN: process.env.GH_TOKEN,
+			},
 		},
 		{
 			repository: `${owner}/${privateName}`,
