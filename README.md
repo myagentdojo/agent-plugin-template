@@ -386,7 +386,7 @@ flowchart LR
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
 6. Create the public and private canary repositories named by `plugin.config.json`, then create the `hosted-canary-qualification` environment. Add `CANARY_GH_TOKEN`: a fine-grained token for the exact configured `canary.actor`, scoped only to both canary repositories, with Contents read/write, Actions read, and metadata read. Qualification uses the token for both GitHub API identity and HTTPS Git transport, and limits writes to create-only immutable candidate refs.
 
-   Keep secret values out of repository files, logs, and readiness output. `bun run readiness` proves only that the environment and names exist; the hosted qualification binds the token and SSH identities and proves their real access.
+   Keep secret values out of repository files, logs, and readiness output. `bun run readiness` proves only that the environment and names exist; hosted qualification binds the token-backed GitHub API and HTTPS Git identity and proves its real access.
 7. Create a fine-grained token or GitHub App token with only repository contents, pull requests, and issues write access. Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`.
 8. Set the repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` to the exact login that token uses to author the release PR.
 9. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
