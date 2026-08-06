@@ -186,6 +186,14 @@ describe("immutable version tag ruleset", () => {
 			],
 		],
 		["mutable", [immutableTagRuleset({ rules: [{ type: "deletion" }] })]],
+		[
+			"non-fast-forward only",
+			[
+				immutableTagRuleset({
+					rules: [{ type: "deletion" }, { type: "non_fast_forward" }],
+				}),
+			],
+		],
 	] as const)("reports the settings repair when the rule is %s", (_condition, rulesets) => {
 		const check = classifyTagRuleset(rulesets)
 

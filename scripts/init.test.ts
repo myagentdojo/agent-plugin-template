@@ -206,6 +206,7 @@ test("template user initializes both harness manifests from one metadata source"
 		repository: "https://github.com/myagentdojo/dojo-hello",
 		canary: {
 			owner: "myagentdojo",
+			actor: "myagentdojo",
 			publicRepository: "dojo-hello-public-canary",
 			privateRepository: "dojo-hello-private-canary",
 		},
@@ -250,6 +251,50 @@ test("template user initializes both harness manifests from one metadata source"
 		source: { source: "local", path: "./plugin" },
 		policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
 	})
+})
+
+test("organization-owned canaries keep repository owner separate from authenticated actor", () => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-org-canary-")
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"init",
+			"--",
+			"--name",
+			"dojo-hello",
+			"--repository",
+			"https://github.com/myagentdojo-org/dojo-hello",
+			"--canary-actor",
+			"dojo-release-bot",
+			"--force",
+			"--json",
+		],
+		cwd: temporaryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	const config = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
+	expect(config.canary).toEqual({
+		owner: "myagentdojo-org",
+		actor: "dojo-release-bot",
+		publicRepository: "dojo-hello-public-canary",
+		privateRepository: "dojo-hello-private-canary",
+	})
+})
+
+test("init help discovers the canary actor identity override", () => {
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "run", "init", "--", "--help"],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(result.stdout.toString()).toContain("--canary-actor <login>")
 })
 
 test("initialization resets recipient release lineage to 0.1.0", () => {

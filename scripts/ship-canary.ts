@@ -56,8 +56,12 @@ Options:
 
 Safety:
   Publishing changes GitHub repositories. Candidate refs use create-only compare-and-swap and are never replaced or deleted.
-  Active gh and real Git transport identities must match plugin.config.json canary.owner.
+  Active gh and real Git transport identities must match plugin.config.json canary.actor.
 `
+
+const DEFAULT_HOSTED_RUN_DEADLINE_MS = 10 * 60 * 1000
+const DEFAULT_NETWORK_COMMAND_TIMEOUT_MS = 30 * 1000
+const DEFAULT_HOSTED_POLL_DELAY_MS = 3000
 
 type Visibility = "PUBLIC" | "PRIVATE"
 type TransportKind = "ssh" | "https"
@@ -114,6 +118,12 @@ export interface HostedRun {
 	databaseId: number
 	conclusion: string
 	url: string
+	/** Candidate commit qualified by this receipt. */
+	sourceSha: string
+	/** Trusted workflow commit that issued the receipt. */
+	workflowSha: string
+	/** Authority that executed the receipt-producing workflow. */
+	authority: "candidate-sanitized-workflow" | "protected-trusted-workflow"
 }
 
 /** Native harness installation evidence derived from one hosted candidate ref. */
@@ -371,6 +381,8 @@ function commandOutput(
 	input?: string,
 	environment?: Record<string, string | undefined>,
 	cwd = root,
+	timeout?: number,
+	trimOutput = true,
 ): CommandOutput {
 	const result = Bun.spawnSync({
 		cmd: command,
@@ -379,11 +391,14 @@ function commandOutput(
 		stdin: input === undefined ? "ignore" : new Blob([input]),
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout,
 	})
+	const stdout = result.stdout.toString()
+	const stderr = result.stderr.toString()
 	return {
-		exitCode: result.exitCode,
-		stdout: result.stdout.toString().trim(),
-		stderr: result.stderr.toString().trim(),
+		exitCode: result.exitCode ?? 124,
+		stdout: trimOutput ? stdout.trim() : stdout,
+		stderr: trimOutput ? stderr.trim() : stderr,
 	}
 }
 
@@ -496,15 +511,29 @@ function resolveTransportIdentity(origin: string): {
 			false,
 		)
 	}
-	const identity = /^username=(?<identity>[^\r\n]+)$/m.exec(credential.stdout)?.groups?.identity
-	if (!identity) {
+	const password = /^password=(?<password>[^\r\n]+)$/m.exec(credential.stdout)?.groups?.password
+	if (!password) {
 		throw new CanaryError(
 			"transport_identity_unproven",
-			`HTTPS credential helper did not report a username for ${transport.host}`,
+			`HTTPS credential helper did not report a token for ${transport.host}`,
 			"configure owner-bound HTTPS Git credentials, then rerun --dry-run",
 			false,
 		)
 	}
+	const authenticated = commandOutput(
+		["gh", "api", "user", "--jq", ".login"],
+		undefined,
+		{ ...process.env, GH_TOKEN: password },
+	)
+	if (authenticated.exitCode !== 0 || !authenticated.stdout) {
+		throw new CanaryError(
+			"transport_identity_unproven",
+			`HTTPS credential for ${transport.host} did not authenticate with GitHub`,
+			"repair the HTTPS credential selected by Git, then rerun --dry-run",
+			false,
+		)
+	}
+	const identity = authenticated.stdout
 	return { kind: "https", identity, host: transport.host }
 }
 
@@ -700,11 +729,32 @@ function publishTarget(target: Target, candidateSha: string): void {
 	}
 }
 
+function positiveDuration(name: string, fallback: number): number {
+	const value = process.env[name]
+	if (value === undefined) return fallback
+	if (!/^[1-9]\d*$/.test(value)) {
+		throw new CanaryError(
+			"usage",
+			`${name} must be a positive integer number of milliseconds`,
+			`unset ${name} or provide a positive integer`,
+			false,
+		)
+	}
+	return Number(value)
+}
+
 async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun> {
-	const deadline = Date.now() + 10 * 60 * 1000
+	const deadlineMs = positiveDuration("CANARY_HOSTED_RUN_DEADLINE_MS", DEFAULT_HOSTED_RUN_DEADLINE_MS)
+	const commandTimeoutMs = positiveDuration(
+		"CANARY_NETWORK_COMMAND_TIMEOUT_MS",
+		DEFAULT_NETWORK_COMMAND_TIMEOUT_MS,
+	)
+	const pollDelayMs = positiveDuration("CANARY_HOSTED_POLL_DELAY_MS", DEFAULT_HOSTED_POLL_DELAY_MS)
+	const deadline = Date.now() + deadlineMs
 	let run: { databaseId: number; status: string; conclusion: string; url: string } | undefined
 	while (Date.now() < deadline) {
-		const output = processResult([
+		const remaining = Math.max(1, deadline - Date.now())
+		const result = commandOutput([
 			"gh",
 			"run",
 			"list",
@@ -718,11 +768,18 @@ async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun>
 			"1",
 			"--json",
 			"databaseId,status,conclusion,url",
-		])
-		const runs = JSON.parse(output || "[]") as Array<typeof run>
-		run = runs[0]
+		], undefined, undefined, root, Math.min(commandTimeoutMs, remaining))
+		if (result.exitCode === 0) {
+			try {
+				const runs = JSON.parse(result.stdout || "[]") as Array<typeof run>
+				run = runs[0]
+			} catch {
+				run = undefined
+			}
+		}
 		if (run?.status === "completed") break
-		await Bun.sleep(3000)
+		const delay = Math.min(pollDelayMs, Math.max(0, deadline - Date.now()))
+		if (delay > 0) await Bun.sleep(delay)
 	}
 	if (!run || run.status !== "completed") {
 		throw new CanaryError(
@@ -745,6 +802,61 @@ async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun>
 		databaseId: run.databaseId,
 		conclusion: run.conclusion,
 		url: run.url,
+		sourceSha,
+		workflowSha: sourceSha,
+		authority: "candidate-sanitized-workflow",
+	}
+}
+
+/**
+ * Bind private qualification to the protected driver workflow and exact candidate source.
+ *
+ * @param target - Private canary target being qualified
+ * @param sourceSha - Exact candidate commit inspected by trusted code
+ * @param environment - GitHub Actions receipt fields supplied by the protected workflow
+ * @returns SHA-bound hosted-run evidence issued by trusted code
+ * @throws {CanaryError} When the workflow authority or source binding is absent
+ *
+ * @example
+ * ```typescript
+ * bindTrustedPrivateRun(target, sourceSha, process.env)
+ * ```
+ */
+export function bindTrustedPrivateRun(
+	target: Target,
+	sourceSha: string,
+	environment: Record<string, string | undefined> = process.env,
+): HostedRun {
+	const workflowRef = environment.GITHUB_WORKFLOW_REF || ""
+	const workflowSha = environment.CANARY_TRUSTED_WORKFLOW_SHA || ""
+	const qualifiedSourceSha = environment.CANARY_QUALIFIED_SOURCE_SHA || ""
+	const runId = environment.GITHUB_RUN_ID || ""
+	const repository = environment.GITHUB_REPOSITORY || ""
+	const serverUrl = environment.GITHUB_SERVER_URL || ""
+	if (
+		environment.GITHUB_ACTIONS !== "true" ||
+		!workflowRef.includes("/.github/workflows/hosted-canary.yml@") ||
+		!/^[0-9a-f]{40}$/.test(workflowSha) ||
+		qualifiedSourceSha !== sourceSha ||
+		!/^\d+$/.test(runId) ||
+		!repository ||
+		!serverUrl
+	) {
+		throw new CanaryError(
+			"trusted_workflow_unproven",
+			`${target.repository} private proof is not bound to the protected hosted-canary workflow and source commit`,
+			"run qualification through .github/workflows/hosted-canary.yml from protected base code",
+			false,
+		)
+	}
+	return {
+		repository: target.repository,
+		databaseId: Number(runId),
+		conclusion: "success",
+		url: `${serverUrl}/${repository}/actions/runs/${runId}`,
+		sourceSha,
+		workflowSha,
+		authority: "protected-trusted-workflow",
 	}
 }
 
@@ -812,6 +924,7 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 
 function candidateCanaryTargets(sourceRoot: string): {
 	owner?: unknown
+	actor?: unknown
 	publicRepository?: unknown
 	privateRepository?: unknown
 } {
@@ -819,6 +932,7 @@ function candidateCanaryTargets(sourceRoot: string): {
 		const candidate = JSON.parse(readFileSync(join(sourceRoot, "plugin.config.json"), "utf8")) as {
 			canary?: {
 				owner?: unknown
+				actor?: unknown
 				publicRepository?: unknown
 				privateRepository?: unknown
 			}
@@ -880,7 +994,12 @@ export async function qualifyTargets(
 	const adapters = dependencies ?? {
 		publish: (target: Target, candidateSha: string) =>
 			publishTarget(target, candidateSha),
-		hostedProof: waitForRun,
+		hostedProof: (target: Target, candidateSha: string) =>
+			Promise.resolve(
+				target.visibility === "PRIVATE"
+					? bindTrustedPrivateRun(target, candidateSha)
+					: waitForRun(target, candidateSha),
+			),
 		install: installCandidate,
 	}
 	const visibilities = targets.map((target) => target.visibility).sort().join(",")
@@ -898,15 +1017,20 @@ export async function qualifyTargets(
 		)
 	}
 	for (const target of targets) await adapters.publish(target, target.candidateSha)
-	const runs: HostedRun[] = []
-	for (const target of targets) runs.push(await adapters.hostedProof(target, target.candidateSha))
+	const runs = new Map<Visibility, HostedRun>()
+	for (const target of targets.filter((candidate) => candidate.visibility === "PUBLIC")) {
+		runs.set(target.visibility, await adapters.hostedProof(target, target.candidateSha))
+	}
 	const installs: CandidateInstallEvidence[] = []
 	for (const target of targets) {
 		const evidence = await adapters.install(target, target.candidateSha)
 		assertCandidateInstall(target, evidence)
 		installs.push(evidence)
 	}
-	return { runs, installs }
+	for (const target of targets.filter((candidate) => candidate.visibility === "PRIVATE")) {
+		runs.set(target.visibility, await adapters.hostedProof(target, target.candidateSha))
+	}
+	return { runs: targets.map((target) => runs.get(target.visibility) as HostedRun), installs }
 }
 
 function preflight(options: PublishOptions): Preflight {
@@ -914,6 +1038,7 @@ function preflight(options: PublishOptions): Preflight {
 	const candidateCanary = candidateCanaryTargets(options.sourceRoot)
 	if (
 		candidateCanary.owner !== trustedConfig.canary.owner ||
+		candidateCanary.actor !== trustedConfig.canary.actor ||
 		candidateCanary.publicRepository !== trustedConfig.canary.publicRepository ||
 		candidateCanary.privateRepository !== trustedConfig.canary.privateRepository
 	) {
@@ -960,6 +1085,40 @@ function preflight(options: PublishOptions): Preflight {
 			false,
 		)
 	}
+	const ignoredDistribution = commandOutput(
+		[
+			"git",
+			"ls-files",
+			"--others",
+			"--ignored",
+			"--exclude-standard",
+			"-z",
+			"--",
+			"plugin",
+			".claude-plugin/marketplace.json",
+			".agents/plugins/marketplace.json",
+		],
+		undefined,
+		undefined,
+		options.sourceRoot,
+		undefined,
+		false,
+	)
+	if (ignoredDistribution.exitCode !== 0) {
+		throw new CanaryError(
+			"command_failed",
+			"failed to inspect ignored public marketplace distribution files",
+			"repair the Git checkout and rerun with the same arguments",
+		)
+	}
+	if (ignoredDistribution.stdout) {
+		throw new CanaryError(
+			"dirty_checkout",
+			"ignored files are present in the public marketplace distribution",
+			"remove ignored distribution files or commit the intended payload before publishing canaries",
+			false,
+		)
+	}
 	const sourceSha =
 		processResult(["git", "rev-parse", "--verify", `${options.ref}^{commit}`], false, options.sourceRoot) || ""
 	const headSha = processResult(
@@ -980,7 +1139,7 @@ function preflight(options: PublishOptions): Preflight {
 	const boundTransport = bindTransportIdentity(
 		identity,
 		resolvedTransport.identity,
-		trustedConfig.canary.owner,
+		trustedConfig.canary.actor,
 		resolvedTransport.kind,
 	)
 	const transportIdentity = { ...boundTransport, host: resolvedTransport.host }
@@ -1009,15 +1168,25 @@ function preflight(options: PublishOptions): Preflight {
 }
 
 function classify(options: ClassifyOptions): void {
-	const output = processResult([
+	const command = commandOutput([
 		"git",
+		"-c",
+		"core.quotePath=false",
 		"diff",
 		"--name-only",
+		"-z",
 		"--diff-filter=ACMRTD",
 		"--no-renames",
 		`${options.base}...${options.head}`,
-	])
-	const changedPaths = output ? output.split("\n").filter(Boolean) : []
+	], undefined, undefined, root, undefined, false)
+	if (command.exitCode !== 0) {
+		throw new CanaryError(
+			"command_failed",
+			"git diff failed while classifying publishing-system paths",
+			"repair the Git refs and rerun with the same arguments",
+		)
+	}
+	const changedPaths = command.stdout ? command.stdout.split("\0").filter(Boolean) : []
 	const canaries = classifyPublishingSystemChanges(changedPaths)
 	const result = {
 		ok: true,

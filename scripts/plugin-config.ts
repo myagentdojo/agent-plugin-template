@@ -33,8 +33,10 @@ export interface PluginConfig {
 	defaultPrompts: string[]
 	/** Public and private repositories used for hosted distribution proof. */
 	canary: {
-		/** GitHub account that must match the active CLI identity. */
+		/** GitHub account or organization that owns the canary repositories. */
 		owner: string
+		/** GitHub user whose CLI and transport credentials authorize canary writes. */
+		actor: string
 		/** Public repository name under owner. */
 		publicRepository: string
 		/** Private repository name under owner. */
@@ -253,6 +255,12 @@ export function validatePackageContract(config: PluginConfig): void {
 		!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.canary.owner)
 	) {
 		throw packageContractError("canary.owner must be a GitHub account name")
+	}
+	if (
+		typeof config.canary?.actor !== "string" ||
+		!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(config.canary.actor)
+	) {
+		throw packageContractError("canary.actor must be a GitHub user name")
 	}
 	if (
 		!Array.isArray(config.defaultPrompts) ||

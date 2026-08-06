@@ -162,7 +162,7 @@ export function classifyTagRuleset(rulesets: unknown): ReadinessCheck {
 		const ruleTypes = new Set(
 			rules.flatMap((rule) => (isRecord(rule) && typeof rule.type === "string" ? [rule.type] : [])),
 		)
-		if (ruleTypes.has("deletion") && (ruleTypes.has("update") || ruleTypes.has("non_fast_forward"))) {
+		if (ruleTypes.has("deletion") && ruleTypes.has("update")) {
 			return ready("tag-ruleset", "Active v* tag ruleset restricts deletion and updates with no bypass actors")
 		}
 	}

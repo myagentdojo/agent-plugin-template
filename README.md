@@ -44,7 +44,8 @@ TAG=vX.Y.Z
 FETCH_URL=https://github.com/OWNER/REPOSITORY.git
 PREFLIGHT_ROOT=$(mktemp -d)
 git clone --filter=blob:none --no-checkout "$FETCH_URL" "$PREFLIGHT_ROOT/repository"
-REMOTE_SHA=$(git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG" | awk '{print $1}')
+git -C "$PREFLIGHT_ROOT/repository" fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+REMOTE_SHA=$(git -C "$PREFLIGHT_ROOT/repository" rev-parse "refs/tags/$TAG^{commit}")
 test -n "$REMOTE_SHA"
 git -C "$PREFLIGHT_ROOT/repository" checkout --detach "$REMOTE_SHA"
 test "$(git -C "$PREFLIGHT_ROOT/repository" rev-parse HEAD)" = "$REMOTE_SHA"
@@ -60,7 +61,15 @@ git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin > "$PREFLIGH
 For private SSH, verify GitHub's published host-key fingerprint, accept that key through an interactive SSH connection, and load the repository key before preflight:
 
 ```sh
-ssh -T git@github.com
+set +e
+SSH_GREETING=$(ssh -T git@github.com 2>&1)
+SSH_STATUS=$?
+set -e
+printf '%s\n' "$SSH_GREETING"
+if test "$SSH_STATUS" -ne 1; then
+  echo "unexpected GitHub SSH greeting status: $SSH_STATUS" >&2
+  exit 1
+fi
 ssh-keygen -F github.com
 ssh-add -l
 FETCH_URL=git@github.com:OWNER/REPOSITORY.git

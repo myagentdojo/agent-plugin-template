@@ -7,6 +7,7 @@ import { expect, test } from "bun:test"
 import {
 	admitPublicationCandidate,
 	validatePublicationBinding,
+	parsePublicationCandidateRecord,
 	validateRepairCandidateBinding,
 	validateRepairBinding,
 } from "./release-validate"
@@ -39,6 +40,9 @@ function validateWithArguments(cwd: string, arguments_: string[]): ReturnType<ty
 		CHECKOUT_SHA: _checkoutSha,
 		TAG_SHA: _tagSha,
 		RELEASE_TARGET_SHA: _releaseTargetSha,
+		TRUSTED_REPAIR_CANDIDATE_PATH: _trustedCandidatePath,
+		BASE_BRANCH: _baseBranch,
+		EXPECTED_RELEASE_PLEASE_LOGIN: _automationLogin,
 		...environment
 	} = process.env
 	return Bun.spawnSync({
@@ -241,8 +245,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	const compareStep = finalReleaseJob.slice(compareStepStart, uploadStepStart)
 	const uploadStep = finalReleaseJob.slice(uploadStepStart, attestationStepStart)
 	const repairValidationStep = workflow.slice(
-		workflow.indexOf("      - name: Validate manual repair binding before proof\n"),
-		workflow.indexOf("\n  maintain:\n"),
+		workflow.indexOf("      - name: Resolve unique candidate or immutable repair tag\n"),
+		workflow.indexOf("\n\n          associated_prs="),
 	)
 	const persistedCandidateStep = finalReleaseJob.slice(
 		finalReleaseJob.indexOf("      - name: Download persisted publication candidate\n"),
@@ -309,6 +313,9 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(finalReleaseJob).toContain('if [[ "$MODE" == "repair" ]]')
 	expect(finalReleaseJob).toContain("Immutable release tag carries a different publication admission")
 	expect(repairValidationStep).toContain("git for-each-ref --format='%(contents)'")
+	expect(repairValidationStep).toContain('gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"')
+	expect(repairValidationStep).toContain("trusted-repair-candidate.json")
+	expect(repairValidationStep).toContain("validateRepairCandidateBinding")
 	expect(repairValidationStep).not.toContain("actions/artifacts")
 	expect(persistedCandidateStep).toContain('if [[ "$MODE" == "repair" ]]')
 	expect(persistedCandidateStep).toContain("git for-each-ref --format='%(contents)'")
@@ -571,6 +578,9 @@ test("manual repair requires the original publication candidate record", () => {
 		validateRepairCandidateBinding({
 			candidate,
 			repository: "myagentdojo/agent-plugin-template",
+			expectedBaseBranch: "main",
+			expectedAutomationIdentities: ["github-actions[bot]"],
+			trustedCandidate: releasePullRequest(),
 			tag: "v0.1.0",
 			checkoutSha: "a".repeat(40),
 			tagSha: "a".repeat(40),
@@ -583,12 +593,42 @@ test("manual repair requires the original publication candidate record", () => {
 		validateRepairCandidateBinding({
 			candidate,
 			repository: "myagentdojo/agent-plugin-template",
+			expectedBaseBranch: "main",
+			expectedAutomationIdentities: ["github-actions[bot]"],
+			trustedCandidate: releasePullRequest(),
 			tag: "v0.1.0",
 			checkoutSha: "c".repeat(40),
 			tagSha: "c".repeat(40),
 			manifestVersion: "0.1.0",
 		}),
 	).toThrow("publication candidate")
+})
+
+test("manual repair rejects a forged tag record against GitHub-derived provenance", () => {
+	const forged = {
+		...admitPublicationCandidate(admissionInput()),
+		projectionDigest: "c".repeat(64),
+	}
+
+	expect(() =>
+		validateRepairCandidateBinding({
+			candidate: forged,
+			repository: "myagentdojo/agent-plugin-template",
+			expectedBaseBranch: "main",
+			expectedAutomationIdentities: ["github-actions[bot]"],
+			trustedCandidate: releasePullRequest(),
+			tag: "v0.1.0",
+			checkoutSha: "a".repeat(40),
+			tagSha: "a".repeat(40),
+			manifestVersion: "0.1.0",
+		}),
+	).toThrow("rebound")
+})
+
+test("manual repair rejects malformed tag-carried candidate records", () => {
+	const candidate = { ...admitPublicationCandidate(admissionInput()), unexpected: true }
+
+	expect(() => parsePublicationCandidateRecord(candidate)).toThrow("record shape")
 })
 
 test("manual repair rejects a missing tag", () => {
@@ -640,13 +680,21 @@ test("manual repair CLI emits one bound JSON result", () => {
 	const temporaryRoot = copyRepository()
 	const sha = "a".repeat(40)
 	const candidatePath = join(temporaryRoot, "candidate.json")
+	const trustedCandidatePath = join(temporaryRoot, "trusted-candidate.json")
 	writeFileSync(candidatePath, `${JSON.stringify(admitPublicationCandidate(admissionInput()))}\n`)
+	writeFileSync(trustedCandidatePath, `${JSON.stringify(releasePullRequest())}\n`)
 	const result = validateWithArguments(temporaryRoot, [
 		"--repair",
 		"--candidate",
 		candidatePath,
+		"--trusted-candidate",
+		trustedCandidatePath,
 		"--repository",
 		"myagentdojo/agent-plugin-template",
+		"--expected-base-branch",
+		"main",
+		"--expected-automation-login",
+		"github-actions[bot]",
 		"--tag",
 		"v0.1.0",
 		"--checkout-sha",

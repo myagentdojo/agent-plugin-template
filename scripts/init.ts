@@ -19,6 +19,7 @@ Options:
   --description <text>    Shared plugin description
   --author <text>         Publisher name
   --repository <url>      Canonical GitHub HTTPS source repository
+  --canary-actor <login>  GitHub user whose credentials publish canaries (default: repository owner)
   --dry-run               Preview metadata and generated files without writes
   --force                 Reinitialize an already initialized repository
   --json                  Emit one JSON result on stdout
@@ -37,6 +38,7 @@ interface Options {
 	description?: string
 	author?: string
 	repository?: string
+	canaryActor?: string
 	dryRun: boolean
 	force: boolean
 	json: boolean
@@ -80,6 +82,7 @@ function parseOptions(arguments_: string[]): Options | null {
 		"--description",
 		"--author",
 		"--repository",
+		"--canary-actor",
 		"--dry-run",
 		"--force",
 		"--json",
@@ -97,6 +100,7 @@ function parseOptions(arguments_: string[]): Options | null {
 		description: optionValue(arguments_, "--description"),
 		author: optionValue(arguments_, "--author"),
 		repository: optionValue(arguments_, "--repository"),
+		canaryActor: optionValue(arguments_, "--canary-actor"),
 		dryRun: arguments_.includes("--dry-run"),
 		force: arguments_.includes("--force"),
 		json: arguments_.includes("--json"),
@@ -176,6 +180,7 @@ const config: PluginConfig = {
 	canary: github
 		? {
 				owner: github.owner,
+				actor: options.canaryActor ?? github.owner,
 				publicRepository: `${github.repository}-public-canary`,
 				privateRepository: `${github.repository}-private-canary`,
 			}

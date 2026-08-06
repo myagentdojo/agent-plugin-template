@@ -5,8 +5,9 @@ import {
 	rmSync,
 	statSync,
 } from "node:fs"
-import { join, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
 
+import { assertDistributionChecksumIdentity } from "./distribution-checksums"
 import {
 	directoryArchiveEntries,
 	PLUGIN_DIRECTORY,
@@ -187,9 +188,22 @@ for (const asset of Object.values(assetManifest.assets) as Array<{
 }
 
 const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
-if (checksums.archiveSha256 !== second.archiveDigest) {
-	throw new Error("checksum digest does not match the packaged archive")
-}
+const sourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA ?? Bun.spawnSync({
+	cmd: ["git", "rev-parse", "HEAD"],
+	cwd: root,
+	stdout: "pipe",
+	stderr: "inherit",
+}).stdout.toString().trim()
+assertDistributionChecksumIdentity(checksums, {
+	repository: pluginConfig.repository,
+	sourceCommit,
+	tag: `v${pluginConfig.version}`,
+	plugin: pluginConfig.name,
+	version: pluginConfig.version,
+	archive: basename(second.archive),
+	archiveBytes: second.archiveBytes,
+	archiveSha256: second.archiveDigest,
+})
 
 console.log(
 	JSON.stringify({

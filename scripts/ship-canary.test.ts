@@ -19,6 +19,7 @@ import {
 	PUBLISHING_SYSTEM_PATHS,
 	admitCandidateRef,
 	bindTransportIdentity,
+	bindTrustedPrivateRun,
 	candidateRefForSource,
 	classifyPublishingSystemChanges,
 	createSanitizedPublicCandidate,
@@ -67,7 +68,10 @@ function canaryFixture(): { temporaryRoot: string; fakeBin: string; log: string 
 	executable(
 		join(fakeBin, "gh"),
 		`#!/bin/sh
-if [ "$1" = "api" ] && [ "$2" = "user" ]; then echo myagentdojo; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  if [ "\${GH_TOKEN:-}" = "fake" ]; then echo "\${FAKE_HTTPS_SERVER_IDENTITY:-myagentdojo}"; else echo myagentdojo; fi
+  exit 0
+fi
 if [ "$1" = "repo" ] && [ "$2" = "create" ]; then printf 'gh-create %s\n' "$*" >> "$FAKE_LOG"; exit 0; fi
 if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
 	if [ "$FAKE_MISSING_REPO" = "1" ]; then exit 44; fi
@@ -80,6 +84,7 @@ if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "list" ]; then
+	if [ "$FAKE_HOSTED_HANG" = "1" ]; then sleep 10; exit 88; fi
 	if [ "$FAKE_HOSTED_FAILURE" = "1" ]; then echo '[{"databaseId":303,"status":"completed","conclusion":"failure","url":"https://github.com/failure/run/303"}]'; exit 0; fi
   case "$4" in
     *public-canary) echo '[{"databaseId":101,"status":"completed","conclusion":"success","url":"https://github.com/public/run/101"}]' ;;
@@ -102,6 +107,7 @@ exit 1
 	executable(
 		join(fakeBin, "git"),
 		`#!/bin/sh
+if [ "$1" = "-c" ] && [ "$2" = "core.quotePath=false" ]; then shift 2; fi
 if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo "\${FAKE_ORIGIN:-git@github-myagentdojo:myagentdojo/dojo-hello.git}"; exit 0; fi
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
 if [ "$1" = "init" ]; then exit 0; fi
@@ -112,11 +118,17 @@ if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then
 	if [ "$3" = "--untracked-files=all" ] && [ "$FAKE_UNTRACKED_DISTRIBUTION" = "1" ]; then echo '?? plugin/injected.js'; fi
 	exit 0
 fi
+if [ "$1" = "ls-files" ]; then
+	if [ "$FAKE_IGNORED_DISTRIBUTION" = "1" ]; then printf 'plugin/ignored-secret.txt\\0'; fi
+	exit 0
+fi
 if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
-	if [ "$3" != "--diff-filter=ACMRTD" ]; then exit 92; fi
-	if [ "$4" != "--no-renames" ]; then exit 93; fi
-	if [ "$FAKE_RENAME" = "1" ]; then printf 'docs/package.ts\nscripts/package.ts\n'; exit 0; fi
-	printf '%s\n' "\${FAKE_DIFF_PATH:-}"
+	if [ "$3" != "-z" ]; then exit 92; fi
+	if [ "$4" != "--diff-filter=ACMRTD" ]; then exit 93; fi
+	if [ "$5" != "--no-renames" ]; then exit 94; fi
+	if [ "$FAKE_RENAME" = "1" ]; then printf 'docs/package.ts\\0scripts/package.ts\\0'; exit 0; fi
+	if [ "$FAKE_UNUSUAL_DIFF" = "1" ]; then printf 'scripts/café.ts\\0scripts/line\nbreak.ts\\0'; exit 0; fi
+	if [ -n "\${FAKE_DIFF_PATH:-}" ]; then printf '%s\\0' "$FAKE_DIFF_PATH"; fi
 	exit 0
 fi
 if [ "$1" = "credential" ] && [ "$2" = "fill" ]; then printf 'protocol=https\nhost=github.com\nusername=%s\npassword=fake\n' "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}"; exit 0; fi
@@ -151,8 +163,15 @@ function runCanary(
 		cwd: fixture.temporaryRoot,
 		env: {
 			...process.env,
-			...extraEnvironment,
 			FAKE_LOG: fixture.log,
+			GITHUB_ACTIONS: "true",
+			GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
+			GITHUB_RUN_ID: "12345",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_WORKFLOW_REF: "myagentdojo/agent-plugin-template/.github/workflows/hosted-canary.yml@refs/heads/main",
+			CANARY_QUALIFIED_SOURCE_SHA: "0123456789abcdef0123456789abcdef01234567",
+			CANARY_TRUSTED_WORKFLOW_SHA: "1111111111111111111111111111111111111111",
+			...extraEnvironment,
 			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
 		},
 		stdout: "pipe",
@@ -182,8 +201,15 @@ function runTrustedCanary(
 		cwd: driverRoot,
 		env: {
 			...process.env,
-			...extraEnvironment,
 			FAKE_LOG: driver.log,
+			GITHUB_ACTIONS: "true",
+			GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
+			GITHUB_RUN_ID: "12345",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_WORKFLOW_REF: "myagentdojo/agent-plugin-template/.github/workflows/hosted-canary.yml@refs/heads/main",
+			CANARY_QUALIFIED_SOURCE_SHA: "0123456789abcdef0123456789abcdef01234567",
+			CANARY_TRUSTED_WORKFLOW_SHA: "1111111111111111111111111111111111111111",
+			...extraEnvironment,
 			PATH: `${driver.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
 		},
 		stdout: "pipe",
@@ -326,6 +352,30 @@ test("classify includes a publishing path renamed into documentation", () => {
 	})
 })
 
+test("classify preserves non-ASCII and newline Git path names", () => {
+	const fixture = canaryFixture()
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "run", "ship:canary", "--", "--classify", "--base", "base", "--head", "head", "--json"],
+		cwd: fixture.temporaryRoot,
+		env: {
+			...process.env,
+			FAKE_UNUSUAL_DIFF: "1",
+			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+		},
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		changedPaths: ["scripts/café.ts", "scripts/line\nbreak.ts"],
+		canaries: {
+			required: true,
+			triggeringPaths: ["scripts/café.ts", "scripts/line\nbreak.ts"],
+		},
+	})
+})
+
 test("candidate config cannot redirect trusted canary targets", () => {
 	const fixture = canaryFixture()
 	const result = runTrustedCanary(root, fixture, fixture.temporaryRoot, "--dry-run")
@@ -389,6 +439,37 @@ test("public candidate rejects untracked distribution files before publication",
 		message: "untracked files are present in the public marketplace distribution",
 	})
 	expect(existsSync(fixture.log)).toBe(false)
+})
+
+test("public candidate rejects an ignored secret before copying checkout bytes", () => {
+	const fixture = canaryFixture()
+	const result = runCanary(fixture, "--execute", { FAKE_IGNORED_DISTRIBUTION: "1" })
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		category: "dirty_checkout",
+		message: "ignored files are present in the public marketplace distribution",
+		retrySafe: false,
+	})
+	expect(existsSync(fixture.log)).toBe(false)
+})
+
+test("hosted polling bounds a hung network child by the outer deadline", () => {
+	const fixture = canaryFixture()
+	const startedAt = Date.now()
+	const result = runCanary(fixture, "--execute", {
+		FAKE_HOSTED_HANG: "1",
+		CANARY_HOSTED_RUN_DEADLINE_MS: "120",
+		CANARY_NETWORK_COMMAND_TIMEOUT_MS: "25",
+		CANARY_HOSTED_POLL_DELAY_MS: "5",
+	})
+
+	expect(result.exitCode).toBe(1)
+	expect(Date.now() - startedAt).toBeLessThan(2000)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		category: "hosted_timeout",
+		retrySafe: false,
+	})
 })
 
 test("create-only candidate push accepts an identical winner but rejects a conflicting race", () => {
@@ -513,6 +594,26 @@ test("transport identity mismatch fails before repository mutation", async () =>
 	expect(await Bun.file(fixture.log).exists()).toBe(false)
 })
 
+test("canary actor may publish repositories owned by an organization", () => {
+	const fixture = canaryFixture()
+	const configPath = join(fixture.temporaryRoot, "plugin.config.json")
+	const config = JSON.parse(readFileSync(configPath, "utf8"))
+	config.canary.owner = "myagentdojo-org"
+	config.canary.actor = "myagentdojo"
+	writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
+	const result = runCanary(fixture, "--dry-run")
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		identity: "myagentdojo",
+		transportIdentity: { identity: "myagentdojo" },
+		targets: [
+			{ repository: "myagentdojo-org/dojo-hello-public-canary" },
+			{ repository: "myagentdojo-org/dojo-hello-private-canary" },
+		],
+	})
+})
+
 test("SSH and HTTPS transport identity bind independently from gh identity", () => {
 	expect(bindTransportIdentity("myagentdojo", "myagentdojo", "myagentdojo", "ssh")).toEqual({
 		kind: "ssh",
@@ -527,7 +628,7 @@ test("SSH and HTTPS transport identity bind independently from gh identity", () 
 	).toThrow("Git transport identity")
 })
 
-test("HTTPS preflight binds the credential-helper username without publishing", () => {
+test("HTTPS preflight authenticates the exact credential-helper token without publishing", () => {
 	const result = runCanary(canaryFixture(), "--dry-run", {
 		FAKE_ORIGIN: "https://github.com/myagentdojo/dojo-hello.git",
 	})
@@ -540,6 +641,20 @@ test("HTTPS preflight binds the credential-helper username without publishing", 
 			host: "github.com",
 		},
 	})
+})
+
+test("HTTPS preflight rejects a helper token owned by another GitHub user", () => {
+	const result = runCanary(canaryFixture(), "--dry-run", {
+		FAKE_ORIGIN: "https://github.com/myagentdojo/dojo-hello.git",
+		FAKE_HTTPS_SERVER_IDENTITY: "nathanvale",
+	})
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		category: "transport_identity_mismatch",
+		retrySafe: false,
+	})
+	expect(result.stdout.toString()).not.toContain("password=fake")
 })
 
 function targets(sourceSha: string): Target[] {
@@ -599,6 +714,9 @@ test("public and private candidates pass hosted proof then native cache comparis
 				databaseId: target.visibility === "PUBLIC" ? 101 : 202,
 				conclusion: "success",
 				url: `https://example.invalid/${target.visibility}`,
+				sourceSha: target.candidateSha,
+				workflowSha: "3".repeat(40),
+				authority: target.visibility === "PUBLIC" ? "candidate-sanitized-workflow" : "protected-trusted-workflow",
 			}
 		},
 		install: (target, candidateSha) => {
@@ -621,9 +739,9 @@ test("public and private candidates pass hosted proof then native cache comparis
 		"publish:PUBLIC",
 		"publish:PRIVATE",
 		"hosted:PUBLIC",
-		"hosted:PRIVATE",
 		"install:PUBLIC",
 		"install:PRIVATE",
+		"hosted:PRIVATE",
 	])
 	expect(JSON.stringify(result).toLowerCase()).not.toContain("universal-directory")
 })
@@ -667,6 +785,9 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 				databaseId: 1,
 				conclusion: "success",
 				url: "https://example.invalid/run/1",
+				sourceSha: target.candidateSha,
+				workflowSha: "3".repeat(40),
+				authority: target.visibility === "PUBLIC" ? "candidate-sanitized-workflow" : "protected-trusted-workflow",
 			}),
 			install: (target, candidateSha) => ({
 				...installEvidence(target, candidateSha),
@@ -676,6 +797,36 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 	).rejects.toMatchObject({
 		category: "install_mismatch",
 		retrySafe: false,
+	})
+})
+
+test("private qualification rejects candidate-controlled workflow receipts", () => {
+	const sourceSha = "1".repeat(40)
+	const privateTarget = targets(sourceSha)[1]
+	const environment = {
+		GITHUB_ACTIONS: "true",
+		GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
+		GITHUB_RUN_ID: "12345",
+		GITHUB_SERVER_URL: "https://github.com",
+		GITHUB_WORKFLOW_REF: "myagentdojo/agent-plugin-template/.github/workflows/hosted-canary.yml@refs/heads/main",
+		CANARY_TRUSTED_WORKFLOW_SHA: "2".repeat(40),
+		CANARY_QUALIFIED_SOURCE_SHA: "9".repeat(40),
+	}
+
+	expect(() => bindTrustedPrivateRun(privateTarget, sourceSha, environment)).toThrow(
+		"not bound to the protected hosted-canary workflow and source commit",
+	)
+	expect(
+		bindTrustedPrivateRun(privateTarget, sourceSha, {
+			...environment,
+			CANARY_QUALIFIED_SOURCE_SHA: sourceSha,
+		}),
+	).toMatchObject({
+		repository: privateTarget.repository,
+		databaseId: 12345,
+		sourceSha,
+		workflowSha: "2".repeat(40),
+		authority: "protected-trusted-workflow",
 	})
 })
 
@@ -713,6 +864,8 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("environment: hosted-canary-qualification")
+	expect(workflow).toContain("CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}")
+	expect(workflow).toContain("CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}")
 	expect(workflow).toContain("unset CANARY_GH_TOKEN CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("CHECK_RUN_ID")
 })

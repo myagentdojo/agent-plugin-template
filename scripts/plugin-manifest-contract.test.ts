@@ -186,6 +186,12 @@ test.each([
 		(value: PluginConfig) => delete (value.canary as { owner?: string }).owner,
 		"canary.owner",
 	],
+	["canary actor", (value: PluginConfig) => (value.canary.actor = "not_valid"), "canary.actor"],
+	[
+		"missing canary actor",
+		(value: PluginConfig) => delete (value.canary as { actor?: string }).actor,
+		"canary.actor",
+	],
 	["prompt count", (value: PluginConfig) => (value.defaultPrompts = Array(4).fill("Run")), "defaultPrompts"],
 	["prompt length", (value: PluginConfig) => (value.defaultPrompts = ["x".repeat(129)]), "defaultPrompts"],
 	["empty prompt", (value: PluginConfig) => (value.defaultPrompts = [""]), "defaultPrompts"],

@@ -32,6 +32,21 @@ test("replacement guidance preserves the documented refresh operations", async (
 	expect(readme).toContain("A pinned immutable tag should resolve to the same bytes")
 })
 
+test("release preflight peels annotated tags and accepts only GitHub SSH status 1", async () => {
+	const readme = await Bun.file(readmeUrl).text()
+	const preflight = readme.slice(
+		readme.indexOf("## Preflight a release tag"),
+		readme.indexOf("## Install in Claude Code"),
+	)
+
+	expect(preflight).toContain('fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"')
+	expect(preflight).toContain('rev-parse "refs/tags/$TAG^{commit}"')
+	expect(preflight).not.toContain("git ls-remote --refs \"$FETCH_URL\" \"refs/tags/$TAG\" | awk")
+	expect(preflight).toContain("SSH_STATUS=$?")
+	expect(preflight).toContain('if test "$SSH_STATUS" -ne 1; then')
+	expect(preflight).toContain("exit 1")
+})
+
 test("release documentation names checksum evidence and exact repair identity", async () => {
 	const readme = await Bun.file(readmeUrl).text()
 	const release = readme.slice(readme.indexOf("## Release"), readme.indexOf("## Proof commands"))

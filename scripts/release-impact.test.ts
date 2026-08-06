@@ -438,6 +438,18 @@ describe("release impact", () => {
 		expect(workflow).toContain('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"')
 		expect(workflow).toContain('--raw-field state=pending')
 		expect(workflow).toContain('IMPACT_OUTCOME: ${{ steps.impact.outcome }}')
+		expect(workflow).toContain("group: release-impact-${{ github.event.pull_request.number }}")
+		expect(workflow).toContain("cancel-in-progress: true")
+		expect(workflow).toContain('current_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")')
+		expect(workflow).toContain('current_head_sha=$(jq -r .head.sha <<< "$current_pr")')
+		expect(workflow).toContain('current_title=$(jq -r .title <<< "$current_pr")')
+		expect(workflow).toContain('PR_TITLE="$current_title" bun run scripts/release-impact.ts')
+		expect(workflow).toContain('verified_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")')
+		expect(workflow).toContain('verified_head_sha=$(jq -r .head.sha <<< "$verified_pr")')
+		expect(workflow).toContain('verified_title=$(jq -r .title <<< "$verified_pr")')
+		expect(workflow.indexOf('verified_title=$(jq -r .title <<< "$verified_pr")')).toBeLessThan(
+			workflow.indexOf('--raw-field state="${state}"'),
+		)
 		expect(workflow.indexOf("ref: ${{ github.event.pull_request.base.sha }}")).toBeLessThan(
 			workflow.indexOf("bun run scripts/release-impact.ts"),
 		)

@@ -15,6 +15,10 @@ permissions:
 env:
   STATUS_CONTEXT: Release impact
 
+concurrency:
+  group: release-impact-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   qualify:
     name: Qualify from trusted base code
@@ -62,8 +66,24 @@ jobs:
           state=failure
           description="Release impact qualification failed"
           if [[ "${IMPACT_OUTCOME}" == "success" ]]; then
-            state=success
-            description="Release impact qualification passed"
+            current_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+            current_head_sha=$(jq -r .head.sha <<< "$current_pr")
+            current_title=$(jq -r .title <<< "$current_pr")
+            if [[ "$current_head_sha" == "$HEAD_SHA" ]] && \
+              PR_TITLE="$current_title" bun run scripts/release-impact.ts \
+                --pr-head-ref "$PR_HEAD_REF" \
+                --pr-author-login "$PR_AUTHOR_LOGIN" \
+                --expected-release-please-login "$EXPECTED_RELEASE_PLEASE_LOGIN" >/dev/null; then
+              verified_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+              verified_head_sha=$(jq -r .head.sha <<< "$verified_pr")
+              verified_title=$(jq -r .title <<< "$verified_pr")
+              if [[ "$verified_head_sha" == "$current_head_sha" && "$verified_title" == "$current_title" ]]; then
+                state=success
+                description="Release impact qualification passed"
+              fi
+            else
+              description="Release impact changed before qualification completed"
+            fi
           fi
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             --raw-field state="${state}" \

@@ -38,7 +38,12 @@ function installedState(
 ): CodexInstallState {
 	const installedPath = join(root, `${addVersion}-${listedVersion}-${runtime}`)
 	mkdirSync(join(installedPath, "runtime"), { recursive: true })
+	mkdirSync(join(installedPath, "hooks", "codex"), { recursive: true })
 	writeFileSync(join(installedPath, "runtime", "hello-world.js"), runtime)
+	writeFileSync(
+		join(installedPath, "hooks", "codex", "hooks.json"),
+		JSON.stringify({ command: `hello-world --plugin-version ${listedVersion}` }),
+	)
 	return {
 		marketplaceAdd: { marketplaceName: "plugin", installedRoot: root, alreadyAdded: false },
 		add: {
@@ -49,7 +54,15 @@ function installedState(
 			installedPath,
 			authPolicy: "ON_INSTALL",
 		},
-		marketplace: { marketplaces: [] },
+		marketplace: {
+			marketplaces: [
+				{
+					name: "plugin",
+					root,
+					marketplaceSource: { sourceType: "local", source: root },
+				},
+			],
+		},
 		list: { installed: [], available: [] },
 		plugin: {
 			pluginId: "plugin@plugin",
@@ -118,4 +131,73 @@ test.each([
 			}),
 		).toThrow(`Codex ${phase} reported the wrong tagged manifest version`)
 	}
+})
+
+function fixtureRelease(root: string): FixtureRelease {
+	return {
+		repositoryRoot: root,
+		base: {
+			requestedRef: "v0.1.0",
+			resolvedSha: "1".repeat(40),
+			checkoutRoot: join(root, "base"),
+			manifestVersion: "0.1.0",
+			inventory: [],
+		},
+		target: {
+			requestedRef: "v0.2.0",
+			resolvedSha: "2".repeat(40),
+			checkoutRoot: join(root, "target"),
+			manifestVersion: "0.2.0",
+			inventory: [],
+		},
+	}
+}
+
+test("Codex recovery injects a post-removal failure and restores exact prior state", () => {
+	const root = mkdtempSync(join(tmpdir(), "codex-recovery-"))
+	temporaryRoots.push(root)
+	const installs = [
+		installedState(root, "0.1.0", "0.1.0", "base"),
+		installedState(root, "0.2.0", "0.2.0", "target"),
+		installedState(root, "0.1.0", "0.1.0", "base"),
+		installedState(root, "0.1.0", "0.1.0", "base"),
+	]
+	let removals = 0
+	const proof = proveCodexNative(fixtureRelease(root), "plugin", "codex", root, {
+		install: () => installs.shift() as CodexInstallState,
+		remove: () => {
+			removals += 1
+		},
+		comparePayload: () => [],
+		environment: () => ({}),
+		assertReplacementAdmission: () => undefined,
+	})
+
+	expect(removals).toBe(3)
+	expect(installs).toHaveLength(0)
+	expect(proof.localRefresh.failureRestored).toBe(true)
+	expect(proof.configuredRef).toBe("v0.1.0")
+})
+
+test("Codex recovery rejects a restored marketplace source that differs from prior state", () => {
+	const root = mkdtempSync(join(tmpdir(), "codex-recovery-source-"))
+	temporaryRoots.push(root)
+	const restored = installedState(root, "0.1.0", "0.1.0", "base")
+	restored.plugin.marketplaceSource.source = "/wrong/source"
+	const installs = [
+		installedState(root, "0.1.0", "0.1.0", "base"),
+		installedState(root, "0.2.0", "0.2.0", "target"),
+		installedState(root, "0.1.0", "0.1.0", "base"),
+		restored,
+	]
+
+	expect(() =>
+		proveCodexNative(fixtureRelease(root), "plugin", "codex", root, {
+			install: () => installs.shift() as CodexInstallState,
+			remove: () => {},
+			comparePayload: () => [],
+			environment: () => ({}),
+			assertReplacementAdmission: () => undefined,
+		}),
+	).toThrow("Codex recovery did not restore prior source")
 })

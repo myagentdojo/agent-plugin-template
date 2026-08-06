@@ -19,6 +19,9 @@ import {
 	proveCodexFixtureCopy as runCodexFixtureCopy,
 	proveCodexNative as runCodexNative,
 } from "./harness-install-codex"
+import {
+	provePostMutationRecovery,
+} from "./harness-install-recovery"
 import { copyPluginPayload, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
@@ -635,10 +638,20 @@ function proveClaudeNative(
 		})
 		const initial = findClaudeInstall(claudeExecutable, environment, project, pluginId, scope)
 		if (initial.enabled) throw new Error("Claude installed a default-disabled plugin as enabled")
+		const initialInventory = comparePayload(fixture.base, initial.activeCachePath)
 		const dataRoot = join(home, "plugins", "data", pluginId)
 		const markerPath = join(dataRoot, "u6-marker.txt")
 		mkdirSync(dataRoot, { recursive: true })
 		writeFileSync(markerPath, `${scope} marker\n`)
+		const priorRecovery = {
+			source: fixture.base.checkoutRoot,
+			ref: fixture.base.requestedRef,
+			version: initial.version,
+			payloadInventory: initialInventory,
+			enabled: initial.enabled,
+			scope,
+			persistentData: readFileSync(markerPath, "utf8"),
+		}
 
 		const upgraded = replaceClaudeInstall(
 			claudeExecutable,
@@ -667,47 +680,59 @@ function proveClaudeNative(
 		if (readFileSync(markerPath, "utf8") !== `${scope} marker\n`) {
 			throw new Error(`Claude ${scope} persistent data did not survive replacement`)
 		}
-		command(
-			[claudeExecutable, "plugin", "uninstall", pluginId, "--keep-data", "--scope", scope],
-			{ cwd: project, env: environment },
+		const restoredAfterFailure = provePostMutationRecovery(
+			priorRecovery,
+			{
+				harness: "Claude",
+				mutate: () => {
+					command(
+						[claudeExecutable, "plugin", "uninstall", pluginId, "--keep-data", "--scope", scope],
+						{ cwd: project, env: environment },
+					)
+					command(
+						[claudeExecutable, "plugin", "marketplace", "remove", marketplaceName, "--scope", scope],
+						{ cwd: project, env: environment },
+					)
+				},
+				restore: () => {
+					addClaudeMarketplace(
+						claudeExecutable,
+						fixture.base.checkoutRoot,
+						scope,
+						environment,
+						project,
+					)
+					command([claudeExecutable, "plugin", "install", pluginId, "--scope", scope], {
+						cwd: project,
+						env: environment,
+					})
+					const restored = findClaudeInstall(
+						claudeExecutable,
+						environment,
+						project,
+						pluginId,
+						scope,
+					)
+					return {
+						value: restored,
+						snapshot: {
+							source: fixture.base.checkoutRoot,
+							ref: fixture.base.requestedRef,
+							version: restored.version,
+							payloadInventory: comparePayload(fixture.base, restored.activeCachePath),
+							enabled: restored.enabled,
+							scope: restored.scope,
+							persistentData: readFileSync(markerPath, "utf8"),
+						},
+					}
+				},
+			},
 		)
-		command(
-			[claudeExecutable, "plugin", "marketplace", "remove", marketplaceName, "--scope", scope],
-			{ cwd: project, env: environment },
-		)
-		addClaudeMarketplace(
-			claudeExecutable,
-			fixture.base.checkoutRoot,
-			scope,
-			environment,
-			project,
-		)
-		command([claudeExecutable, "plugin", "install", pluginId, "--scope", scope], {
-			cwd: project,
-			env: environment,
-		})
+		const failureRestored = true
 		command([claudeExecutable, "plugin", "enable", pluginId, "--scope", scope], {
 			cwd: project,
 			env: environment,
 		})
-		const restoredAfterFailure = findClaudeInstall(
-			claudeExecutable,
-			environment,
-			project,
-			pluginId,
-			scope,
-		)
-		const recoveredInventory = comparePayload(fixture.base, restoredAfterFailure.activeCachePath)
-		const failureRestored =
-			restoredAfterFailure.version === fixture.base.manifestVersion &&
-			restoredAfterFailure.enabled &&
-			readFileSync(markerPath, "utf8") === `${scope} marker\n` &&
-			recoveredInventory.join("\n") === fixture.base.inventory.join("\n")
-		if (!failureRestored) {
-			throw new Error(
-				`Claude ${scope} interrupted-state restoration did not recover version, enablement, marker, and payload`,
-			)
-		}
 		const activeAfterFailure = findClaudeInstall(
 			claudeExecutable,
 			environment,

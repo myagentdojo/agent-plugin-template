@@ -9,13 +9,17 @@ const help = `Validate release metadata and workflow invariants.
 
 Usage:
   bun run release:validate [--json]
-  bun run release:validate --repair --candidate candidate.json --repository owner/repo --tag vX.Y.Z --checkout-sha SHA --tag-sha SHA [--release-target-sha SHA] [--json]
+  bun run release:validate --repair --candidate candidate.json --trusted-candidate trusted-candidate.json --repository owner/repo --expected-base-branch main --expected-automation-login LOGIN --tag vX.Y.Z --checkout-sha SHA --tag-sha SHA [--release-target-sha SHA] [--json]
   bun run release:validate --help
 
 Options:
   --repair                    Validate an existing immutable tag before repair.
   --candidate PATH            Persisted publication-candidate record required for repair.
+  --trusted-candidate PATH    GitHub-derived pull-request and projection facts for repair.
   --repository OWNER/REPO     Current GitHub repository identity.
+  --expected-base-branch REF  Trusted release base branch policy.
+  --expected-automation-login LOGIN
+                              Trusted Release Please automation identity.
   --tag TAG                   Existing vX.Y.Z tag. Falls back to REPAIR_TAG.
   --checkout-sha SHA          Checked-out commit. Falls back to CHECKOUT_SHA.
   --tag-sha SHA               Resolved immutable tag commit. Falls back to TAG_SHA.
@@ -133,8 +137,69 @@ export interface RepairBindingInput {
 	releaseTargetSha?: string
 }
 
+/** GitHub-derived publication facts required to reproduce repair admission. */
+export interface RepairCandidateBindingInput extends RepairBindingInput {
+	/** Untrusted publication record carried by the annotated tag. */
+	candidate: unknown
+	/** Current GitHub owner/repository identity. */
+	repository: string
+	/** Trusted release base branch policy. */
+	expectedBaseBranch: string
+	/** Trusted automation logins allowed to own the release pull request. */
+	expectedAutomationIdentities: string[]
+	/** Pull-request and projection facts re-derived from GitHub for this repair. */
+	trustedCandidate: ReleasePullRequestCandidate
+}
+
 function recordsEqual(left: PublicationCandidateRecord, right: PublicationCandidateRecord): boolean {
 	return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+	return (
+		Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+	)
+}
+
+/** Parse the tag-carried record without allowing missing, extra, or malformed fields. */
+export function parsePublicationCandidateRecord(value: unknown): PublicationCandidateRecord {
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		!hasExactKeys(value as Record<string, unknown>, [
+			"repository",
+			"baseBranch",
+			"pullRequest",
+			"automationIdentity",
+			"mergeCommit",
+			"version",
+			"tag",
+			"expectedTagState",
+			"projectionDigest",
+		])
+	) {
+		throw new Error("publication candidate record shape is invalid")
+	}
+	const record = value as Record<string, unknown>
+	if (
+		typeof record.repository !== "string" ||
+		typeof record.baseBranch !== "string" ||
+		!Number.isInteger(record.pullRequest) ||
+		Number(record.pullRequest) <= 0 ||
+		typeof record.automationIdentity !== "string" ||
+		typeof record.mergeCommit !== "string" ||
+		!/^[a-f0-9]{40}$/.test(record.mergeCommit) ||
+		typeof record.version !== "string" ||
+		typeof record.tag !== "string" ||
+		record.expectedTagState !== "absent" ||
+		typeof record.projectionDigest !== "string" ||
+		!/^[a-f0-9]{64}$/.test(record.projectionDigest)
+	) {
+		throw new Error("publication candidate record shape is invalid")
+	}
+	canonicalGitHubRepositoryIdentity(record.repository)
+	return record as unknown as PublicationCandidateRecord
 }
 
 export function canonicalGitHubRepositoryIdentity(repository: string): string {
@@ -294,24 +359,19 @@ export function validateRepairBinding(
 
 /** Bind a manual repair to its original immutable publication admission record. */
 export function validateRepairCandidateBinding(
-	input: RepairBindingInput & {
-		candidate: PublicationCandidateRecord
-		repository: string
-	},
+	input: RepairCandidateBindingInput,
 ): { tag: string; commit: string; version: string } {
-	if (
-		canonicalGitHubRepositoryIdentity(input.candidate.repository) !==
-		canonicalGitHubRepositoryIdentity(input.repository)
-	) {
-		throw new Error("repair repository does not match publication candidate")
-	}
-	if (
-		input.candidate.tag !== input.tag ||
-		input.candidate.mergeCommit !== input.checkoutSha ||
-		input.candidate.version !== input.manifestVersion
-	) {
-		throw new Error("repair tag, commit, or version does not match publication candidate")
-	}
+	const candidate = parsePublicationCandidateRecord(input.candidate)
+	admitPublicationCandidate({
+		repository: input.repository,
+		expectedBaseBranch: input.expectedBaseBranch,
+		expectedAutomationIdentities: input.expectedAutomationIdentities,
+		githubSha: input.checkoutSha,
+		manifestVersion: input.manifestVersion,
+		tagExists: false,
+		candidates: [input.trustedCandidate],
+		priorRecord: candidate,
+	})
 	return validateRepairBinding(input)
 }
 
@@ -458,6 +518,9 @@ function validateRepository(repositoryRoot: string) {
 		"bun run release:validate -- --repair",
 		"tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json",
 		"git for-each-ref --format='%(contents)'",
+		'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"',
+		"trusted-repair-candidate.json",
+		"validateRepairCandidateBinding",
 		"git push origin \"refs/tags/${RELEASE_TAG}\"",
 		"remote_tag_sha",
 		"gh release create",
@@ -540,7 +603,10 @@ interface ParsedArguments {
 	tagSha?: string
 	releaseTargetSha?: string
 	candidatePath?: string
+	trustedCandidatePath?: string
 	repository?: string
+	expectedBaseBranch?: string
+	expectedAutomationLogin?: string
 }
 
 function parseArguments(arguments_: string[]): ParsedArguments {
@@ -550,7 +616,17 @@ function parseArguments(arguments_: string[]): ParsedArguments {
 		if (argument === "--json") parsed.json = true
 		else if (argument === "--repair") parsed.repair = true
 		else if (argument === "--help" || argument === "-h") parsed.help = true
-		else if (["--tag", "--checkout-sha", "--tag-sha", "--release-target-sha", "--candidate", "--repository"].includes(argument)) {
+		else if ([
+			"--tag",
+			"--checkout-sha",
+			"--tag-sha",
+			"--release-target-sha",
+			"--candidate",
+			"--trusted-candidate",
+			"--repository",
+			"--expected-base-branch",
+			"--expected-automation-login",
+		].includes(argument)) {
 			const value = arguments_[index + 1]
 			if (!value || value.startsWith("--")) throw new Error(`${argument} requires a value`)
 			index += 1
@@ -559,7 +635,10 @@ function parseArguments(arguments_: string[]): ParsedArguments {
 			else if (argument === "--tag-sha") parsed.tagSha = value
 			else if (argument === "--release-target-sha") parsed.releaseTargetSha = value
 			else if (argument === "--candidate") parsed.candidatePath = value
-			else parsed.repository = value
+			else if (argument === "--trusted-candidate") parsed.trustedCandidatePath = value
+			else if (argument === "--repository") parsed.repository = value
+			else if (argument === "--expected-base-branch") parsed.expectedBaseBranch = value
+			else parsed.expectedAutomationLogin = value
 		} else throw new Error(`unknown option: ${argument}`)
 	}
 	return parsed
@@ -584,12 +663,30 @@ function main(): void {
 		if (parsed.repair) {
 			const candidatePath = parsed.candidatePath ?? process.env.PUBLICATION_CANDIDATE_PATH
 			if (!candidatePath) throw new Error("publication candidate record is required for repair")
-			const candidate = JSON.parse(readFileSync(candidatePath, "utf8")) as PublicationCandidateRecord
+			const candidate = JSON.parse(readFileSync(candidatePath, "utf8")) as unknown
+			const trustedCandidatePath =
+				parsed.trustedCandidatePath ?? process.env.TRUSTED_REPAIR_CANDIDATE_PATH
+			if (!trustedCandidatePath) {
+				throw new Error("GitHub-derived publication candidate is required for repair")
+			}
+			const trustedCandidate = JSON.parse(
+				readFileSync(trustedCandidatePath, "utf8"),
+			) as ReleasePullRequestCandidate
 			const repository = parsed.repository ?? process.env.GITHUB_REPOSITORY
 			if (!repository) throw new Error("repository identity is required for repair")
+			const expectedBaseBranch = parsed.expectedBaseBranch ?? process.env.BASE_BRANCH
+			if (!expectedBaseBranch) throw new Error("expected base branch is required for repair")
+			const expectedAutomationLogin =
+				parsed.expectedAutomationLogin ?? process.env.EXPECTED_RELEASE_PLEASE_LOGIN
+			if (!expectedAutomationLogin) {
+				throw new Error("expected automation identity is required for repair")
+			}
 			const repair = validateRepairCandidateBinding({
 				candidate,
 				repository,
+				expectedBaseBranch,
+				expectedAutomationIdentities: [expectedAutomationLogin],
+				trustedCandidate,
 				tag: parsed.tag ?? process.env.REPAIR_TAG ?? "",
 				checkoutSha: parsed.checkoutSha ?? process.env.CHECKOUT_SHA ?? "",
 				tagSha: parsed.tagSha ?? process.env.TAG_SHA ?? "",

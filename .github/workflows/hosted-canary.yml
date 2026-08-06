@@ -72,6 +72,8 @@ jobs:
           CANARY_SSH_KNOWN_HOSTS: ${{ secrets.CANARY_SSH_KNOWN_HOSTS }}
           CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+          CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           test -n "$CANARY_GH_TOKEN"
           test -n "$CANARY_SSH_KNOWN_HOSTS"

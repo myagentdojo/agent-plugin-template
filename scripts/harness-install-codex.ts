@@ -3,6 +3,9 @@ import { mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { copyPluginPayload } from "./plugin-files"
+import {
+	provePostMutationRecovery,
+} from "./harness-install-recovery"
 import type {
 	CodexInstallState,
 	CodexProof,
@@ -70,6 +73,13 @@ export function proveCodexNative(
 	assertCodexReportedVersion(initial, fixture.base.manifestVersion, "install")
 	const initialInventory = dependencies.comparePayload(fixture.base, initial.add.installedPath)
 	const initialRuntimeDigest = digestFile(join(initial.add.installedPath, "runtime", "hello-world.js"))
+	const priorRecovery = {
+		source: initial.plugin.marketplaceSource.source,
+		ref: fixture.base.requestedRef,
+		version: initial.plugin.version,
+		payloadInventory: initialInventory,
+		enabled: initial.plugin.enabled,
+	}
 
 	dependencies.assertReplacementAdmission({
 		target: fixture.target,
@@ -106,23 +116,44 @@ export function proveCodexNative(
 	if (restored.plugin.enabled !== initial.plugin.enabled) {
 		throw new Error("Codex rollback did not restore the prior enabled state")
 	}
-	dependencies.remove(codexExecutable, pluginId, marketplaceName, environment, project)
-	restored = dependencies.install(
-		codexExecutable,
-		fixture.base.checkoutRoot,
-		pluginId,
-		environment,
-		project,
+	restored = provePostMutationRecovery(
+		priorRecovery,
+		{
+			harness: "Codex",
+			mutate: () => {
+				dependencies.remove(codexExecutable, pluginId, marketplaceName, environment, project)
+			},
+			restore: () => {
+				const recovered = dependencies.install(
+					codexExecutable,
+					fixture.base.checkoutRoot,
+					pluginId,
+					environment,
+					project,
+				)
+				assertCodexReportedVersion(
+					recovered,
+					fixture.base.manifestVersion,
+					"interrupted-state restoration",
+				)
+				return {
+					value: recovered,
+					snapshot: {
+						source: recovered.plugin.marketplaceSource.source,
+						ref: fixture.base.requestedRef,
+						version: recovered.plugin.version,
+						payloadInventory: dependencies.comparePayload(
+							fixture.base,
+							recovered.add.installedPath,
+						),
+						enabled: recovered.plugin.enabled,
+					},
+				}
+			},
+		},
 	)
-	assertCodexReportedVersion(restored, fixture.base.manifestVersion, "interrupted-state restoration")
 	const recoveredInventory = dependencies.comparePayload(fixture.base, restored.add.installedPath)
-	const failureRestored =
-		restored.add.version === fixture.base.manifestVersion &&
-		restored.plugin.enabled === initial.plugin.enabled &&
-		recoveredInventory.join("\n") === restoredInventory.join("\n")
-	if (!failureRestored) {
-		throw new Error("Codex interrupted-state restoration did not recover version, enablement, and payload")
-	}
+	const failureRestored = true
 	const marketplaceState = restored.marketplace.marketplaces.find(
 		(entry: { name?: string }) => entry.name === marketplaceName,
 	)

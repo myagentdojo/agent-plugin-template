@@ -88,6 +88,73 @@ jobs:
               release_target=$(gh release view "$REPAIR_TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
               release_target_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${release_target}" --jq .sha)
             fi
+
+            git fetch --no-tags origin "refs/tags/${REPAIR_TAG}:refs/tags/${REPAIR_TAG}"
+            if [[ "$(git cat-file -t "refs/tags/${REPAIR_TAG}")" != "tag" ]]; then
+              echo "Repair requires an annotated immutable tag carrying its publication admission." >&2
+              exit 1
+            fi
+            git for-each-ref --format='%(contents)' "refs/tags/${REPAIR_TAG}" > persisted-candidate.json
+            pr_number=$(jq -er '.pullRequest | select(type == "number" and . > 0 and . == floor)' persisted-candidate.json)
+            release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+            base_branch=$(jq -r .base.ref <<< "$release_pr")
+            automation_identity=$(jq -r .user.login <<< "$release_pr")
+            merge_commit_sha=$(jq -r .merge_commit_sha <<< "$release_pr")
+            merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
+            if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" || "$merge_commit_sha" != "$candidate_sha" ]]; then
+              echo "Repair provenance does not match a merged Release Please candidate." >&2
+              exit 1
+            fi
+            parent_count=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${candidate_sha}" --jq '.parents | length')
+            if [[ "$parent_count" != "2" ]]; then
+              echo "Repair provenance is not a supported two-parent merge commit." >&2
+              exit 1
+            fi
+            projection=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" \
+              | jq -sc 'add | map({filename,status,sha}) | sort_by(.filename)')
+            printf '%s\n' "$projection" > repair-projection.json
+            base_parent=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${candidate_sha}" --jq '.parents[0].sha')
+            projection_result=$(bun run scripts/release-projection.ts \
+              --base "$base_parent" \
+              --head "$candidate_sha" \
+              --projection repair-projection.json \
+              --json)
+            projection_digest=$(jq -r .projectionDigest <<< "$projection_result")
+            manifest_version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${candidate_sha}" --jq .content \
+              | tr -d '\n' | base64 --decode | jq -r .version)
+            jq -nS \
+              --argjson number "$pr_number" \
+              --arg baseBranch "$base_branch" \
+              --arg automationIdentity "$automation_identity" \
+              --arg mergeCommit "$merge_commit_sha" \
+              --arg projectionDigest "$projection_digest" \
+              --argjson changedFiles "$(jq '[.[].filename]' repair-projection.json)" \
+              --argjson changedFileStatuses "$(jq '[.[].status]' repair-projection.json)" \
+              '{number:$number,baseBranch:$baseBranch,automationIdentity:$automationIdentity,mergeCommit:$mergeCommit,mergeMode:"merge",changedFiles:$changedFiles,changedFileStatuses:$changedFileStatuses,projectionDigest:$projectionDigest}' \
+              > trusted-repair-candidate.json
+            REPAIR_REPOSITORY="$GITHUB_REPOSITORY" \
+            REPAIR_BASE_BRANCH="$BASE_BRANCH" \
+            REPAIR_AUTOMATION_LOGIN="$EXPECTED_RELEASE_PLEASE_LOGIN" \
+            REPAIR_TAG="$REPAIR_TAG" \
+            REPAIR_SHA="$candidate_sha" \
+            REPAIR_VERSION="$manifest_version" \
+            REPAIR_RELEASE_TARGET_SHA="$release_target_sha" \
+              bun -e '
+                import { readFileSync } from "node:fs";
+                import { validateRepairCandidateBinding } from "./scripts/release-validate.ts";
+                validateRepairCandidateBinding({
+                  candidate: JSON.parse(readFileSync("persisted-candidate.json", "utf8")),
+                  trustedCandidate: JSON.parse(readFileSync("trusted-repair-candidate.json", "utf8")),
+                  repository: process.env.REPAIR_REPOSITORY ?? "",
+                  expectedBaseBranch: process.env.REPAIR_BASE_BRANCH ?? "",
+                  expectedAutomationIdentities: [process.env.REPAIR_AUTOMATION_LOGIN ?? ""],
+                  tag: process.env.REPAIR_TAG ?? "",
+                  checkoutSha: process.env.REPAIR_SHA ?? "",
+                  tagSha: process.env.REPAIR_SHA ?? "",
+                  manifestVersion: process.env.REPAIR_VERSION ?? "",
+                  releaseTargetSha: process.env.REPAIR_RELEASE_TARGET_SHA || undefined,
+                });
+              '
             {
               echo "mode=repair"
               echo "candidate_sha=${candidate_sha}"
@@ -211,28 +278,6 @@ jobs:
           set -euo pipefail
           actual_version=$(bun run release:validate -- --json | jq -r .version)
           [[ "$actual_version" == "$EXPECTED_VERSION" ]]
-      - name: Validate manual repair binding before proof
-        if: steps.resolve.outputs.mode == 'repair'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE_SHA: ${{ steps.resolve.outputs.candidate_sha }}
-          REPAIR_TAG: ${{ steps.resolve.outputs.release_tag }}
-          RELEASE_TARGET_SHA: ${{ steps.resolve.outputs.release_target_sha }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "refs/tags/${REPAIR_TAG}:refs/tags/${REPAIR_TAG}"
-          if [[ "$(git cat-file -t "refs/tags/${REPAIR_TAG}")" != "tag" ]]; then
-            echo "Repair requires an annotated immutable tag carrying its publication admission." >&2
-            exit 1
-          fi
-          git for-each-ref --format='%(contents)' "refs/tags/${REPAIR_TAG}" > persisted-candidate.json
-          checkout_sha=$(git rev-parse HEAD)
-          tag_sha=$(git rev-parse "refs/tags/${REPAIR_TAG}^{commit}")
-          CHECKOUT_SHA="$checkout_sha" \
-          TAG_SHA="$tag_sha" \
-          PUBLICATION_CANDIDATE_PATH=persisted-candidate.json \
-            bun run release:validate -- --repair --repository "$GITHUB_REPOSITORY" --json
-
   maintain:
     name: Maintain Release Please PR only
     if: needs.resolve.outputs.mode == 'maintenance'
@@ -472,6 +517,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          BASE_BRANCH: main
+          EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
         run: |
           set -euo pipefail
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -486,12 +533,47 @@ jobs:
           release_target_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${release_target}" --jq .sha)
           remote_tag_sha=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
           checkout_sha=$(git rev-parse HEAD)
+          pr_number=$(jq -er '.pullRequest | select(type == "number" and . > 0 and . == floor)' persisted-candidate.json)
+          release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+          base_branch=$(jq -r .base.ref <<< "$release_pr")
+          automation_identity=$(jq -r .user.login <<< "$release_pr")
+          merge_commit_sha=$(jq -r .merge_commit_sha <<< "$release_pr")
+          merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
+          if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" || "$merge_commit_sha" != "$checkout_sha" ]]; then
+            echo "Publication provenance no longer matches the admitted Release Please candidate." >&2
+            exit 1
+          fi
+          projection=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" \
+            | jq -sc 'add | map({filename,status,sha}) | sort_by(.filename)')
+          printf '%s\n' "$projection" > repair-projection.json
+          base_parent=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${checkout_sha}" --jq '.parents[0].sha')
+          projection_result=$(bun run scripts/release-projection.ts \
+            --base "$base_parent" \
+            --head "$checkout_sha" \
+            --projection repair-projection.json \
+            --json)
+          projection_digest=$(jq -r .projectionDigest <<< "$projection_result")
+          jq -nS \
+            --argjson number "$pr_number" \
+            --arg baseBranch "$base_branch" \
+            --arg automationIdentity "$automation_identity" \
+            --arg mergeCommit "$merge_commit_sha" \
+            --arg projectionDigest "$projection_digest" \
+            --argjson changedFiles "$(jq '[.[].filename]' repair-projection.json)" \
+            --argjson changedFileStatuses "$(jq '[.[].status]' repair-projection.json)" \
+            '{number:$number,baseBranch:$baseBranch,automationIdentity:$automationIdentity,mergeCommit:$mergeCommit,mergeMode:"merge",changedFiles:$changedFiles,changedFileStatuses:$changedFileStatuses,projectionDigest:$projectionDigest}' \
+            > trusted-repair-candidate.json
           REPAIR_TAG="$RELEASE_TAG" \
           CHECKOUT_SHA="$checkout_sha" \
           TAG_SHA="$remote_tag_sha" \
           RELEASE_TARGET_SHA="$release_target_sha" \
           PUBLICATION_CANDIDATE_PATH=persisted-candidate.json \
-            bun run release:validate -- --repair --repository "$GITHUB_REPOSITORY" --json
+          TRUSTED_REPAIR_CANDIDATE_PATH=trusted-repair-candidate.json \
+            bun run release:validate -- --repair \
+              --repository "$GITHUB_REPOSITORY" \
+              --expected-base-branch "$BASE_BRANCH" \
+              --expected-automation-login "$EXPECTED_RELEASE_PLEASE_LOGIN" \
+              --json
       - name: Compare release assets before mutation
         env:
           GH_TOKEN: ${{ github.token }}
