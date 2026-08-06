@@ -858,7 +858,7 @@ function classify(options: ClassifyOptions): void {
 		"git",
 		"diff",
 		"--name-only",
-		"--diff-filter=ACMRD",
+		"--diff-filter=ACMRTD",
 		"--no-renames",
 		`${options.base}...${options.head}`,
 	])

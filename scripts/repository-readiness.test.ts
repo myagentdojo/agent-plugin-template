@@ -73,6 +73,84 @@ test("release automation readiness checks names without exposing values", () => 
 	expect(missingCheck.detail).toContain("variable RELEASE_PLEASE_AUTOMATION_LOGIN")
 })
 
+describe("Actions permissions", () => {
+	const requiredActions = [
+		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+		"actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+		"oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+		"googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
+	]
+
+	test.each([
+		["unreadable response", undefined, "unavailable"],
+		["disabled Actions", { enabled: false, allowed_actions: "all" }, "missing"],
+		["unreadable policy", { enabled: true }, "unavailable"],
+	] as const)("fails closed for %s", (_condition, permissions, status) => {
+		expect(classifyActionsPermissions(permissions, undefined, requiredActions)).toMatchObject({
+			status,
+		})
+	})
+
+	test("rejects local-only policy", () => {
+		expect(
+			classifyActionsPermissions(
+				{ enabled: true, allowed_actions: "local_only" },
+				undefined,
+				requiredActions,
+			),
+		).toMatchObject({ status: "missing" })
+	})
+
+	test("accepts selected GitHub-owned and verified actions", () => {
+		expect(
+			classifyActionsPermissions(
+				{ enabled: true, allowed_actions: "selected" },
+				{ github_owned_allowed: true, verified_allowed: true, patterns_allowed: [] },
+				requiredActions,
+			),
+		).toMatchObject({ status: "ready" })
+	})
+
+	test("accepts selected action patterns pinned to exact refs", () => {
+		expect(
+			classifyActionsPermissions(
+				{ enabled: true, allowed_actions: "selected" },
+				{
+					github_owned_allowed: true,
+					verified_allowed: false,
+					patterns_allowed: ["oven-sh/setup-bun@*", "googleapis/release-please-action@*"],
+				},
+				requiredActions,
+			),
+		).toMatchObject({ status: "ready" })
+	})
+
+	test("rejects a selected policy that omits a required action", () => {
+		const check = classifyActionsPermissions(
+			{ enabled: true, allowed_actions: "selected" },
+			{
+				github_owned_allowed: true,
+				verified_allowed: false,
+				patterns_allowed: ["oven-sh/setup-bun@*"],
+			},
+			requiredActions,
+		)
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.detail).toContain("googleapis/release-please-action@")
+	})
+
+	test("fails closed when selected-action settings are unreadable", () => {
+		expect(
+			classifyActionsPermissions(
+				{ enabled: true, allowed_actions: "selected" },
+				undefined,
+				requiredActions,
+			),
+		).toMatchObject({ status: "unavailable" })
+	})
+})
+
 describe("immutable version tag ruleset", () => {
 	test.each([
 		["absent", []],

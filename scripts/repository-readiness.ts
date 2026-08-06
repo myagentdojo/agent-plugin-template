@@ -53,6 +53,8 @@ export interface WorkflowSource {
 	source: string
 }
 
+const VERIFIED_ACTION_OWNERS = new Set(["googleapis", "oven-sh"])
+
 /** Release-path checks that must gate merges into main. */
 export const REQUIRED_STATUS_CHECKS = [
 	"Conventional Commit title",
@@ -228,7 +230,11 @@ export function classifyRepositorySettings(repository: unknown): ReadinessCheck[
  * classifyActionsPermissions({ enabled: true, allowed_actions: "all" })
  * ```
  */
-export function classifyActionsPermissions(permissions: unknown): ReadinessCheck {
+export function classifyActionsPermissions(
+	permissions: unknown,
+	selectedActions?: unknown,
+	requiredActions: string[] = [],
+): ReadinessCheck {
 	if (!isRecord(permissions) || typeof permissions.enabled !== "boolean") {
 		return {
 			name: "actions-permissions",
@@ -237,9 +243,62 @@ export function classifyActionsPermissions(permissions: unknown): ReadinessCheck
 			repair: actionsRepair,
 		}
 	}
-	return permissions.enabled
-		? ready("actions-permissions", "GitHub Actions is enabled")
-		: missing("actions-permissions", "GitHub Actions is disabled", actionsRepair)
+	if (!permissions.enabled) {
+		return missing("actions-permissions", "GitHub Actions is disabled", actionsRepair)
+	}
+	if (permissions.allowed_actions === "all") {
+		return ready("actions-permissions", "GitHub Actions and all required actions are enabled")
+	}
+	if (permissions.allowed_actions === "local_only") {
+		return missing(
+			"actions-permissions",
+			"GitHub Actions allows only local actions; repository workflows require external actions",
+			actionsRepair,
+		)
+	}
+	if (permissions.allowed_actions !== "selected") {
+		return {
+			name: "actions-permissions",
+			status: "unavailable",
+			detail: "GitHub returned an unreadable allowed-actions policy; release execution is unproven",
+			repair: actionsRepair,
+		}
+	}
+	if (
+		!isRecord(selectedActions) ||
+		typeof selectedActions.github_owned_allowed !== "boolean" ||
+		typeof selectedActions.verified_allowed !== "boolean" ||
+		!Array.isArray(selectedActions.patterns_allowed) ||
+		!selectedActions.patterns_allowed.every((pattern) => typeof pattern === "string")
+	) {
+		return {
+			name: "actions-permissions",
+			status: "unavailable",
+			detail: "GitHub returned unreadable selected-action permissions; release execution is unproven",
+			repair: actionsRepair,
+		}
+	}
+	const patterns = selectedActions.patterns_allowed as string[]
+	const matchesPattern = (reference: string): boolean =>
+		patterns.some((pattern) => {
+			const expression = pattern
+				.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+				.replaceAll("*", ".*")
+			return new RegExp(`^${expression}$`, "i").test(reference)
+		})
+	const blocked = requiredActions.filter((reference) => {
+		const owner = reference.split("/", 1)[0]?.toLowerCase()
+		if (owner === "actions" && selectedActions.github_owned_allowed) return false
+		if (owner && VERIFIED_ACTION_OWNERS.has(owner) && selectedActions.verified_allowed) return false
+		return !matchesPattern(reference)
+	})
+	return blocked.length === 0
+		? ready("actions-permissions", "GitHub Actions permits every action used by repository workflows")
+		: missing(
+				"actions-permissions",
+				`Selected Actions policy blocks required workflow actions: ${blocked.join(", ")}`,
+				actionsRepair,
+			)
 }
 
 /** Verify only the names of the release-maintenance credential and bound automation identity. */
@@ -605,6 +664,21 @@ function localWorkflows(): ReadinessCheck {
 	}
 }
 
+function localActionReferences(): string[] {
+	const workflowDirectory = join(root, ".github", "workflows")
+	return [
+		...new Set(
+			readdirSync(workflowDirectory)
+				.filter((path) => path.endsWith(".yml") || path.endsWith(".yaml"))
+				.flatMap((path) => [
+					...readFileSync(join(workflowDirectory, path), "utf8").matchAll(/^\s*uses:\s*([^\s#]+)/gm),
+				])
+				.map((match) => match[1])
+				.filter((reference) => !reference.startsWith("./")),
+		),
+	].sort()
+}
+
 function runChecks(repository: string): ReadinessCheck[] {
 	const checks: ReadinessCheck[] = [checkTagRuleset(repository)]
 	const repositoryResponse = readApi(`repos/${repository}`)
@@ -616,11 +690,17 @@ function runChecks(repository: string): ReadinessCheck[] {
 		)
 	}
 	const actions = readApi(`repos/${repository}/actions/permissions`)
-	checks.push(
-		actions.ok
-			? classifyActionsPermissions(actions.data)
-			: apiFailure("actions-permissions", actions, actionsRepair),
-	)
+	if (!actions.ok) checks.push(apiFailure("actions-permissions", actions, actionsRepair))
+	else if (isRecord(actions.data) && actions.data.allowed_actions === "selected") {
+		const selectedActions = readApi(`repos/${repository}/actions/permissions/selected-actions`)
+		checks.push(
+			selectedActions.ok
+				? classifyActionsPermissions(actions.data, selectedActions.data, localActionReferences())
+				: apiFailure("actions-permissions", selectedActions, actionsRepair),
+		)
+	} else {
+		checks.push(classifyActionsPermissions(actions.data, undefined, localActionReferences()))
+	}
 	const releaseSecrets = readApi(`repos/${repository}/actions/secrets`)
 	const releaseVariables = readApi(`repos/${repository}/actions/variables`)
 	if (!releaseSecrets.ok) {

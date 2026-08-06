@@ -103,7 +103,7 @@ if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo "\${FAKE_ORIGIN:-git@g
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
 if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then exit 0; fi
 if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
-	if [ "$3" != "--diff-filter=ACMRD" ]; then exit 92; fi
+	if [ "$3" != "--diff-filter=ACMRTD" ]; then exit 92; fi
 	if [ "$4" != "--no-renames" ]; then exit 93; fi
 	if [ "$FAKE_RENAME" = "1" ]; then printf 'docs/package.ts\nscripts/package.ts\n'; exit 0; fi
 	printf '%s\n' "\${FAKE_DIFF_PATH:-}"
@@ -259,7 +259,7 @@ test("recipient payload-only paths keep hosted canaries optional", () => {
 	).toEqual({ required: false, triggeringPaths: [] })
 })
 
-test("classify includes deleted publishing-system paths", () => {
+test("classify diff filter includes deleted and type-changed publishing-system paths", () => {
 	const fixture = canaryFixture()
 	const result = Bun.spawnSync({
 		cmd: [
