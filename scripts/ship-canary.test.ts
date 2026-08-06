@@ -881,7 +881,11 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("environment: hosted-canary-qualification")
 	expect(workflow).toContain("CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}")
 	expect(workflow).toContain("CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}")
-	expect(workflow).toContain("unset CANARY_GH_TOKEN CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY")
+	expect(workflow).toContain("GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}")
+	expect(workflow).toContain("gh auth setup-git")
+	expect(workflow).toContain('git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"')
+	expect(workflow).not.toContain("CANARY_SSH_KNOWN_HOSTS")
+	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("CHECK_RUN_ID")
 })
 

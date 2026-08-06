@@ -384,10 +384,7 @@ flowchart LR
 3. Protect `main`. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
 4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
-6. Create the public and private canary repositories named by `plugin.config.json`, then create the `hosted-canary-qualification` environment. Add these environment secrets:
-   - `CANARY_GH_TOKEN`: a token for the exact configured `canary.actor`, with repository metadata and Actions read access to both canary repositories.
-   - `CANARY_SSH_KNOWN_HOSTS`: the approved GitHub SSH host-key entries used by the qualification runner.
-   - `CANARY_SSH_PRIVATE_KEY`: a dedicated key for that same actor with read and write access to both canary repositories; qualification limits writes to create-only immutable candidate refs.
+6. Create the public and private canary repositories named by `plugin.config.json`, then create the `hosted-canary-qualification` environment. Add `CANARY_GH_TOKEN`: a fine-grained token for the exact configured `canary.actor`, scoped only to both canary repositories, with Contents read/write, Actions read, and metadata read. Qualification uses the token for both GitHub API identity and HTTPS Git transport, and limits writes to create-only immutable candidate refs.
 
    Keep secret values out of repository files, logs, and readiness output. `bun run readiness` proves only that the environment and names exist; the hosted qualification binds the token and SSH identities and proves their real access.
 7. Create a fine-grained token or GitHub App token with only repository contents, pull requests, and issues write access. Store it as the GitHub Actions repository secret `RELEASE_PLEASE_TOKEN`.

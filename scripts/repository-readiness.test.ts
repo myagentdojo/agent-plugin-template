@@ -161,12 +161,11 @@ describe("hosted-canary qualification configuration", () => {
 
 	test("reports every absent environment secret without reading values", () => {
 		const check = classifyHostedCanaryConfiguration(environment, {
-			secrets: [{ name: "CANARY_GH_TOKEN", value: "must-not-leak" }],
+			secrets: [{ name: "UNRELATED_SECRET", value: "must-not-leak" }],
 		})
 
 		expect(check).toMatchObject({ status: "missing" })
-		expect(check.detail).toContain("CANARY_SSH_KNOWN_HOSTS")
-		expect(check.detail).toContain("CANARY_SSH_PRIVATE_KEY")
+		expect(check.detail).toContain("CANARY_GH_TOKEN")
 		expect(JSON.stringify(check)).not.toContain("must-not-leak")
 	})
 
