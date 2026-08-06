@@ -17,6 +17,7 @@ import {
 	admitGitTransport,
 	assertReplacementAdmission,
 	codexHookTrustEvidence,
+	copyMarketplaceDistribution,
 	hostedMarketplaceSources,
 	nativeHarnessEnvironment,
 	proveHarnessInstall,
@@ -39,6 +40,21 @@ beforeAll(() => {
 
 afterAll(() => {
 	if (proof?.temporaryRoot) rmSync(proof.temporaryRoot, { recursive: true, force: true })
+})
+
+test("public marketplace distribution excludes repository source and configuration", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "public-marketplace-distribution-"))
+	try {
+		copyMarketplaceDistribution(root, temporaryRoot)
+		expect(existsSync(join(temporaryRoot, "plugin", ".codex-plugin", "plugin.json"))).toBe(true)
+		expect(existsSync(join(temporaryRoot, ".claude-plugin", "marketplace.json"))).toBe(true)
+		expect(existsSync(join(temporaryRoot, ".agents", "plugins", "marketplace.json"))).toBe(true)
+		expect(existsSync(join(temporaryRoot, "plugin.config.json"))).toBe(false)
+		expect(existsSync(join(temporaryRoot, "scripts"))).toBe(false)
+		expect(existsSync(join(temporaryRoot, "README.md"))).toBe(false)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
 })
 
 test("tagged payload installs byte-for-byte into isolated Claude and Codex caches", () => {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { loadPluginConfig } from "./plugin-config"
-import { proveHostedHarnessInstall } from "./prove-harness-install"
+import { copyMarketplaceDistribution, proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
 const help = `Qualify publishing-system changes through public and private Git canaries.
@@ -68,6 +68,12 @@ export interface Target {
 	exists: boolean
 	candidateRef: string
 	candidateState: CandidateState
+	/** Commit the hosted repository must expose at candidateRef. */
+	candidateSha: string
+	/** Sanitized or source repository that owns candidateSha for publication. */
+	publicationRoot: string
+	/** Deterministic Git identity used only for a sanitized public candidate. */
+	publicationEnvironment?: Record<string, string | undefined>
 	headSha?: string
 	repairAction?: string
 }
@@ -110,6 +116,7 @@ interface Preflight {
 	transportIdentity: { kind: TransportKind; identity: string; host: string }
 	sourceSha: string
 	targets: Target[]
+	temporaryRoot: string
 }
 
 interface CommandOutput {
@@ -350,8 +357,13 @@ function commandOutput(
 	}
 }
 
-function processResult(command: string[], allowFailure = false, cwd = root): string | undefined {
-	const result = commandOutput(command, undefined, undefined, cwd)
+function processResult(
+	command: string[],
+	allowFailure = false,
+	cwd = root,
+	environment?: Record<string, string | undefined>,
+): string | undefined {
+	const result = commandOutput(command, undefined, environment, cwd)
 	if (result.exitCode !== 0) {
 		if (allowFailure) return undefined
 		throw new CanaryError(
@@ -482,7 +494,7 @@ function repositoryVisibility(repository: string): Visibility | undefined {
 	return output
 }
 
-function proveCandidateRef(target: Target, sourceSha: string): Target {
+function proveCandidateRef(target: Target): Target {
 	if (!target.exists) return target
 	const output = processResult([
 		"git",
@@ -501,8 +513,61 @@ function proveCandidateRef(target: Target, sourceSha: string): Target {
 			false,
 		)
 	}
-	const admission = admitCandidateRef(target.candidateRef, sourceSha, headSha)
+	const admission = admitCandidateRef(target.candidateRef, target.candidateSha, headSha)
 	return { ...target, headSha, candidateState: admission.state }
+}
+
+function requireGitObjectId(value: string | undefined, object: "tree" | "commit"): string {
+	if (!value || !/^[a-f0-9]{40}$/.test(value)) {
+		throw new CanaryError(
+			"candidate_generation_failed",
+			`sanitized public candidate did not produce a valid Git ${object}`,
+			"inspect the local Git installation, then rerun canary qualification",
+			false,
+		)
+	}
+	return value
+}
+
+export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: string): {
+	sha: string
+	repositoryRoot: string
+	temporaryRoot: string
+	environment: Record<string, string | undefined>
+} {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "public-canary-candidate-"))
+	const repositoryRoot = join(temporaryRoot, "marketplace")
+	copyMarketplaceDistribution(sourceRoot, repositoryRoot)
+	const environment = {
+		...process.env,
+		GIT_AUTHOR_NAME: "Hosted Canary",
+		GIT_AUTHOR_EMAIL: "canary@example.invalid",
+		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
+		GIT_COMMITTER_NAME: "Hosted Canary",
+		GIT_COMMITTER_EMAIL: "canary@example.invalid",
+		GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
+	}
+	try {
+		processResult(["git", "init", "--quiet"], false, repositoryRoot, environment)
+		processResult(["git", "add", "--all"], false, repositoryRoot, environment)
+		const tree = requireGitObjectId(
+			processResult(["git", "write-tree"], false, repositoryRoot, environment),
+			"tree",
+		)
+		const sha = requireGitObjectId(
+			processResult(
+				["git", "commit-tree", tree, "-m", `sanitized public canary for ${sourceSha}`],
+				false,
+				repositoryRoot,
+				environment,
+			),
+			"commit",
+		)
+		return { sha, repositoryRoot, temporaryRoot, environment }
+	} catch (error) {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+		throw error
+	}
 }
 
 function buildTargets(
@@ -511,12 +576,25 @@ function buildTargets(
 	publicName: string,
 	privateName: string,
 	sourceSha: string,
+	sourceRoot: string,
+	publicCandidate: ReturnType<typeof createSanitizedPublicCandidate>,
 ): Target[] {
-	const candidateRef = candidateRefForSource(sourceSha)
 	return [
-		{ repository: `${owner}/${publicName}`, visibility: "PUBLIC" as const },
-		{ repository: `${owner}/${privateName}`, visibility: "PRIVATE" as const },
+		{
+			repository: `${owner}/${publicName}`,
+			visibility: "PUBLIC" as const,
+			candidateSha: publicCandidate.sha,
+			publicationRoot: publicCandidate.repositoryRoot,
+			publicationEnvironment: publicCandidate.environment,
+		},
+		{
+			repository: `${owner}/${privateName}`,
+			visibility: "PRIVATE" as const,
+			candidateSha: sourceSha,
+			publicationRoot: sourceRoot,
+		},
 	].map((candidate) => {
+		const candidateRef = candidateRefForSource(candidate.candidateSha)
 		const actual = repositoryVisibility(candidate.repository)
 		if (actual && actual !== candidate.visibility) {
 			throw new CanaryError(
@@ -537,7 +615,7 @@ function buildTargets(
 				? undefined
 				: `create ${candidate.repository} as ${candidate.visibility}, then add ${candidateRef} without an initial branch`,
 		}
-		return proveCandidateRef(target, sourceSha)
+		return proveCandidateRef(target)
 	})
 }
 
@@ -557,7 +635,7 @@ function createTarget(target: Target): void {
 	])
 }
 
-function publishTarget(target: Target, sourceSha: string, sourceRoot: string): void {
+function publishTarget(target: Target, candidateSha: string): void {
 	if (target.candidateState === "current") return
 	createTarget(target)
 	try {
@@ -567,13 +645,14 @@ function publishTarget(target: Target, sourceSha: string, sourceRoot: string): v
 				"push",
 				`--force-with-lease=${target.candidateRef}:`,
 				target.remote,
-				`${sourceSha}:${target.candidateRef}`,
+				`${candidateSha}:${target.candidateRef}`,
 			],
 			false,
-			sourceRoot,
+			target.publicationRoot,
+			target.publicationEnvironment,
 		)
 	} catch (error) {
-		const raced = proveCandidateRef({ ...target, exists: true }, sourceSha)
+		const raced = proveCandidateRef({ ...target, exists: true })
 		if (raced.candidateState === "current") return
 		throw new CanaryError(
 			"candidate_push_rejected",
@@ -720,13 +799,12 @@ function candidateCanaryTargets(sourceRoot: string): {
 
 function assertCandidateInstall(
 	target: Target,
-	sourceSha: string,
 	evidence: CandidateInstallEvidence,
 ): void {
 	const matches =
 		evidence.repository === target.repository &&
 		evidence.candidateRef === target.candidateRef &&
-		evidence.checkoutSha === sourceSha &&
+		evidence.checkoutSha === target.candidateSha &&
 		evidence.claude.mode === "native-hosted-marketplace" &&
 		evidence.codex.mode === "native-hosted-marketplace" &&
 		evidence.claude.version === evidence.manifestVersion &&
@@ -747,7 +825,7 @@ function assertCandidateInstall(
  * Publish, prove, and install both hosted targets through injectable I/O seams.
  *
  * @param targets - Public and private immutable candidate targets
- * @param sourceSha - Source commit every proof must bind
+ * @param sourceSha - Recipient source commit bound into the deterministic public fixture
  * @param dependencies - Hosted publication, workflow, and install adapters
  * @returns Hosted runs and native install comparisons without unrelated distribution claims
  * @throws {CanaryError} When hosted or native qualification fails
@@ -761,16 +839,20 @@ export async function qualifyTargets(
 	targets: Target[],
 	sourceSha: string,
 	dependencies?: QualificationDependencies,
-	sourceRoot = root,
 ): Promise<{ runs: HostedRun[]; installs: CandidateInstallEvidence[] }> {
 	const adapters = dependencies ?? {
 		publish: (target: Target, candidateSha: string) =>
-			publishTarget(target, candidateSha, sourceRoot),
+			publishTarget(target, candidateSha),
 		hostedProof: waitForRun,
 		install: installCandidate,
 	}
 	const visibilities = targets.map((target) => target.visibility).sort().join(",")
-	if (targets.length !== 2 || visibilities !== "PRIVATE,PUBLIC") {
+	if (
+		targets.length !== 2 ||
+		visibilities !== "PRIVATE,PUBLIC" ||
+		targets.find((target) => target.visibility === "PRIVATE")?.candidateSha !== sourceSha ||
+		targets.some((target) => target.candidateRef !== candidateRefForSource(target.candidateSha))
+	) {
 		throw new CanaryError(
 			"target_set_invalid",
 			"hosted qualification requires exactly one public and one private canary",
@@ -778,13 +860,13 @@ export async function qualifyTargets(
 			false,
 		)
 	}
-	for (const target of targets) await adapters.publish(target, sourceSha)
+	for (const target of targets) await adapters.publish(target, target.candidateSha)
 	const runs: HostedRun[] = []
-	for (const target of targets) runs.push(await adapters.hostedProof(target, sourceSha))
+	for (const target of targets) runs.push(await adapters.hostedProof(target, target.candidateSha))
 	const installs: CandidateInstallEvidence[] = []
 	for (const target of targets) {
-		const evidence = await adapters.install(target, sourceSha)
-		assertCandidateInstall(target, sourceSha, evidence)
+		const evidence = await adapters.install(target, target.candidateSha)
+		assertCandidateInstall(target, evidence)
 		installs.push(evidence)
 	}
 	return { runs, installs }
@@ -819,6 +901,28 @@ function preflight(options: PublishOptions): Preflight {
 			false,
 		)
 	}
+	const untrackedDistribution = processResult(
+		[
+			"git",
+			"status",
+			"--porcelain",
+			"--untracked-files=all",
+			"--",
+			"plugin",
+			".claude-plugin/marketplace.json",
+			".agents/plugins/marketplace.json",
+		],
+		false,
+		options.sourceRoot,
+	)
+	if (untrackedDistribution) {
+		throw new CanaryError(
+			"dirty_checkout",
+			"untracked files are present in the public marketplace distribution",
+			"commit or move the untracked distribution files before publishing canaries",
+			false,
+		)
+	}
 	const sourceSha =
 		processResult(["git", "rev-parse", "--verify", `${options.ref}^{commit}`], false, options.sourceRoot) || ""
 	const headSha = processResult(
@@ -843,14 +947,28 @@ function preflight(options: PublishOptions): Preflight {
 		resolvedTransport.kind,
 	)
 	const transportIdentity = { ...boundTransport, host: resolvedTransport.host }
-	const targets = buildTargets(
-		origin,
-		trustedConfig.canary.owner,
-		trustedConfig.canary.publicRepository,
-		trustedConfig.canary.privateRepository,
-		sourceSha,
-	)
-	return { identity, transportIdentity, sourceSha, targets }
+	const publicCandidate = createSanitizedPublicCandidate(options.sourceRoot, sourceSha)
+	try {
+		const targets = buildTargets(
+			origin,
+			trustedConfig.canary.owner,
+			trustedConfig.canary.publicRepository,
+			trustedConfig.canary.privateRepository,
+			sourceSha,
+			options.sourceRoot,
+			publicCandidate,
+		)
+		return {
+			identity,
+			transportIdentity,
+			sourceSha,
+			targets,
+			temporaryRoot: publicCandidate.temporaryRoot,
+		}
+	} catch (error) {
+		rmSync(publicCandidate.temporaryRoot, { recursive: true, force: true })
+		throw error
+	}
 }
 
 function classify(options: ClassifyOptions): void {
@@ -895,7 +1013,10 @@ function emitSuccess(
 		identity: preflightResult.identity,
 		transportIdentity: preflightResult.transportIdentity,
 		source: { ref: options.ref, sha: preflightResult.sourceSha },
-		targets: preflightResult.targets,
+		targets: preflightResult.targets.map(
+			({ publicationRoot: _publicationRoot, publicationEnvironment: _environment, ...target }) =>
+				target,
+		),
 		runs: qualification.runs,
 		installs: qualification.installs,
 		nextAction: options.dryRun
@@ -921,15 +1042,18 @@ async function main(arguments_: string[], runId: string): Promise<void> {
 		return
 	}
 	const preflightResult = preflight(options)
-	const qualification = options.execute
-		? await qualifyTargets(
-				preflightResult.targets,
-				preflightResult.sourceSha,
-				undefined,
-				options.sourceRoot,
-			)
-		: { runs: [], installs: [] }
-	emitSuccess(options, preflightResult, qualification, runId)
+	try {
+		const qualification = options.execute
+			? await qualifyTargets(
+					preflightResult.targets,
+					preflightResult.sourceSha,
+					undefined,
+				)
+			: { runs: [], installs: [] }
+		emitSuccess(options, preflightResult, qualification, runId)
+	} finally {
+		rmSync(preflightResult.temporaryRoot, { recursive: true, force: true })
+	}
 }
 
 if (import.meta.main) {

@@ -367,18 +367,23 @@ function nextPatchVersion(version: string): string {
 	return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`
 }
 
-function writeFixtureSource(sourceRoot: string, repositoryRoot: string): PluginConfig {
+/** Copy only the installable plugin and marketplace metadata into a sanitized repository root. */
+export function copyMarketplaceDistribution(sourceRoot: string, repositoryRoot: string): void {
 	mkdirSync(repositoryRoot, { recursive: true })
 	copyPluginPayload(sourceRoot, join(repositoryRoot, "plugin"))
 	for (const relativePath of [
 		".claude-plugin/marketplace.json",
 		".agents/plugins/marketplace.json",
-		"plugin.config.json",
 	]) {
 		const targetPath = join(repositoryRoot, relativePath)
 		mkdirSync(dirname(targetPath), { recursive: true })
 		cpSync(join(sourceRoot, relativePath), targetPath)
 	}
+}
+
+function writeFixtureSource(sourceRoot: string, repositoryRoot: string): PluginConfig {
+	copyMarketplaceDistribution(sourceRoot, repositoryRoot)
+	cpSync(join(sourceRoot, "plugin.config.json"), join(repositoryRoot, "plugin.config.json"))
 	return loadPluginConfig(repositoryRoot)
 }
 

@@ -1,10 +1,12 @@
 import {
 	chmodSync,
 	cpSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -19,6 +21,7 @@ import {
 	bindTransportIdentity,
 	candidateRefForSource,
 	classifyPublishingSystemChanges,
+	createSanitizedPublicCandidate,
 	qualifyTargets,
 	type CandidateInstallEvidence,
 	type Target,
@@ -101,7 +104,14 @@ exit 1
 		`#!/bin/sh
 if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo "\${FAKE_ORIGIN:-git@github-myagentdojo:myagentdojo/dojo-hello.git}"; exit 0; fi
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
-if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then exit 0; fi
+if [ "$1" = "init" ]; then exit 0; fi
+if [ "$1" = "add" ]; then exit 0; fi
+if [ "$1" = "write-tree" ]; then printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'; exit 0; fi
+if [ "$1" = "commit-tree" ]; then printf 'cccccccccccccccccccccccccccccccccccccccc\n'; exit 0; fi
+if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then
+	if [ "$3" = "--untracked-files=all" ] && [ "$FAKE_UNTRACKED_DISTRIBUTION" = "1" ]; then echo '?? plugin/injected.js'; fi
+	exit 0
+fi
 if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
 	if [ "$3" != "--diff-filter=ACMRTD" ]; then exit 92; fi
 	if [ "$4" != "--no-renames" ]; then exit 93; fi
@@ -111,9 +121,10 @@ if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
 fi
 if [ "$1" = "credential" ] && [ "$2" = "fill" ]; then printf 'protocol=https\nhost=github.com\nusername=%s\npassword=fake\n' "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}"; exit 0; fi
 if [ "$1" = "ls-remote" ]; then
-	if [ "$FAKE_PUSH_RACE" = "same" ] && [ -s "$FAKE_LOG" ]; then printf '0123456789abcdef0123456789abcdef01234567\t%s\n' "$4"; fi
+	case "$3" in *public-canary*) expected=cccccccccccccccccccccccccccccccccccccccc ;; *) expected=0123456789abcdef0123456789abcdef01234567 ;; esac
+	if [ "$FAKE_PUSH_RACE" = "same" ] && [ -s "$FAKE_LOG" ]; then printf '%s\t%s\n' "$expected" "$4"; fi
 	if [ "$FAKE_PUSH_RACE" = "different" ] && [ -s "$FAKE_LOG" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$4"; fi
-	if [ "$FAKE_EXISTING_CANDIDATE" = "same" ]; then printf '0123456789abcdef0123456789abcdef01234567\t%s\n' "$4"; fi
+	if [ "$FAKE_EXISTING_CANDIDATE" = "same" ]; then printf '%s\t%s\n' "$expected" "$4"; fi
 	if [ "$FAKE_EXISTING_CANDIDATE" = "different" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$4"; fi
 	exit 0
 fi
@@ -199,15 +210,18 @@ test("canary dry-run proves identity, visibility, and source without publishing"
 			{
 				repository: "myagentdojo/dojo-hello-public-canary",
 				visibility: "PUBLIC",
-				candidateRef: "refs/heads/candidate/0123456789abcdef0123456789abcdef01234567",
+				candidateRef: "refs/heads/candidate/cccccccccccccccccccccccccccccccccccccccc",
+				candidateSha: "cccccccccccccccccccccccccccccccccccccccc",
 			},
 			{
 				repository: "myagentdojo/dojo-hello-private-canary",
 				visibility: "PRIVATE",
 				candidateRef: "refs/heads/candidate/0123456789abcdef0123456789abcdef01234567",
+				candidateSha: "0123456789abcdef0123456789abcdef01234567",
 			},
 		],
 	})
+	expect(result.stdout.toString()).not.toContain("public-canary-candidate-")
 })
 
 test("publishing-system paths require both hosted canaries and report every trigger", () => {
@@ -323,7 +337,7 @@ test("candidate config cannot redirect trusted canary targets", () => {
 	})
 })
 
-test("candidate publication pushes from the checkout that owns the source commit", async () => {
+test("public publication uses sanitized bytes while private publication uses the source checkout", async () => {
 	const driver = canaryFixture()
 	const candidate = canaryFixture()
 	const result = runTrustedCanary(
@@ -331,16 +345,20 @@ test("candidate publication pushes from the checkout that owns the source commit
 		driver,
 		candidate.temporaryRoot,
 		"--execute",
-		{ FAKE_PUSH_FAIL: "1" },
+		{ FAKE_HOSTED_FAILURE: "1" },
 	)
 
 	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({ category: "candidate_push_rejected" })
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({ category: "hosted_failure" })
+	expect(await Bun.file(driver.log).text()).toContain("public-canary-candidate-")
+	expect(await Bun.file(driver.log).text()).toContain(
+		"cccccccccccccccccccccccccccccccccccccccc:refs/heads/candidate/cccccccccccccccccccccccccccccccccccccccc",
+	)
 	expect(await Bun.file(driver.log).text()).toContain(
 		`git-push-cwd=${realpathSync(candidate.temporaryRoot)} push`,
 	)
 	expect(await Bun.file(driver.log).text()).toContain(
-		"--force-with-lease=refs/heads/candidate/0123456789abcdef0123456789abcdef01234567:",
+		"0123456789abcdef0123456789abcdef01234567:refs/heads/candidate/0123456789abcdef0123456789abcdef01234567",
 	)
 })
 
@@ -359,6 +377,18 @@ test("trusted preflight does not apply the base renderer to candidate-generated 
 	expect(result.exitCode).toBe(1)
 	expect(JSON.parse(result.stdout.toString())).not.toMatchObject({ category: "generated_drift" })
 	expect(await Bun.file(driver.log).text()).toContain("push")
+})
+
+test("public candidate rejects untracked distribution files before publication", () => {
+	const fixture = canaryFixture()
+	const result = runCanary(fixture, "--execute", { FAKE_UNTRACKED_DISTRIBUTION: "1" })
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		category: "dirty_checkout",
+		message: "untracked files are present in the public marketplace distribution",
+	})
+	expect(existsSync(fixture.log)).toBe(false)
 })
 
 test("create-only candidate push accepts an identical winner but rejects a conflicting race", () => {
@@ -389,6 +419,38 @@ test("divergent PR heads receive distinct immutable candidate refs", () => {
 	expect(candidateRefForSource(first)).not.toBe(candidateRefForSource(second))
 })
 
+test("sanitized public candidates are deterministic root commits with no repository source", () => {
+	const sourceSha = "1".repeat(40)
+	const first = createSanitizedPublicCandidate(root, sourceSha)
+	const second = createSanitizedPublicCandidate(root, sourceSha)
+	try {
+		expect(first.sha).toBe(second.sha)
+		const tree = Bun.spawnSync({
+			cmd: ["git", "ls-tree", "-r", "--name-only", first.sha],
+			cwd: first.repositoryRoot,
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+		expect(tree.exitCode, tree.stderr.toString()).toBe(0)
+		const paths = tree.stdout.toString().trim().split("\n")
+		expect(paths).toContain(".claude-plugin/marketplace.json")
+		expect(paths).toContain(".agents/plugins/marketplace.json")
+		expect(paths.some((path) => path.startsWith("plugin/"))).toBe(true)
+		expect(paths).not.toContain("plugin.config.json")
+		expect(paths.some((path) => path.startsWith("scripts/"))).toBe(false)
+		expect(paths).not.toContain("README.md")
+		const parents = Bun.spawnSync({
+			cmd: ["git", "rev-list", "--parents", "-n", "1", first.sha],
+			cwd: first.repositoryRoot,
+			stdout: "pipe",
+		})
+		expect(parents.stdout.toString().trim()).toBe(first.sha)
+	} finally {
+		rmSync(first.temporaryRoot, { recursive: true, force: true })
+		rmSync(second.temporaryRoot, { recursive: true, force: true })
+	}
+})
+
 test("candidate retry accepts only the same commit at the immutable ref", () => {
 	const sourceSha = "1".repeat(40)
 	const candidateRef = candidateRefForSource(sourceSha)
@@ -416,7 +478,8 @@ test("remote candidate retry reports current or immutable conflict without rewri
 	expect(current.exitCode).toBe(0)
 	expect(JSON.parse(current.stdout.toString()).targets[0]).toMatchObject({
 		candidateState: "current",
-		headSha: "0123456789abcdef0123456789abcdef01234567",
+		candidateSha: "cccccccccccccccccccccccccccccccccccccccc",
+		headSha: "cccccccccccccccccccccccccccccccccccccccc",
 	})
 
 	const conflict = runCanary(canaryFixture(), "--dry-run", {
@@ -474,32 +537,36 @@ test("HTTPS preflight binds the credential-helper username without publishing", 
 })
 
 function targets(sourceSha: string): Target[] {
-	const candidateRef = candidateRefForSource(sourceSha)
+	const publicSha = "2".repeat(40)
 	return [
 		{
 			repository: "myagentdojo/public-canary",
 			visibility: "PUBLIC",
 			remote: "git@example.invalid:myagentdojo/public-canary.git",
 			exists: true,
-			candidateRef,
+			candidateRef: candidateRefForSource(publicSha),
 			candidateState: "missing",
+			candidateSha: publicSha,
+			publicationRoot: "/tmp/public-canary",
 		},
 		{
 			repository: "myagentdojo/private-canary",
 			visibility: "PRIVATE",
 			remote: "git@example.invalid:myagentdojo/private-canary.git",
 			exists: true,
-			candidateRef,
+			candidateRef: candidateRefForSource(sourceSha),
 			candidateState: "missing",
+			candidateSha: sourceSha,
+			publicationRoot: "/tmp/private-canary",
 		},
 	]
 }
 
-function installEvidence(target: Target, sourceSha: string): CandidateInstallEvidence {
+function installEvidence(target: Target, candidateSha: string): CandidateInstallEvidence {
 	return {
 		repository: target.repository,
 		candidateRef: target.candidateRef,
-		checkoutSha: sourceSha,
+		checkoutSha: candidateSha,
 		manifestVersion: "0.1.0",
 		claude: {
 			mode: "native-hosted-marketplace",
@@ -528,9 +595,9 @@ test("public and private candidates pass hosted proof then native cache comparis
 				url: `https://example.invalid/${target.visibility}`,
 			}
 		},
-		install: (target) => {
+		install: (target, candidateSha) => {
 			calls.push(`install:${target.visibility}`)
-			return installEvidence(target, sourceSha)
+			return installEvidence(target, candidateSha)
 		},
 	})
 
@@ -540,7 +607,7 @@ test("public and private candidates pass hosted proof then native cache comparis
 			{ repository: "myagentdojo/private-canary", conclusion: "success" },
 		],
 		installs: [
-			{ repository: "myagentdojo/public-canary", checkoutSha: sourceSha },
+			{ repository: "myagentdojo/public-canary", checkoutSha: "2".repeat(40) },
 			{ repository: "myagentdojo/private-canary", checkoutSha: sourceSha },
 		],
 	})
@@ -581,7 +648,7 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 			hostedProof: async () => {
 				throw hostedFailure
 			},
-			install: (target) => installEvidence(target, sourceSha),
+			install: (target, candidateSha) => installEvidence(target, candidateSha),
 		}),
 	).rejects.toBe(hostedFailure)
 	expect(hostedFailure.nextAction).toContain("never rewrite history")
@@ -595,9 +662,9 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 				conclusion: "success",
 				url: "https://example.invalid/run/1",
 			}),
-			install: (target) => ({
-				...installEvidence(target, sourceSha),
-				codex: { ...installEvidence(target, sourceSha).codex, cachedPayloadMatches: false },
+			install: (target, candidateSha) => ({
+				...installEvidence(target, candidateSha),
+				codex: { ...installEvidence(target, candidateSha).codex, cachedPayloadMatches: false },
 			}),
 		}),
 	).rejects.toMatchObject({
