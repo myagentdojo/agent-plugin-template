@@ -152,7 +152,17 @@ export interface RepairCandidateBindingInput extends RepairBindingInput {
 }
 
 function recordsEqual(left: PublicationCandidateRecord, right: PublicationCandidateRecord): boolean {
-	return JSON.stringify(left) === JSON.stringify(right)
+	return (
+		left.repository === right.repository &&
+		left.baseBranch === right.baseBranch &&
+		left.pullRequest === right.pullRequest &&
+		left.automationIdentity === right.automationIdentity &&
+		left.mergeCommit === right.mergeCommit &&
+		left.version === right.version &&
+		left.tag === right.tag &&
+		left.expectedTagState === right.expectedTagState &&
+		left.projectionDigest === right.projectionDigest
+	)
 }
 
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
@@ -547,10 +557,16 @@ function validateRepository(repositoryRoot: string) {
 	if (/^concurrency:/m.test(releaseWorkflow)) {
 		throw new Error("release workflow must serialize only mutation jobs, not discard distinct pending runs")
 	}
-	const maintainJob = releaseWorkflow.slice(
-		releaseWorkflow.indexOf("\n  maintain:\n"),
-		releaseWorkflow.indexOf("\n  compatibility:\n"),
-	)
+	const maintainJobStart = releaseWorkflow.indexOf("\n  maintain:\n")
+	const compatibilityJobStart = releaseWorkflow.indexOf("\n  compatibility:\n")
+	if (
+		maintainJobStart === -1 ||
+		compatibilityJobStart === -1 ||
+		compatibilityJobStart <= maintainJobStart
+	) {
+		throw new Error("release workflow is missing the maintain or compatibility job boundary")
+	}
+	const maintainJob = releaseWorkflow.slice(maintainJobStart, compatibilityJobStart)
 	for (const required of [
 		"group: release-maintenance",
 		"cancel-in-progress: false",
@@ -568,7 +584,9 @@ function validateRepository(repositoryRoot: string) {
 	if (maintainJob.includes("secrets.GITHUB_TOKEN")) {
 		throw new Error("release workflow maintenance job must not fall back to GITHUB_TOKEN")
 	}
-	const releaseJob = releaseWorkflow.slice(releaseWorkflow.indexOf("\n  release:\n"))
+	const releaseJobStart = releaseWorkflow.indexOf("\n  release:\n")
+	if (releaseJobStart === -1) throw new Error("release workflow is missing the release job boundary")
+	const releaseJob = releaseWorkflow.slice(releaseJobStart)
 	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
 		throw new Error("release workflow publish job must depend on package")
 	}

@@ -72,8 +72,10 @@ if test "$SSH_STATUS" -ne 1; then
 fi
 ssh-keygen -F github.com
 ssh-add -l
+TAG=vX.Y.Z
 FETCH_URL=git@github.com:OWNER/REPOSITORY.git
-git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG"
+REMOTE_TAG=$(git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG")
+test -n "$REMOTE_TAG"
 ```
 
 GitHub's successful SSH authentication greeting may exit with status 1 because it does not provide shell access. Verify the account named by the greeting before continuing.
@@ -82,8 +84,10 @@ For private HTTPS, configure a Git credential helper, then prove it can fetch th
 
 ```sh
 git config --get credential.helper
+TAG=vX.Y.Z
 FETCH_URL=https://github.com/OWNER/REPOSITORY.git
-git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG"
+REMOTE_TAG=$(git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG")
+test -n "$REMOTE_TAG"
 ```
 
 A token present only in an environment variable is insufficient. Do not continue until `git ls-remote` succeeds through the same SSH agent and known-hosts file, or the same HTTPS credential helper, that the client will inherit. Keep `$PREFLIGHT_ROOT`; it is the restoration and byte-comparison source if replacement fails.

@@ -1256,11 +1256,12 @@ if (import.meta.main) {
 			requireNative: !arguments_.includes("--allow-fixture-copy"),
 		})
 		const temporaryRoot = proof.temporaryRoot
-		const serializedProof = JSON.stringify(proof, (_key, value) =>
+		const cleanedProof = { ...proof, evidenceRetained: false }
+		const serializedProof = JSON.stringify(cleanedProof, (_key, value) =>
 			redactTemporaryEvidencePath(value, temporaryRoot),
 		)
 		rmSync(proof.temporaryRoot, { recursive: true, force: true })
-		console.log(serializedProof.replace('"ok":true', '"ok":true,"evidenceRetained":false'))
+		console.log(serializedProof)
 	} catch (error) {
 		console.error(
 			JSON.stringify({

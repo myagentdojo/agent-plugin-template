@@ -107,6 +107,7 @@ exit 1
 	executable(
 		join(fakeBin, "git"),
 		`#!/bin/sh
+FAKE_LOG="\${FAKE_LOG:-${log}}"
 if [ "$1" = "-c" ] && [ "$2" = "core.quotePath=false" ]; then shift 2; fi
 if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo "\${FAKE_ORIGIN:-git@github-myagentdojo:myagentdojo/dojo-hello.git}"; exit 0; fi
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
@@ -468,6 +469,7 @@ test("hosted polling bounds a hung network child by the outer deadline", () => {
 	expect(Date.now() - startedAt).toBeLessThan(2000)
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		category: "hosted_timeout",
+		message: expect.stringContaining("within 120 milliseconds"),
 		retrySafe: false,
 	})
 })
@@ -506,6 +508,19 @@ test("sanitized public candidates are deterministic root commits with no reposit
 	const second = createSanitizedPublicCandidate(root, sourceSha)
 	try {
 		expect(first.sha).toBe(second.sha)
+		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
+		expect(Object.keys(first.environment).sort()).toEqual([
+			"GIT_AUTHOR_DATE",
+			"GIT_AUTHOR_EMAIL",
+			"GIT_AUTHOR_NAME",
+			"GIT_COMMITTER_DATE",
+			"GIT_COMMITTER_EMAIL",
+			"GIT_COMMITTER_NAME",
+			"GIT_CONFIG_GLOBAL",
+			"GIT_CONFIG_SYSTEM",
+			"HOME",
+			"PATH",
+		])
 		const tree = Bun.spawnSync({
 			cmd: ["git", "ls-tree", "-r", "--name-only", first.sha],
 			cwd: first.repositoryRoot,

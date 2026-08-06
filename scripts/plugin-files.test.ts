@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { afterEach, expect, test } from "bun:test"
 
 import {
+	compareCodeUnits,
 	copyPluginPayload,
 	directoryArchiveEntries,
 	pluginPayloadInventory,
@@ -149,6 +150,41 @@ test("inventory order is stable and sorted", () => {
 
 	expect(pluginPayloadInventory(sourceRoot)).toEqual(expected)
 	expect(pluginPayloadInventory(sourceRoot)).toEqual(expected)
+})
+
+test("inventory and archive order use locale-independent code-unit comparison", () => {
+	const { sourceRoot, pluginRoot } = pluginFixture()
+	for (const name of ["Z-upper.txt", "ä-localized.txt"]) {
+		fileSystem.writeFileSync(join(pluginRoot, name), `${name}\n`)
+	}
+
+	expect(["ä-localized.txt", "a-safe.txt", "Z-upper.txt"].sort(compareCodeUnits)).toEqual([
+		"Z-upper.txt",
+		"a-safe.txt",
+		"ä-localized.txt",
+	])
+	expect(pluginPayloadInventory(sourceRoot)).toEqual([
+		"Z-upper.txt",
+		"a-safe.txt",
+		"ä-localized.txt",
+	])
+	expect(directoryArchiveEntries(pluginRoot, "plugin-0.1.0")).toEqual([
+		"plugin-0.1.0/",
+		"plugin-0.1.0/Z-upper.txt",
+		"plugin-0.1.0/a-safe.txt",
+		"plugin-0.1.0/ä-localized.txt",
+	])
+})
+
+test("inventory and archive entries preserve newline-bearing names without line parsing", () => {
+	const { sourceRoot, pluginRoot } = pluginFixture()
+	const unusualName = "line\nbreak.txt"
+	fileSystem.writeFileSync(join(pluginRoot, unusualName), "unusual\n")
+
+	expect(pluginPayloadInventory(sourceRoot)).toContain(unusualName)
+	expect(directoryArchiveEntries(pluginRoot, "plugin-0.1.0")).toContain(
+		`plugin-0.1.0/${unusualName}`,
+	)
 })
 
 test("inventory includes an unexpected regular file", () => {

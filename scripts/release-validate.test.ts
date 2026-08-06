@@ -515,6 +515,38 @@ test("publication candidate admission permits idempotent reuse of the identical 
 	expect(admitPublicationCandidate({ ...admissionInput(), priorRecord })).toEqual(priorRecord)
 })
 
+test("publication candidate admission ignores persisted JSON key order", () => {
+	const candidate = admitPublicationCandidate(admissionInput())
+	const persisted = {
+		version: candidate.version,
+		tag: candidate.tag,
+		repository: candidate.repository,
+		projectionDigest: candidate.projectionDigest,
+		pullRequest: candidate.pullRequest,
+		mergeCommit: candidate.mergeCommit,
+		expectedTagState: candidate.expectedTagState,
+		baseBranch: candidate.baseBranch,
+		automationIdentity: candidate.automationIdentity,
+	}
+
+	expect(admitPublicationCandidate({ ...admissionInput(), priorRecord: persisted })).toEqual(candidate)
+})
+
+test.each([
+	["maintain", "\n  maintain:\n"],
+	["compatibility", "\n  compatibility:\n"],
+	["release", "\n  release:\n"],
+] as const)("release validation fails closed without the %s job boundary", (_job, marker) => {
+	const temporaryRoot = copyRepository()
+	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+	writeFileSync(workflowPath, readFileSync(workflowPath, "utf8").replace(marker, "\n  renamed-job:\n"))
+
+	const result = validate(temporaryRoot)
+
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("job boundary")
+})
+
 test("AE3: publication binding agrees on candidate, immutable tag, package, release, and manifest", () => {
 	const candidate = admitPublicationCandidate(admissionInput())
 	expect(

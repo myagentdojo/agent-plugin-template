@@ -122,26 +122,41 @@ function validateDisplayName(value: string): string {
 }
 
 function githubRepository(url: string): { owner: string; repository: string } | undefined {
-	const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(url)
+	const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(url)
 	if (!match) return undefined
 	return { owner: match[1], repository: match[2] }
 }
 
+function readResetFile(repositoryRoot: string, path: string): string {
+	try {
+		return readFileSync(resolve(repositoryRoot, path), "utf8")
+	} catch {
+		fail(`cannot read release reset file ${path}`)
+	}
+}
+
+function parseResetJson(repositoryRoot: string, path: string): Record<string, any> {
+	try {
+		return JSON.parse(readResetFile(repositoryRoot, path))
+	} catch (error) {
+		if (error instanceof SyntaxError) fail(`release reset file ${path} is not valid JSON`)
+		throw error
+	}
+}
+
 function releaseResetFiles(root: string, name: string): Array<{ path: string; contents: string }> {
-	const releaseConfig = JSON.parse(
-		readFileSync(resolve(root, ".github/release-please-config.json"), "utf8"),
-	)
+	const releaseConfig = parseResetJson(root, ".github/release-please-config.json")
 	releaseConfig.packages["."]["package-name"] = name
-	const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"))
+	const packageJson = parseResetJson(root, "package.json")
 	packageJson.version = initialVersion
 
 	const runtimePath = "plugin/runtime/hello-world.js"
-	const runtime = readFileSync(resolve(root, runtimePath), "utf8")
+	const runtime = readResetFile(root, runtimePath)
 	const startMarker = "// x-release-please-start-version"
 	const endMarker = "// x-release-please-end"
 	const start = runtime.indexOf(startMarker)
 	const end = runtime.indexOf(endMarker, start + startMarker.length)
-	if (start === -1 || end === -1) throw new Error("generated runtime is missing release version markers")
+	if (start === -1 || end === -1) fail(`${runtimePath} is missing release version markers`)
 	const versionBlock = `${startMarker}\nconst PLUGIN_VERSION = ${JSON.stringify(initialVersion)};\n${endMarker}`
 	const resetRuntime = `${runtime.slice(0, start)}${versionBlock}${runtime.slice(end + endMarker.length)}`
 
@@ -165,6 +180,7 @@ if (!current.template && !options.force) fail("repository is already initialized
 
 const repository = options.repository ?? current.repository
 const github = githubRepository(repository)
+if (!github) fail("--repository must be a canonical GitHub HTTPS repository")
 const configuredDisplayName = validateDisplayName(
 	options.displayName ?? displayName(options.name),
 )
@@ -177,14 +193,12 @@ const config: PluginConfig = {
 	description: options.description ?? current.description,
 	author: { name: options.author ?? current.author.name },
 	repository,
-	canary: github
-		? {
-				owner: github.owner,
-				actor: options.canaryActor ?? github.owner,
-				publicRepository: `${github.repository}-public-canary`,
-				privateRepository: `${github.repository}-private-canary`,
-			}
-		: current.canary,
+	canary: {
+		owner: github.owner,
+		actor: options.canaryActor ?? github.owner,
+		publicRepository: `${github.repository}-public-canary`,
+		privateRepository: `${github.repository}-private-canary`,
+	},
 }
 const generatedFiles = renderGeneratedFiles(config)
 const resetFiles = releaseResetFiles(root, config.name)

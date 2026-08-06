@@ -605,7 +605,10 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 	copyMarketplaceDistribution(sourceRoot, repositoryRoot)
 	writePublicCanaryWorkflow(repositoryRoot)
 	const environment = {
-		...process.env,
+		PATH: process.env.PATH,
+		HOME: process.env.HOME,
+		GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+		GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
 		GIT_AUTHOR_NAME: "Hosted Canary",
 		GIT_AUTHOR_EMAIL: "canary@example.invalid",
 		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
@@ -634,6 +637,18 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 		rmSync(temporaryRoot, { recursive: true, force: true })
 		throw error
 	}
+}
+
+function durationDescription(milliseconds: number): string {
+	if (milliseconds % 60_000 === 0) {
+		const minutes = milliseconds / 60_000
+		return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`
+	}
+	if (milliseconds % 1000 === 0) {
+		const seconds = milliseconds / 1000
+		return `${seconds} ${seconds === 1 ? "second" : "seconds"}`
+	}
+	return `${milliseconds} milliseconds`
 }
 
 function buildTargets(
@@ -784,7 +799,7 @@ async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun>
 	if (!run || run.status !== "completed") {
 		throw new CanaryError(
 			"hosted_timeout",
-			`${target.repository} did not finish its hosted proof within 10 minutes`,
+			`${target.repository} did not finish its hosted proof within ${durationDescription(deadlineMs)}`,
 			`inspect runs for ${target.candidateRef}; never rewrite or reuse the candidate ref`,
 			false,
 		)

@@ -8,12 +8,16 @@ Run hello-world --help for usage.
 
 Usage:
   hello-world hello [--name <name>] [--json]
-  hello-world hook --harness <codex|claude> --event <event> [--plugin-version <version>]
+  hello-world hook --harness claude --event <event>
+  hello-world hook --harness codex --event <event> --plugin-version <version>
   hello-world --help
 
 Commands:
   hello  Print a greeting. No files, network calls, or durable state.
   hook   Accept a harness hook payload on stdin and exit successfully.
+
+Hook options:
+  --plugin-version <version>  Required for Codex hooks only.
 `}function z(L,q,W){let[O,...N]=L;if(O===void 0||O==="--help"||O==="-h")return S(B());if(O==="--version"||O==="-v")return S(`${PLUGIN_VERSION}
 `);if(O==="hello"){let R=$(N,"--name")??"world";if(N.includes("--json"))return S(`${JSON.stringify({ok:!0,command:"hello",message:`Hello, ${R}!`,sideEffects:"none",runId:W})}
 `);return S(`Hello, ${R}!

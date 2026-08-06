@@ -14,6 +14,8 @@ const workflowAdminRepair =
 	"Remove administration from workflow permissions; release publication needs contents: write, never repository administration"
 const releaseAutomationRepair =
 	"Settings > Secrets and variables > Actions: add secret RELEASE_PLEASE_TOKEN and variable RELEASE_PLEASE_AUTOMATION_LOGIN"
+const releaseEnvironmentRepair =
+	"Settings > Environments > release > Deployment protection rules: enable Required reviewers and add at least one reviewer"
 
 const help = `Verify human-owned GitHub repository safeguards without changing them.
 
@@ -348,6 +350,46 @@ export function classifyReleaseAutomationConfiguration(
 				`Release maintenance is missing ${absent.join(" and ")}`,
 				releaseAutomationRepair,
 			)
+}
+
+/**
+ * Require a human reviewer before the release environment exposes publication authority.
+ *
+ * @param environment - GitHub release-environment API response
+ * @returns Required-reviewer safeguard classification
+ *
+ * @example
+ * ```typescript
+ * classifyReleaseEnvironmentProtection({ protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }] })
+ * ```
+ */
+export function classifyReleaseEnvironmentProtection(environment: unknown): ReadinessCheck {
+	if (!isRecord(environment) || !Array.isArray(environment.protection_rules)) {
+		return {
+			name: "release-environment-reviewers",
+			status: "unavailable",
+			detail: "GitHub returned unreadable release-environment protection; required human review is unproven",
+			repair: releaseEnvironmentRepair,
+		}
+	}
+	const requiredReviewers = environment.protection_rules.find(
+		(rule) => isRecord(rule) && rule.type === "required_reviewers",
+	)
+	if (
+		isRecord(requiredReviewers) &&
+		Array.isArray(requiredReviewers.reviewers) &&
+		requiredReviewers.reviewers.length > 0
+	) {
+		return ready(
+			"release-environment-reviewers",
+			`release requires ${requiredReviewers.reviewers.length} configured reviewer${requiredReviewers.reviewers.length === 1 ? "" : "s"}`,
+		)
+	}
+	return missing(
+		"release-environment-reviewers",
+		"release has no required-reviewer protection with a configured reviewer",
+		releaseEnvironmentRepair,
+	)
 }
 
 /**
@@ -734,6 +776,16 @@ function runChecks(repository: string): ReadinessCheck[] {
 		requiredChecks.ok
 			? classifyRequiredStatusChecks(requiredChecks.data)
 			: apiFailure("required-status-checks", requiredChecks, requiredChecksRepair),
+	)
+	const releaseEnvironment = readApi(`repos/${repository}/environments/release`)
+	checks.push(
+		releaseEnvironment.ok
+			? classifyReleaseEnvironmentProtection(releaseEnvironment.data)
+			: apiFailure(
+					"release-environment-reviewers",
+					releaseEnvironment,
+					releaseEnvironmentRepair,
+				),
 	)
 	checks.push(localWorkflows())
 	return checks

@@ -12,6 +12,22 @@ import { dirname, join, resolve } from "node:path"
 export const PLUGIN_DIRECTORY = "plugin"
 
 /**
+ * Order paths by JavaScript code units so inventories never depend on process locale.
+ *
+ * @param left - First path or entry name
+ * @param right - Second path or entry name
+ * @returns Negative when left sorts first, positive when right sorts first, or zero when equal
+ *
+ * @example
+ * ```ts
+ * ["ä", "Z", "a"].sort(compareCodeUnits)
+ * ```
+ */
+export function compareCodeUnits(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0
+}
+
+/**
  * List one directory tree in the exact depth-first order used by deterministic tar input.
  *
  * @param directory - Absolute directory whose entries have already passed payload validation
@@ -26,7 +42,7 @@ export const PLUGIN_DIRECTORY = "plugin"
 export function directoryArchiveEntries(directory: string, prefix: string): string[] {
 	const entries = [`${prefix}/`]
 	for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
-		left.name.localeCompare(right.name),
+		compareCodeUnits(left.name, right.name),
 	)) {
 		const relativePath = `${prefix}/${entry.name}`
 		if (entry.isDirectory()) {
@@ -65,7 +81,7 @@ export function pluginPayloadInventory(sourceRoot: string): string[] {
 	const inventory: string[] = []
 
 	function walk(directory: string, relativeDirectory: string): void {
-		const entries = readdirSync(directory).sort()
+		const entries = readdirSync(directory).sort(compareCodeUnits)
 		if (entries.length === 0) throw unsafeEntry(relativeDirectory, "empty directory")
 		for (const entry of entries) {
 			const absolutePath = join(directory, entry)
@@ -87,7 +103,7 @@ export function pluginPayloadInventory(sourceRoot: string): string[] {
 	// Walk from the resolved root. Every descendant is lstat'd and symlinks are
 	// rejected before descent, so valid POSIX names need no per-entry realpath.
 	walk(pluginRealRoot, "")
-	return inventory.sort()
+	return inventory.sort(compareCodeUnits)
 }
 
 /**

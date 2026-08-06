@@ -5,7 +5,7 @@ import { basename, join, resolve } from "node:path"
 import { expect, test } from "bun:test"
 
 const root = resolve(import.meta.dir, "..")
-const templateVersion = JSON.parse(readFileSync(join(root, "plugin.config.json"), "utf8")).version
+const initialVersion = "0.1.0"
 const ignoredEntries = new Set([
 	".claude",
 	".dev",
@@ -193,7 +193,7 @@ test("template user initializes both harness manifests from one metadata source"
 		ok: true,
 		action: "initialized",
 		sideEffects: "repository-files-written",
-		plugin: { name: "dojo-hello", version: templateVersion },
+		plugin: { name: "dojo-hello", version: initialVersion },
 	})
 
 	const config = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
@@ -218,7 +218,7 @@ test("template user initializes both harness manifests from one metadata source"
 	expect(claudeManifest).toMatchObject({
 		name: "dojo-hello",
 		displayName: "Dojo Hello",
-		version: templateVersion,
+		version: initialVersion,
 		defaultEnabled: false,
 		skills: "./skills/",
 		hooks: "./hooks/claude/hooks.json",
@@ -237,7 +237,7 @@ test("template user initializes both harness manifests from one metadata source"
 	)
 	expect(codexManifest).toMatchObject({
 		name: "dojo-hello",
-		version: templateVersion,
+		version: initialVersion,
 		skills: "./skills/",
 		hooks: "./hooks/codex/hooks.json",
 		interface: { displayName: "Dojo Hello" },
@@ -282,6 +282,36 @@ test("organization-owned canaries keep repository owner separate from authentica
 		actor: "dojo-release-bot",
 		publicRepository: "dojo-hello-public-canary",
 		privateRepository: "dojo-hello-private-canary",
+	})
+})
+
+test("mixed-case github.com derives canaries from the supplied repository", () => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-mixed-github-")
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"init",
+			"--",
+			"--name",
+			"dojo-hello",
+			"--repository",
+			"https://GitHub.COM/another-owner/another-repository",
+			"--force",
+			"--json",
+		],
+		cwd: temporaryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	const config = JSON.parse(readFileSync(join(temporaryRoot, "plugin.config.json"), "utf8"))
+	expect(config.canary).toEqual({
+		owner: "another-owner",
+		actor: "another-owner",
+		publicRepository: "another-repository-public-canary",
+		privateRepository: "another-repository-private-canary",
 	})
 })
 
@@ -386,6 +416,54 @@ test("dry run reports release reset without changing files", () => {
 	expect(readResetTargets(temporaryRoot)).toEqual(before)
 })
 
+test.each([
+	{
+		case: "unreadable release config",
+		path: ".github/release-please-config.json",
+		mutate: (temporaryRoot: string) =>
+			rmSync(join(temporaryRoot, ".github", "release-please-config.json")),
+		expected: "cannot read release reset file .github/release-please-config.json",
+	},
+	{
+		case: "malformed release config",
+		path: ".github/release-please-config.json",
+		mutate: (temporaryRoot: string) =>
+			writeFileSync(join(temporaryRoot, ".github", "release-please-config.json"), "{\n"),
+		expected: "release reset file .github/release-please-config.json is not valid JSON",
+	},
+	{
+		case: "missing runtime version markers",
+		path: "plugin/runtime/hello-world.js",
+		mutate: (temporaryRoot: string) => {
+			const path = join(temporaryRoot, "plugin", "runtime", "hello-world.js")
+			writeFileSync(
+				path,
+				readFileSync(path, "utf8").replace("// x-release-please-start-version", "// missing"),
+			)
+		},
+		expected: "plugin/runtime/hello-world.js is missing release version markers",
+	},
+] as const)("$case returns structured failure naming $path before writes", ({ mutate, expected }) => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-reset-failure-")
+	const configPath = join(temporaryRoot, "plugin.config.json")
+	const manifestPath = join(temporaryRoot, "plugin", ".codex-plugin", "plugin.json")
+	const configBefore = readFileSync(configPath)
+	const manifestBefore = readFileSync(manifestPath)
+	mutate(temporaryRoot)
+
+	const result = initializeTemplate(temporaryRoot, ["--json"])
+
+	expect(result.exitCode).toBe(2)
+	expect(JSON.parse(result.stdout.toString().trim())).toMatchObject({
+		ok: false,
+		category: "usage",
+		message: expected,
+		retrySafe: true,
+	})
+	expect(readFileSync(configPath)).toEqual(configBefore)
+	expect(readFileSync(manifestPath)).toEqual(manifestBefore)
+})
+
 test("generated manifest check detects drift from canonical metadata", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-drift-")
 
@@ -406,7 +484,7 @@ test("generated manifest check detects drift from canonical metadata", () => {
 	expect(result.stderr.toString()).toContain("bun run generate")
 })
 
-test("invalid metadata is rejected before initialization writes generated files", () => {
+test("non-GitHub repository is rejected instead of silently retaining template canaries", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-invalid-metadata-")
 	const before = readResetTargets(temporaryRoot)
 	const result = Bun.spawnSync({
@@ -418,16 +496,22 @@ test("invalid metadata is rejected before initialization writes generated files"
 			"--name",
 			"dojo-hello",
 			"--repository",
-			"https://user:secret@example.com/dojo-hello",
+			"https://gitlab.com/myagentdojo/dojo-hello",
 			"--force",
+			"--json",
 		],
 		cwd: temporaryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
 
-	expect(result.exitCode).not.toBe(0)
-	expect(result.stderr.toString()).toContain("repository must not contain embedded credentials")
+	expect(result.exitCode).toBe(2)
+	expect(JSON.parse(result.stdout.toString().trim())).toMatchObject({
+		ok: false,
+		category: "usage",
+		message: "--repository must be a canonical GitHub HTTPS repository",
+		retrySafe: true,
+	})
 	expect(readResetTargets(temporaryRoot)).toEqual(before)
 })
 
@@ -505,16 +589,16 @@ test("initialized repository packages the configured plugin identity", () => {
 	})
 	expect(packaged.exitCode, packaged.stderr.toString()).toBe(0)
 	const result = JSON.parse(packaged.stdout.toString().trim().split("\n").at(-1) ?? "")
-	expect(basename(result.archive)).toBe(`dojo-hello-${templateVersion}.tar.gz`)
-	expect(basename(result.checksums)).toBe(`dojo-hello-${templateVersion}.checksums.json`)
+	expect(basename(result.archive)).toBe(`dojo-hello-${initialVersion}.tar.gz`)
+	expect(basename(result.checksums)).toBe(`dojo-hello-${initialVersion}.checksums.json`)
 	const checksums = JSON.parse(readFileSync(result.checksums, "utf8"))
 	expect(checksums).toMatchObject({
 		repository: "https://github.com/myagentdojo/dojo-hello",
 		sourceCommit,
-		tag: `v${templateVersion}`,
+		tag: `v${initialVersion}`,
 		plugin: "dojo-hello",
-		version: templateVersion,
-		archive: `dojo-hello-${templateVersion}.tar.gz`,
+		version: initialVersion,
+		archive: `dojo-hello-${initialVersion}.tar.gz`,
 		archiveBytes: expect.any(Number),
 		archiveSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
 		evidence:
@@ -549,7 +633,7 @@ test("package preserves filenames containing newlines and backslashes", () => {
 			stderr: "pipe",
 		})
 		expect(extracted.exitCode, extracted.stderr.toString()).toBe(0)
-		const archivedPath = join(extractRoot, `dojo-hello-${templateVersion}`, "runtime", unusualName)
+		const archivedPath = join(extractRoot, `dojo-hello-${initialVersion}`, "runtime", unusualName)
 		expect(existsSync(archivedPath)).toBe(true)
 		expect(readFileSync(archivedPath, "utf8")).toBe("unusual filename payload\n")
 	} finally {

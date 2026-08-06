@@ -206,6 +206,28 @@ test("cleaned CLI evidence redacts direct and macOS-aliased temporary paths", ()
 	).toBe("[cleaned temporary evidence: codex/home]")
 })
 
+test("cleaned CLI proof reports that temporary evidence was removed", () => {
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"run",
+			"scripts/prove-harness-install.ts",
+			"--allow-fixture-copy",
+			"--json",
+		],
+		cwd: root,
+		env: { ...process.env, PATH: "/usr/bin:/bin" },
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		ok: true,
+		evidenceRetained: false,
+	})
+}, 60_000)
+
 claudeNativeTest("AE6: Claude native scopes preserve state (Claude CLI required; fallback proves bytes)", () => {
 	expect(proof.claude.mode).toBe("native-local-marketplace")
 	expect(proof.claude.scopes.map((entry: { scope: string }) => entry.scope)).toEqual([
@@ -341,8 +363,11 @@ codexNativeTest("Codex JSON records native state (Codex CLI required; fallback p
 	expect(proof.codex.enabled).toBe(true)
 	expect(proof.codex.installPolicy).toBe("AVAILABLE")
 	expect(proof.codex.authPolicy).toBe("ON_INSTALL")
-	expect(proof.codex.jsonEvidence.marketplaceList.marketplaces).toHaveLength(1)
-	expect(proof.codex.jsonEvidence.pluginList.installed).toHaveLength(1)
+	const jsonEvidence = proof.codex.jsonEvidence
+	expect(jsonEvidence).not.toBeNull()
+	if (!jsonEvidence) throw new Error("native Codex proof omitted JSON evidence")
+	expect(jsonEvidence.marketplaceList.marketplaces).toHaveLength(1)
+	expect(jsonEvidence.pluginList.installed).toHaveLength(1)
 })
 
 codexNativeTest("Codex local refresh changes bytes (Codex CLI required; fallback proves bytes)", () => {
@@ -408,10 +433,11 @@ test("payload inspection failure occurs before an active install can change", ()
 	const fixtureRoot = join(proof.temporaryRoot, "unsafe-payload")
 	const pluginRoot = join(fixtureRoot, "plugin")
 	mkdirSync(pluginRoot, { recursive: true })
-	writeFileSync(join(pluginRoot, "safe.txt"), "safe\n")
+	mkdirSync(join(pluginRoot, "empty"))
 	const activeBytes = readFileSync(join(proof.claude.activeCachePath, "runtime", "hello-world.js"))
-	writeFileSync(join(pluginRoot, "not-a-manifest.json"), "{}\n")
-	expect(() => proveHarnessInstall(fixtureRoot)).toThrow()
+	expect(() => proveHarnessInstall(fixtureRoot)).toThrow(
+		'unsafe plugin payload entry "plugin/empty": empty directory',
+	)
 	expect(readFileSync(join(proof.claude.activeCachePath, "runtime", "hello-world.js"))).toEqual(
 		activeBytes,
 	)

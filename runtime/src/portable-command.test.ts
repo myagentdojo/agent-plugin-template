@@ -6,6 +6,17 @@ Object.assign(globalThis, { PLUGIN_VERSION: config.version })
 
 const { executeCommand } = await import("./portable-command")
 
+test("hook help requires plugin version for Codex only", () => {
+	const result = executeCommand(["--help"], "", "help")
+
+	expect(result.exitCode).toBe(0)
+	expect(result.stdout).toContain(
+		"hello-world hook --harness codex --event <event> --plugin-version <version>",
+	)
+	expect(result.stdout).toContain("hello-world hook --harness claude --event <event>")
+	expect(result.stdout).toContain("Required for Codex hooks only.")
+})
+
 test("Codex hooks bind the generated command to the runtime plugin version", () => {
 	const missing = executeCommand(
 		["hook", "--harness", "codex", "--event", "SessionStart"],

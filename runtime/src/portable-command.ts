@@ -30,12 +30,16 @@ function help(): string {
 
 Usage:
   hello-world hello [--name <name>] [--json]
-  hello-world hook --harness <codex|claude> --event <event> [--plugin-version <version>]
+  hello-world hook --harness claude --event <event>
+  hello-world hook --harness codex --event <event> --plugin-version <version>
   hello-world --help
 
 Commands:
   hello  Print a greeting. No files, network calls, or durable state.
   hook   Accept a harness hook payload on stdin and exit successfully.
+
+Hook options:
+  --plugin-version <version>  Required for Codex hooks only.
 `
 }
 

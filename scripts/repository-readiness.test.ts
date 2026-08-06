@@ -10,6 +10,7 @@ import {
 	classifyApiFailure,
 	classifyRepositorySettings,
 	classifyReleaseAutomationConfiguration,
+	classifyReleaseEnvironmentProtection,
 	classifyRequiredStatusChecks,
 	classifyTagRuleset,
 	classifyWorkflowAdminPermissions,
@@ -47,6 +48,11 @@ test("reports ready when every publication safeguard is proven", () => {
 			{ secrets: [{ name: "RELEASE_PLEASE_TOKEN" }] },
 			{ variables: [{ name: "RELEASE_PLEASE_AUTOMATION_LOGIN", value: "must-not-leak" }] },
 		),
+		classifyReleaseEnvironmentProtection({
+			protection_rules: [
+				{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "release-owner" } }] },
+			],
+		}),
 		classifyRequiredStatusChecks({ strict: true, contexts: REQUIRED_STATUS_CHECKS }),
 		classifyWorkflowAdminPermissions([
 			{
@@ -58,6 +64,33 @@ test("reports ready when every publication safeguard is proven", () => {
 
 	expect(summarizeReadiness(checks)).toEqual({ ok: true, checks })
 	expect(checks.every((check) => check.status === "ready")).toBe(true)
+})
+
+describe("release environment required reviewers", () => {
+	const repair =
+		"Settings > Environments > release > Deployment protection rules: enable Required reviewers and add at least one reviewer"
+
+	test("accepts configured required-reviewer protection", () => {
+		expect(
+			classifyReleaseEnvironmentProtection({
+				protection_rules: [
+					{ type: "required_reviewers", reviewers: [{ type: "Team", reviewer: { slug: "releasers" } }] },
+				],
+			}),
+		).toMatchObject({ name: "release-environment-reviewers", status: "ready", repair: "" })
+	})
+
+	test.each([
+		["missing rule", { protection_rules: [] }, "missing"],
+		["empty reviewer list", { protection_rules: [{ type: "required_reviewers", reviewers: [] }] }, "missing"],
+		["unreadable response", undefined, "unavailable"],
+	] as const)("fails closed for %s", (_condition, response, status) => {
+		expect(classifyReleaseEnvironmentProtection(response)).toMatchObject({
+			name: "release-environment-reviewers",
+			status,
+			repair,
+		})
+	})
 })
 
 test("release automation readiness checks names without exposing values", () => {

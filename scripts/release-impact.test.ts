@@ -385,7 +385,11 @@ describe("release impact", () => {
 				head,
 			],
 			cwd: repository,
-			env: { ...process.env, PR_TITLE: "fix: update the portable runtime" },
+			env: {
+				...process.env,
+				CHANGED_FILES_JSON: undefined,
+				PR_TITLE: "fix: update the portable runtime",
+			},
 			stdout: "pipe",
 			stderr: "pipe",
 		})
@@ -418,7 +422,11 @@ describe("release impact", () => {
 		const result = Bun.spawnSync({
 			cmd: [process.execPath, "run", join(root, "scripts", "release-impact.ts"), "--base", base, "--head", head],
 			cwd: repository,
-			env: { ...process.env, PR_TITLE: "docs: move the skill guide" },
+			env: {
+				...process.env,
+				CHANGED_FILES_JSON: undefined,
+				PR_TITLE: "docs: move the skill guide",
+			},
 			stdout: "pipe",
 			stderr: "pipe",
 		})
@@ -435,16 +443,19 @@ describe("release impact", () => {
 		expect(workflow).toContain("pull_request_target:")
 		expect(workflow).toContain("statuses: write")
 		expect(workflow).toContain("ref: ${{ github.event.pull_request.base.sha }}")
+		expect(workflow).toContain("persist-credentials: false")
 		expect(workflow).toContain('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"')
 		expect(workflow).toContain('--raw-field state=pending')
 		expect(workflow).toContain('IMPACT_OUTCOME: ${{ steps.impact.outcome }}')
 		expect(workflow).toContain("group: release-impact-${{ github.event.pull_request.number }}")
 		expect(workflow).toContain("cancel-in-progress: true")
-		expect(workflow).toContain('current_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")')
+		expect(workflow).toContain('if current_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"); then')
 		expect(workflow).toContain('current_head_sha=$(jq -r .head.sha <<< "$current_pr")')
 		expect(workflow).toContain('current_title=$(jq -r .title <<< "$current_pr")')
 		expect(workflow).toContain('PR_TITLE="$current_title" bun run scripts/release-impact.ts')
-		expect(workflow).toContain('verified_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")')
+		expect(workflow).toContain('if verified_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"); then')
+		expect(workflow).toContain('description="Release impact could not read current pull request"')
+		expect(workflow).toContain('description="Release impact could not verify the pull request after qualification"')
 		expect(workflow).toContain('verified_head_sha=$(jq -r .head.sha <<< "$verified_pr")')
 		expect(workflow).toContain('verified_title=$(jq -r .title <<< "$verified_pr")')
 		expect(workflow.indexOf('verified_title=$(jq -r .title <<< "$verified_pr")')).toBeLessThan(

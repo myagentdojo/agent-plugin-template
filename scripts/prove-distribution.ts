@@ -68,13 +68,20 @@ if (first.archiveDigest !== second.archiveDigest) {
 	throw new Error(`package is not deterministic: ${first.archiveDigest} != ${second.archiveDigest}`)
 }
 
-const archiveEntries = Bun.spawnSync({
-	cmd: ["tar", "-tzf", second.archive],
-	stdout: "pipe",
+const extractedRoot = join(root, ".dev", "distribution-proof")
+rmSync(extractedRoot, { recursive: true, force: true })
+mkdirSync(extractedRoot, { recursive: true })
+const extract = Bun.spawnSync({
+	cmd: ["tar", "-xzpf", second.archive, "-C", extractedRoot],
+	stdout: "inherit",
 	stderr: "inherit",
 })
-if (archiveEntries.exitCode !== 0) process.exit(archiveEntries.exitCode)
-const entries = archiveEntries.stdout.toString().trim().split("\n").filter(Boolean)
+if (extract.exitCode !== 0) process.exit(extract.exitCode)
+
+const installedRoot = join(extractedRoot, packageName)
+const entries = directoryArchiveEntries(extractedRoot, "")
+	.slice(1)
+	.map((entry) => entry.slice(1))
 for (const required of [
 	`${packageName}/.claude-plugin/plugin.json`,
 	`${packageName}/.codex-plugin/plugin.json`,
@@ -104,18 +111,6 @@ if (entries.some((entry) => entry.endsWith(".ts") || entry.includes("/.git/"))) 
 if (entries.some((entry) => entry.startsWith(`${packageName}/scripts/`))) {
 	throw new Error("package contains development scripts")
 }
-
-const extractedRoot = join(root, ".dev", "distribution-proof")
-rmSync(extractedRoot, { recursive: true, force: true })
-mkdirSync(extractedRoot, { recursive: true })
-const extract = Bun.spawnSync({
-	cmd: ["tar", "-xzf", second.archive, "-C", extractedRoot],
-	stdout: "inherit",
-	stderr: "inherit",
-})
-if (extract.exitCode !== 0) process.exit(extract.exitCode)
-
-const installedRoot = join(extractedRoot, packageName)
 for (const entry of expectedEntries) {
 	const installedPath = join(extractedRoot, entry)
 	const status = lstatSync(installedPath)

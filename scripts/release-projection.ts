@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 
+import { compareCodeUnits } from "./plugin-files"
+
 /** Single owner for files Release Please may modify during publication admission. */
 export const RELEASE_PROJECTION_PATHS = [
 	".claude-plugin/marketplace.json",
@@ -103,7 +105,7 @@ export function validateReleaseProjection(
 	files: ReleaseProjectionFile[],
 	readVersions: (path: string) => { before: string; after: string },
 ): { changedFiles: string[]; projectionDigest: string } {
-	const sorted = [...files].sort((left, right) => left.filename.localeCompare(right.filename))
+	const sorted = [...files].sort((left, right) => compareCodeUnits(left.filename, right.filename))
 	let expectedVersion: string | undefined
 	if (sorted.some((file) => file.filename === "CHANGELOG.md")) {
 		try {
