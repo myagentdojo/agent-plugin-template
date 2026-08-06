@@ -71,7 +71,7 @@ test("copy rejects a dangling symlink before copying payload content", () => {
 	)
 })
 
-test("copy rejects a nested realpath escape before copying payload content", () => {
+test("copy rejects a nested symlink escape before copying payload content", () => {
 	expectUnsafeEntryRejected(
 		"nested/z-escape",
 		({ sourceRoot, pluginRoot }) => {

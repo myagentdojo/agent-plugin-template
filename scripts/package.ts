@@ -72,8 +72,8 @@ try {
 		utimesSync(absolutePath, epoch, epoch)
 	}
 
-	const fileList = join(stagingRoot, "entries.txt")
-	writeFileSync(fileList, `${entries.join("\n")}\n`)
+	const fileList = join(stagingRoot, "entries.bin")
+	writeFileSync(fileList, Buffer.from(`${entries.join("\0")}\0`))
 	const uncompressedArchive = join(stagingRoot, `${packageName}.tar`)
 	const tarArguments =
 		process.platform === "darwin"
@@ -96,6 +96,7 @@ try {
 					"--no-fflags",
 					"--no-mac-metadata",
 					"--no-recursion",
+					"--null",
 					"-C",
 					stagingRoot,
 					"-T",
@@ -113,6 +114,7 @@ try {
 					"--no-selinux",
 					"--format=ustar",
 					"--no-recursion",
+					"--null",
 					"-cf",
 					uncompressedArchive,
 					"-C",

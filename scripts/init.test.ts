@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join, resolve } from "node:path"
 
@@ -90,6 +90,16 @@ function packageWithSource(
 		stdout: "pipe",
 		stderr: "pipe",
 	})
+}
+
+function successfulPackageWithSource(
+	repositoryRoot: string,
+	sourceVariable: "SOURCE_COMMIT" | "GITHUB_SHA",
+	value: string,
+): { archive: string; checksums: string } {
+	const packaged = packageWithSource(repositoryRoot, sourceVariable, value)
+	expect(packaged.exitCode, packaged.stderr.toString()).toBe(0)
+	return JSON.parse(packaged.stdout.toString().trim())
 }
 
 function createReleasedTemplate(prefix: string): string {
@@ -472,11 +482,34 @@ test("package accepts an explicit source commit when Git metadata is unavailable
 	const init = initializeTemplate(temporaryRoot)
 	expect(init.exitCode, init.stderr.toString()).toBe(0)
 	const sourceCommit = "a".repeat(40)
-	const packaged = packageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
-	expect(packaged.exitCode, packaged.stderr.toString()).toBe(0)
-	const result = JSON.parse(packaged.stdout.toString().trim())
+	const result = successfulPackageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
 	const checksums = JSON.parse(readFileSync(result.checksums, "utf8"))
 	expect(checksums.sourceCommit).toBe(sourceCommit)
+})
+
+test("package preserves filenames containing newlines and backslashes", () => {
+	const temporaryRoot = copyTemplate("agent-plugin-template-package-filenames-")
+	const init = initializeTemplate(temporaryRoot)
+	expect(init.exitCode, init.stderr.toString()).toBe(0)
+	const unusualName = "line\nbreak\\slash.txt"
+	const unusualPath = join(temporaryRoot, "plugin", "runtime", unusualName)
+	writeFileSync(unusualPath, "unusual filename payload\n")
+	const sourceCommit = commitPackageCheckout(temporaryRoot)
+	const result = successfulPackageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
+	const extractRoot = mkdtempSync(join(tmpdir(), "agent-plugin-template-package-extract-"))
+	try {
+		const extracted = Bun.spawnSync({
+			cmd: ["tar", "-xzf", result.archive, "-C", extractRoot],
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+		expect(extracted.exitCode, extracted.stderr.toString()).toBe(0)
+		const archivedPath = join(extractRoot, `dojo-hello-${templateVersion}`, "runtime", unusualName)
+		expect(existsSync(archivedPath)).toBe(true)
+		expect(readFileSync(archivedPath, "utf8")).toBe("unusual filename payload\n")
+	} finally {
+		rmSync(extractRoot, { recursive: true, force: true })
+	}
 })
 
 test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(
