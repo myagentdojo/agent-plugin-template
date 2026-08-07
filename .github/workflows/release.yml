@@ -96,12 +96,13 @@ jobs:
             fi
             git for-each-ref --format='%(contents)' "refs/tags/${REPAIR_TAG}" > persisted-candidate.json
             pr_number=$(jq -er '.pullRequest | select(type == "number" and . > 0 and . == floor)' persisted-candidate.json)
+            admitted_automation_identity=$(jq -er '.automationIdentity | select(type == "string" and length > 0)' persisted-candidate.json)
             release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
             base_branch=$(jq -r .base.ref <<< "$release_pr")
             automation_identity=$(jq -r .user.login <<< "$release_pr")
             merge_commit_sha=$(jq -r .merge_commit_sha <<< "$release_pr")
             merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
-            if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" || "$merge_commit_sha" != "$candidate_sha" ]]; then
+            if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$automation_identity" != "$admitted_automation_identity" || "$merge_commit_sha" != "$candidate_sha" ]]; then
               echo "Repair provenance does not match a merged Release Please candidate." >&2
               exit 1
             fi
@@ -134,7 +135,7 @@ jobs:
               > trusted-repair-candidate.json
             REPAIR_REPOSITORY="$GITHUB_REPOSITORY" \
             REPAIR_BASE_BRANCH="$BASE_BRANCH" \
-            REPAIR_AUTOMATION_LOGIN="$EXPECTED_RELEASE_PLEASE_LOGIN" \
+            REPAIR_AUTOMATION_LOGIN="$admitted_automation_identity" \
             REPAIR_TAG="$REPAIR_TAG" \
             REPAIR_SHA="$candidate_sha" \
             REPAIR_VERSION="$manifest_version" \
@@ -304,6 +305,17 @@ jobs:
             release_as="0.1.0"
           fi
           echo "release_as=${release_as}" >> "$GITHUB_OUTPUT"
+      - name: Verify configured Release Please identity
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
+        run: |
+          set -euo pipefail
+          actual_login=$(gh api user --jq .login)
+          if [[ "$actual_login" != "$EXPECTED_RELEASE_PLEASE_LOGIN" ]]; then
+            echo "Release Please token identity ${actual_login} does not match configured identity ${EXPECTED_RELEASE_PLEASE_LOGIN}." >&2
+            exit 1
+          fi
       # skip-github-release is set in release-please config. The action may maintain PRs but cannot tag or create a GitHub Release.
       - name: Maintain release pull request
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -518,7 +530,6 @@ jobs:
           CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           BASE_BRANCH: main
-          EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
         run: |
           set -euo pipefail
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -534,12 +545,13 @@ jobs:
           remote_tag_sha=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
           checkout_sha=$(git rev-parse HEAD)
           pr_number=$(jq -er '.pullRequest | select(type == "number" and . > 0 and . == floor)' persisted-candidate.json)
+          admitted_automation_identity=$(jq -er '.automationIdentity | select(type == "string" and length > 0)' persisted-candidate.json)
           release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
           base_branch=$(jq -r .base.ref <<< "$release_pr")
           automation_identity=$(jq -r .user.login <<< "$release_pr")
           merge_commit_sha=$(jq -r .merge_commit_sha <<< "$release_pr")
           merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
-          if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" || "$merge_commit_sha" != "$checkout_sha" ]]; then
+          if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$automation_identity" != "$admitted_automation_identity" || "$merge_commit_sha" != "$checkout_sha" ]]; then
             echo "Publication provenance no longer matches the admitted Release Please candidate." >&2
             exit 1
           fi
@@ -572,7 +584,7 @@ jobs:
             bun run release:validate -- --repair \
               --repository "$GITHUB_REPOSITORY" \
               --expected-base-branch "$BASE_BRANCH" \
-              --expected-automation-login "$EXPECTED_RELEASE_PLEASE_LOGIN" \
+              --expected-automation-login "$admitted_automation_identity" \
               --json
       - name: Compare release assets before mutation
         env:
