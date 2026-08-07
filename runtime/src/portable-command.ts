@@ -75,6 +75,7 @@ export function executeCommand(
 				`${JSON.stringify({
 					ok: true,
 					command: "hello",
+					pluginVersion: PLUGIN_VERSION,
 					message: `Hello, ${name}!`,
 					sideEffects: "none",
 					runId,
