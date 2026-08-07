@@ -70,21 +70,29 @@ jobs:
       - name: Qualify immutable candidates with trusted driver
         env:
           GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}
+          CANARY_SSH_KNOWN_HOSTS: ${{ secrets.CANARY_SSH_KNOWN_HOSTS }}
+          CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
           CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
           CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          set -euo pipefail
           test -n "$GH_TOKEN"
+          test -n "$CANARY_SSH_KNOWN_HOSTS"
+          test -n "$CANARY_SSH_PRIVATE_KEY"
           credential_root="$(mktemp -d)"
           chmod 700 "$credential_root"
-          credential_socket="$credential_root/cache.sock"
-          credential_config="$credential_root/gitconfig"
-          git config --file "$credential_config" credential.helper "cache --socket $credential_socket --timeout 1800"
-          export GIT_CONFIG_GLOBAL="$credential_config"
+          known_hosts="$credential_root/known_hosts"
+          printf '%s\n' "$CANARY_SSH_KNOWN_HOSTS" > "$known_hosts"
+          chmod 600 "$known_hosts"
+          export GIT_CONFIG_GLOBAL="$credential_root/gitconfig"
           export GIT_CONFIG_NOSYSTEM="1"
-          printf 'protocol=https\nhost=github.com\nusername=x-access-token\npassword=%s\n\n' "$GH_TOKEN" | git credential approve
-          trap 'git credential-cache --socket "$credential_socket" exit >/dev/null 2>&1 || true; rm -rf "$credential_root"' EXIT
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true; rm -rf "$credential_root"' EXIT
+          ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"
+          unset CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY
+          export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts"
+          git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
           bun run ship:canary -- --execute --source-root candidate --ref "$SOURCE_SHA" --json
 
   result:

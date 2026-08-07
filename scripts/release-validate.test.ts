@@ -92,17 +92,62 @@ function admissionInput(candidates = [releasePullRequest()]) {
 	}
 }
 
-function writeReleasedMetadata(repositoryRoot: string, changelog: (version: string) => string): string {
-	const pluginConfig = JSON.parse(readFileSync(join(repositoryRoot, "plugin.config.json"), "utf8"))
+function writeSynchronizedVersion(repositoryRoot: string, version: string): void {
+	for (const path of [
+		"package.json",
+		"plugin.config.json",
+		"plugin/.claude-plugin/plugin.json",
+		"plugin/.codex-plugin/plugin.json",
+	]) {
+		const absolutePath = join(repositoryRoot, path)
+		const json = JSON.parse(readFileSync(absolutePath, "utf8"))
+		json.version = version
+		writeFileSync(absolutePath, `${JSON.stringify(json, null, 2)}\n`)
+	}
+
+	const marketplacePath = join(repositoryRoot, ".claude-plugin", "marketplace.json")
+	const marketplace = JSON.parse(readFileSync(marketplacePath, "utf8"))
+	marketplace.metadata.version = version
+	writeFileSync(marketplacePath, `${JSON.stringify(marketplace, null, 2)}\n`)
+
+	const runtimePath = join(repositoryRoot, "plugin", "runtime", "hello-world.js")
+	writeFileSync(
+		runtimePath,
+		readFileSync(runtimePath, "utf8").replace(
+			/const PLUGIN_VERSION = "\d+\.\d+\.\d+";/,
+			`const PLUGIN_VERSION = "${version}";`,
+		),
+	)
+
+	const hooksPath = join(repositoryRoot, "plugin", "hooks", "codex", "hooks.json")
+	writeFileSync(
+		hooksPath,
+		readFileSync(hooksPath, "utf8").replaceAll(
+			/--plugin-version \d+\.\d+\.\d+ # x-release-please-version/g,
+			`--plugin-version ${version} # x-release-please-version`,
+		),
+	)
+}
+
+function writeReleasedMetadata(
+	repositoryRoot: string,
+	changelog: (version: string) => string,
+	version?: string,
+): string {
+	const releasedVersion = version ?? JSON.parse(
+		readFileSync(join(repositoryRoot, "plugin.config.json"), "utf8"),
+	).version
+	writeSynchronizedVersion(repositoryRoot, releasedVersion)
 	writeFileSync(
 		join(repositoryRoot, ".github", ".release-please-manifest.json"),
-		`${JSON.stringify({ ".": pluginConfig.version }, null, 2)}\n`,
+		`${JSON.stringify({ ".": releasedVersion }, null, 2)}\n`,
 	)
-	writeFileSync(join(repositoryRoot, "CHANGELOG.md"), changelog(pluginConfig.version))
-	return pluginConfig.version
+	writeFileSync(join(repositoryRoot, "CHANGELOG.md"), changelog(releasedVersion))
+	return releasedVersion
 }
 
 function writeBootstrapMetadata(repositoryRoot: string): void {
+	writeSynchronizedVersion(repositoryRoot, "0.1.0")
 	writeFileSync(join(repositoryRoot, ".github", ".release-please-manifest.json"), "{}\n")
 	writeFileSync(join(repositoryRoot, "CHANGELOG.md"), "")
 }
@@ -179,31 +224,7 @@ test("release validation rejects unexpected release-please extra-files", () => {
 test("release validation rejects an empty manifest after v0.1.0", () => {
 	const temporaryRoot = copyRepository()
 	writeBootstrapMetadata(temporaryRoot)
-	for (const path of [
-		"package.json",
-		"plugin.config.json",
-		"plugin/.claude-plugin/plugin.json",
-		"plugin/.codex-plugin/plugin.json",
-	]) {
-		const absolutePath = join(temporaryRoot, path)
-		const json = JSON.parse(readFileSync(absolutePath, "utf8"))
-		json.version = "0.2.0"
-		writeFileSync(absolutePath, `${JSON.stringify(json, null, 2)}\n`)
-	}
-	const marketplacePath = join(temporaryRoot, ".claude-plugin", "marketplace.json")
-	const marketplace = JSON.parse(readFileSync(marketplacePath, "utf8"))
-	marketplace.metadata.version = "0.2.0"
-	writeFileSync(marketplacePath, `${JSON.stringify(marketplace, null, 2)}\n`)
-	const runtimePath = join(temporaryRoot, "plugin", "runtime", "hello-world.js")
-	writeFileSync(
-		runtimePath,
-		readFileSync(runtimePath, "utf8").replace('const PLUGIN_VERSION = "0.1.0";', 'const PLUGIN_VERSION = "0.2.0";'),
-	)
-	const hooksPath = join(temporaryRoot, "plugin", "hooks", "codex", "hooks.json")
-	writeFileSync(
-		hooksPath,
-		readFileSync(hooksPath, "utf8").replaceAll("--plugin-version 0.1.0", "--plugin-version 0.2.0"),
-	)
+	writeSynchronizedVersion(temporaryRoot, "0.2.0")
 
 	const result = validate(temporaryRoot)
 	expect(result.exitCode).toBe(1)
@@ -277,6 +298,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain('git cat-file -t "refs/tags/${REPAIR_TAG}"')
 	expect(workflow).toContain("merge_commit_sha")
 	expect(workflow).toContain("EXPECTED_RELEASE_PLEASE_LOGIN")
+	expect(workflow).toContain("admitted_automation_identity")
+	expect(workflow).toContain('--expected-automation-login "$admitted_automation_identity"')
 	expect(workflow).toContain("scripts/release-projection.ts")
 	expect(workflow).not.toContain("ALLOWED_RELEASE_PATHS")
 	expect(workflow).not.toContain("missing_paths")
@@ -317,6 +340,10 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(maintainJob).toContain('release_as="0.1.0"')
 	expect(maintainJob).toContain("token: ${{ secrets.RELEASE_PLEASE_TOKEN }}")
 	expect(maintainJob).not.toContain("secrets.GITHUB_TOKEN")
+	expect(maintainJob).toContain("Verify configured Release Please identity")
+	expect(maintainJob).toContain("gh api user --jq .login")
+	expect(maintainJob).toContain("Release Please token identity")
+	expect(maintainJob).toContain("EXPECTED_RELEASE_PLEASE_LOGIN")
 	expect(maintainJob).toContain("release-as: ${{ steps.bootstrap-version.outputs.release_as }}")
 	expect(finalReleaseJob).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(finalReleaseJob).toContain('if [[ "$MODE" == "repair" ]]')
@@ -719,6 +746,11 @@ test("manual repair rejects a Release targeting another SHA", () => {
 
 test("manual repair CLI emits one bound JSON result", () => {
 	const temporaryRoot = copyRepository()
+	writeReleasedMetadata(
+		temporaryRoot,
+		(version) => `# Changelog\n\n## ${version}\n\nInitial release.\n`,
+		"0.1.0",
+	)
 	const sha = "a".repeat(40)
 	const candidatePath = join(temporaryRoot, "candidate.json")
 	const trustedCandidatePath = join(temporaryRoot, "trusted-candidate.json")
