@@ -470,6 +470,13 @@ function targetRemote(origin: string, repository: string): string {
 	return `https://${transport.host}/${repository}.git`
 }
 
+function isolatedKnownHostsFile(environment: NodeJS.ProcessEnv): string | undefined {
+	if (environment.CANARY_SSH_KNOWN_HOSTS_FILE) return environment.CANARY_SSH_KNOWN_HOSTS_FILE
+	return /(?:^|\s)-o\s+UserKnownHostsFile=(?<path>\/[A-Za-z0-9._\/-]+)(?=\s|$)/.exec(
+		environment.GIT_SSH_COMMAND || "",
+	)?.groups?.path
+}
+
 function resolveTransportIdentity(origin: string): {
 	kind: TransportKind
 	identity: string
@@ -477,6 +484,10 @@ function resolveTransportIdentity(origin: string): {
 } {
 	const transport = transportLocation(origin)
 	if (transport.kind === "ssh") {
+		const knownHostsFile = isolatedKnownHostsFile(process.env)
+		const knownHostsOption = knownHostsFile
+			? ["-o", `UserKnownHostsFile=${knownHostsFile}`, "-o", "GlobalKnownHostsFile=/dev/null"]
+			: []
 		const result = commandOutput([
 			"ssh",
 			"-T",
@@ -484,6 +495,7 @@ function resolveTransportIdentity(origin: string): {
 			"BatchMode=yes",
 			"-o",
 			"StrictHostKeyChecking=yes",
+			...knownHostsOption,
 			`${transport.user || "git"}@${transport.host}`,
 		])
 		const greeting = `${result.stdout}\n${result.stderr}`
@@ -610,6 +622,7 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 		GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
 		GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM,
 		GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+		GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND,
 		SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
 		GIT_AUTHOR_NAME: "Hosted Canary",
 		GIT_AUTHOR_EMAIL: "canary@example.invalid",
