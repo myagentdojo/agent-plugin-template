@@ -101,10 +101,14 @@ exit 90
 		join(fakeBin, "ssh"),
 		`#!/bin/sh
 if [ -n "\${FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE:-}" ]; then
-  [ "$6" = "-o" ] || exit 93
-  [ "$7" = "UserKnownHostsFile=$FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE" ] || exit 94
-  [ "$8" = "-o" ] || exit 95
-  [ "$9" = "GlobalKnownHostsFile=/dev/null" ] || exit 96
+  case " $* " in *" -o UserKnownHostsFile=$FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE "*) ;; *) exit 93 ;; esac
+  case " $* " in *" -o GlobalKnownHostsFile=/dev/null "*) ;; *) exit 94 ;; esac
+fi
+if [ -n "\${FAKE_EXPECTED_SSH_IDENTITY_FILE:-}" ]; then
+  case " $* " in *" -F /dev/null "*) ;; *) exit 95 ;; esac
+  case " $* " in *" -o IdentityAgent=none "*) ;; *) exit 96 ;; esac
+  case " $* " in *" -i $FAKE_EXPECTED_SSH_IDENTITY_FILE "*) ;; *) exit 97 ;; esac
+  case " $* " in *" -o IdentitiesOnly=yes "*) ;; *) exit 98 ;; esac
 fi
 printf "Hi %s! You've successfully authenticated, but GitHub does not provide shell access.\n" "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}" >&2
 exit 1
@@ -263,6 +267,20 @@ test("SSH identity proof reuses the old trusted workflow known-hosts option", ()
 		FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE: "/tmp/canary-known-hosts",
 		GIT_SSH_COMMAND:
 			"ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/canary-known-hosts",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+})
+
+test("SSH identity proof binds the explicit hosted key without agent fallback", () => {
+	const identityFile = "/tmp/canary-identity"
+	const knownHostsFile = "/tmp/canary-known-hosts"
+	const result = runCanary(canaryFixture(), "--dry-run", {
+		CANARY_SSH_IDENTITY_FILE: identityFile,
+		CANARY_SSH_KNOWN_HOSTS_FILE: knownHostsFile,
+		FAKE_EXPECTED_SSH_IDENTITY_FILE: identityFile,
+		FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE: knownHostsFile,
+		GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentityAgent=none -i ${identityFile} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${knownHostsFile} -o GlobalKnownHostsFile=/dev/null`,
 	})
 
 	expect(result.exitCode, result.stderr.toString()).toBe(0)
@@ -523,17 +541,22 @@ test("divergent PR heads receive distinct immutable candidate refs", () => {
 test("sanitized public candidates are deterministic root commits with no repository source", () => {
 	const sourceSha = "1".repeat(40)
 	const previousGitSshCommand = process.env.GIT_SSH_COMMAND
+	const previousIdentityFile = process.env.CANARY_SSH_IDENTITY_FILE
 	const gitSshCommand = "ssh -o UserKnownHostsFile=/tmp/canary-known-hosts"
+	const identityFile = "/tmp/canary-identity"
 	process.env.GIT_SSH_COMMAND = gitSshCommand
+	process.env.CANARY_SSH_IDENTITY_FILE = identityFile
 	const first = createSanitizedPublicCandidate(root, sourceSha)
 	const second = createSanitizedPublicCandidate(root, sourceSha)
 	try {
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
-		expect(first.environment.SSH_AUTH_SOCK).toBe(process.env.SSH_AUTH_SOCK)
+		expect(first.environment).not.toHaveProperty("SSH_AUTH_SOCK")
 		expect(first.environment.GIT_SSH_COMMAND).toBe(gitSshCommand)
+		expect(first.environment.CANARY_SSH_IDENTITY_FILE).toBe(identityFile)
 		expect(first.environment).not.toHaveProperty("GH_TOKEN")
 		expect(Object.keys(first.environment).sort()).toEqual([
+			"CANARY_SSH_IDENTITY_FILE",
 			"GIT_AUTHOR_DATE",
 			"GIT_AUTHOR_EMAIL",
 			"GIT_AUTHOR_NAME",
@@ -546,7 +569,6 @@ test("sanitized public candidates are deterministic root commits with no reposit
 			"GIT_SSH_COMMAND",
 			"HOME",
 			"PATH",
-			"SSH_AUTH_SOCK",
 		])
 		const tree = Bun.spawnSync({
 			cmd: ["git", "ls-tree", "-r", "--name-only", first.sha],
@@ -577,6 +599,8 @@ test("sanitized public candidates are deterministic root commits with no reposit
 	} finally {
 		if (previousGitSshCommand === undefined) delete process.env.GIT_SSH_COMMAND
 		else process.env.GIT_SSH_COMMAND = previousGitSshCommand
+		if (previousIdentityFile === undefined) delete process.env.CANARY_SSH_IDENTITY_FILE
+		else process.env.CANARY_SSH_IDENTITY_FILE = previousIdentityFile
 		rmSync(first.temporaryRoot, { recursive: true, force: true })
 		rmSync(second.temporaryRoot, { recursive: true, force: true })
 	}
@@ -920,9 +944,16 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain('export GIT_CONFIG_NOSYSTEM="1"')
 	expect(workflow).toContain('export CANARY_SSH_KNOWN_HOSTS_FILE="$known_hosts"')
 	expect(workflow).toContain("-o GlobalKnownHostsFile=/dev/null")
-	expect(workflow).toContain('ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"')
+	expect(workflow).toContain('identity_file="$credential_root/id_ed25519"')
+	expect(workflow).toContain('printf \'%s\\n\' "$CANARY_SSH_PRIVATE_KEY" > "$identity_file"')
+	expect(workflow).toContain('chmod 600 "$identity_file"')
+	expect(workflow).toContain('export CANARY_SSH_IDENTITY_FILE="$identity_file"')
+	expect(workflow).toContain("-F /dev/null")
+	expect(workflow).toContain("-o IdentityAgent=none")
+	expect(workflow).toContain("-i $identity_file")
+	expect(workflow).not.toContain("ssh-add")
+	expect(workflow).not.toContain("ssh-agent")
 	expect(workflow).toContain('unset CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY')
-	expect(workflow).toContain('ssh-agent -k')
 	expect(workflow).toContain('rm -rf "$credential_root"')
 	expect(workflow).not.toContain("gh auth setup-git")
 	expect(workflow).toContain('git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"')

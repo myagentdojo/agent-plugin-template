@@ -85,14 +85,16 @@ jobs:
           known_hosts="$credential_root/known_hosts"
           printf '%s\n' "$CANARY_SSH_KNOWN_HOSTS" > "$known_hosts"
           chmod 600 "$known_hosts"
+          identity_file="$credential_root/id_ed25519"
+          printf '%s\n' "$CANARY_SSH_PRIVATE_KEY" > "$identity_file"
+          chmod 600 "$identity_file"
           export GIT_CONFIG_GLOBAL="$credential_root/gitconfig"
           export GIT_CONFIG_NOSYSTEM="1"
           export CANARY_SSH_KNOWN_HOSTS_FILE="$known_hosts"
-          eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true; rm -rf "$credential_root"' EXIT
-          ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"
+          export CANARY_SSH_IDENTITY_FILE="$identity_file"
+          trap 'rm -rf "$credential_root"' EXIT
           unset CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY
-          export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts -o GlobalKnownHostsFile=/dev/null"
+          export GIT_SSH_COMMAND="ssh -F /dev/null -o IdentityAgent=none -i $identity_file -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts -o GlobalKnownHostsFile=/dev/null"
           git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"
           bun run ship:canary -- --execute --source-root candidate --ref "$SOURCE_SHA" --json
 
