@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1](https://github.com/myagentdojo/agent-plugin-template/compare/v0.1.0...v0.1.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **ci:** bind canary identity to known hosts ([#20](https://github.com/myagentdojo/agent-plugin-template/issues/20)) ([d7c99b7](https://github.com/myagentdojo/agent-plugin-template/commit/d7c99b7efc3311fe4a5724eb895fd47b0389dc58))
+* **ci:** bind hosted canary to key file ([#21](https://github.com/myagentdojo/agent-plugin-template/issues/21)) ([6efc6aa](https://github.com/myagentdojo/agent-plugin-template/commit/6efc6aa42cff51a6082cbf78bf0fffcd1b419c02))
+* keep release qualification stable ([7ecc8f4](https://github.com/myagentdojo/agent-plugin-template/commit/7ecc8f48314e7939aac94af34454f75ef4eb5d33))
+* report plugin version in hello JSON ([#16](https://github.com/myagentdojo/agent-plugin-template/issues/16)) ([85ef9ec](https://github.com/myagentdojo/agent-plugin-template/commit/85ef9ec24df24fa00830e449fd75517383a8c401))
+
 ## 0.1.0 (2026-08-06)
 
 

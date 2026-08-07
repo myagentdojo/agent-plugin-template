@@ -1,6 +1,6 @@
 // Generated from runtime/src/. Edit source, then run bun run build.
 // x-release-please-start-version
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 // x-release-please-end
 import*as D from"qjs:std";function S(L="",q=""){return{exitCode:0,stdout:L,stderr:q}}function H(L){return{exitCode:2,stdout:"",stderr:`hello-world: ${L}
 Run hello-world --help for usage.
