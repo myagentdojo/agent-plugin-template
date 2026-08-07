@@ -470,6 +470,13 @@ function targetRemote(origin: string, repository: string): string {
 	return `https://${transport.host}/${repository}.git`
 }
 
+function isolatedKnownHostsFile(environment: NodeJS.ProcessEnv): string | undefined {
+	if (environment.CANARY_SSH_KNOWN_HOSTS_FILE) return environment.CANARY_SSH_KNOWN_HOSTS_FILE
+	return /(?:^|\s)-o\s+UserKnownHostsFile=(?<path>\/[A-Za-z0-9._\/-]+)(?=\s|$)/.exec(
+		environment.GIT_SSH_COMMAND || "",
+	)?.groups?.path
+}
+
 function resolveTransportIdentity(origin: string): {
 	kind: TransportKind
 	identity: string
@@ -477,8 +484,9 @@ function resolveTransportIdentity(origin: string): {
 } {
 	const transport = transportLocation(origin)
 	if (transport.kind === "ssh") {
-		const knownHostsOption = process.env.CANARY_SSH_KNOWN_HOSTS_FILE
-			? ["-o", `UserKnownHostsFile=${process.env.CANARY_SSH_KNOWN_HOSTS_FILE}`]
+		const knownHostsFile = isolatedKnownHostsFile(process.env)
+		const knownHostsOption = knownHostsFile
+			? ["-o", `UserKnownHostsFile=${knownHostsFile}`]
 			: []
 		const result = commandOutput([
 			"ssh",

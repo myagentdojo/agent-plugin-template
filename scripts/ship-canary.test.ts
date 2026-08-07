@@ -100,9 +100,9 @@ exit 90
 	executable(
 		join(fakeBin, "ssh"),
 		`#!/bin/sh
-if [ -n "\${CANARY_SSH_KNOWN_HOSTS_FILE:-}" ]; then
+if [ -n "\${FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE:-}" ]; then
   [ "$6" = "-o" ] || exit 93
-  [ "$7" = "UserKnownHostsFile=$CANARY_SSH_KNOWN_HOSTS_FILE" ] || exit 94
+  [ "$7" = "UserKnownHostsFile=$FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE" ] || exit 94
 fi
 printf "Hi %s! You've successfully authenticated, but GitHub does not provide shell access.\n" "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}" >&2
 exit 1
@@ -256,9 +256,11 @@ test("canary dry-run proves identity, visibility, and source without publishing"
 	expect(result.stdout.toString()).not.toContain("public-canary-candidate-")
 })
 
-test("SSH identity proof uses the workflow-isolated known-hosts file", () => {
+test("SSH identity proof reuses the old trusted workflow known-hosts option", () => {
 	const result = runCanary(canaryFixture(), "--dry-run", {
-		CANARY_SSH_KNOWN_HOSTS_FILE: "/tmp/canary-known-hosts",
+		FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE: "/tmp/canary-known-hosts",
+		GIT_SSH_COMMAND:
+			"ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/canary-known-hosts",
 	})
 
 	expect(result.exitCode, result.stderr.toString()).toBe(0)
