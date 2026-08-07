@@ -66,3 +66,15 @@ test("Claude hooks remain versionless because Claude supplies no manifest versio
 
 	expect(result).toMatchObject({ exitCode: 0 })
 })
+
+test("hello JSON identifies the installed plugin version", () => {
+	const result = executeCommand(["hello", "--json"], "", "version-proof")
+
+	expect(result.exitCode).toBe(0)
+	expect(JSON.parse(result.stdout)).toMatchObject({
+		ok: true,
+		command: "hello",
+		pluginVersion: config.version,
+		runId: "version-proof",
+	})
+})

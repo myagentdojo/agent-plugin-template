@@ -1,4 +1,8 @@
-import { executeCommand } from "./portable-command"
+import config from "../../plugin.config.json"
+
+Object.assign(globalThis, { PLUGIN_VERSION: config.version })
+
+const { executeCommand } = await import("./portable-command")
 
 const standardInput = await Bun.stdin.text()
 const result = executeCommand(

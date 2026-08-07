@@ -149,7 +149,11 @@ if (version.exitCode !== 0 || version.stdout.trim() !== pluginConfig.version) {
 const hello = runPackaged(launcher, ["hello", "--name", "packaged", "--json"])
 if (hello.exitCode !== 0) throw new Error(hello.stderr)
 const helloResult = JSON.parse(hello.stdout)
-if (helloResult.message !== "Hello, packaged!" || helloResult.sideEffects !== "none") {
+if (
+	helloResult.message !== "Hello, packaged!" ||
+	helloResult.pluginVersion !== pluginConfig.version ||
+	helloResult.sideEffects !== "none"
+) {
 	throw new Error("packaged launcher returned the wrong hello contract")
 }
 
