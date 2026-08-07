@@ -477,6 +477,13 @@ function isolatedKnownHostsFile(environment: NodeJS.ProcessEnv): string | undefi
 	)?.groups?.path
 }
 
+function isolatedIdentityFile(environment: NodeJS.ProcessEnv): string | undefined {
+	if (environment.CANARY_SSH_IDENTITY_FILE) return environment.CANARY_SSH_IDENTITY_FILE
+	return /(?:^|\s)-i\s+(?<path>\/[A-Za-z0-9._\/-]+)(?=\s|$)/.exec(
+		environment.GIT_SSH_COMMAND || "",
+	)?.groups?.path
+}
+
 function resolveTransportIdentity(origin: string): {
 	kind: TransportKind
 	identity: string
@@ -485,6 +492,19 @@ function resolveTransportIdentity(origin: string): {
 	const transport = transportLocation(origin)
 	if (transport.kind === "ssh") {
 		const knownHostsFile = isolatedKnownHostsFile(process.env)
+		const identityFile = isolatedIdentityFile(process.env)
+		const identityOptions = identityFile
+			? [
+					"-F",
+					"/dev/null",
+					"-o",
+					"IdentityAgent=none",
+					"-i",
+					identityFile,
+					"-o",
+					"IdentitiesOnly=yes",
+				]
+			: []
 		const knownHostsOption = knownHostsFile
 			? ["-o", `UserKnownHostsFile=${knownHostsFile}`, "-o", "GlobalKnownHostsFile=/dev/null"]
 			: []
@@ -495,6 +515,7 @@ function resolveTransportIdentity(origin: string): {
 			"BatchMode=yes",
 			"-o",
 			"StrictHostKeyChecking=yes",
+			...identityOptions,
 			...knownHostsOption,
 			`${transport.user || "git"}@${transport.host}`,
 		])
@@ -623,7 +644,7 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 		GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM,
 		GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
 		GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND,
-		SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK,
+		CANARY_SSH_IDENTITY_FILE: process.env.CANARY_SSH_IDENTITY_FILE,
 		GIT_AUTHOR_NAME: "Hosted Canary",
 		GIT_AUTHOR_EMAIL: "canary@example.invalid",
 		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
