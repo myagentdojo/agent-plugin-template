@@ -103,6 +103,8 @@ exit 90
 if [ -n "\${FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE:-}" ]; then
   [ "$6" = "-o" ] || exit 93
   [ "$7" = "UserKnownHostsFile=$FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE" ] || exit 94
+  [ "$8" = "-o" ] || exit 95
+  [ "$9" = "GlobalKnownHostsFile=/dev/null" ] || exit 96
 fi
 printf "Hi %s! You've successfully authenticated, but GitHub does not provide shell access.\n" "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}" >&2
 exit 1
@@ -520,13 +522,16 @@ test("divergent PR heads receive distinct immutable candidate refs", () => {
 
 test("sanitized public candidates are deterministic root commits with no repository source", () => {
 	const sourceSha = "1".repeat(40)
+	const previousGitSshCommand = process.env.GIT_SSH_COMMAND
+	const gitSshCommand = "ssh -o UserKnownHostsFile=/tmp/canary-known-hosts"
+	process.env.GIT_SSH_COMMAND = gitSshCommand
 	const first = createSanitizedPublicCandidate(root, sourceSha)
 	const second = createSanitizedPublicCandidate(root, sourceSha)
 	try {
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
 		expect(first.environment.SSH_AUTH_SOCK).toBe(process.env.SSH_AUTH_SOCK)
-		expect(first.environment.GIT_SSH_COMMAND).toBe(process.env.GIT_SSH_COMMAND)
+		expect(first.environment.GIT_SSH_COMMAND).toBe(gitSshCommand)
 		expect(first.environment).not.toHaveProperty("GH_TOKEN")
 		expect(Object.keys(first.environment).sort()).toEqual([
 			"GIT_AUTHOR_DATE",
@@ -570,6 +575,8 @@ test("sanitized public candidates are deterministic root commits with no reposit
 		})
 		expect(parents.stdout.toString().trim()).toBe(first.sha)
 	} finally {
+		if (previousGitSshCommand === undefined) delete process.env.GIT_SSH_COMMAND
+		else process.env.GIT_SSH_COMMAND = previousGitSshCommand
 		rmSync(first.temporaryRoot, { recursive: true, force: true })
 		rmSync(second.temporaryRoot, { recursive: true, force: true })
 	}
@@ -912,6 +919,7 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}")
 	expect(workflow).toContain('export GIT_CONFIG_NOSYSTEM="1"')
 	expect(workflow).toContain('export CANARY_SSH_KNOWN_HOSTS_FILE="$known_hosts"')
+	expect(workflow).toContain("-o GlobalKnownHostsFile=/dev/null")
 	expect(workflow).toContain('ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"')
 	expect(workflow).toContain('unset CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY')
 	expect(workflow).toContain('ssh-agent -k')

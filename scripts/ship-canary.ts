@@ -486,7 +486,7 @@ function resolveTransportIdentity(origin: string): {
 	if (transport.kind === "ssh") {
 		const knownHostsFile = isolatedKnownHostsFile(process.env)
 		const knownHostsOption = knownHostsFile
-			? ["-o", `UserKnownHostsFile=${knownHostsFile}`]
+			? ["-o", `UserKnownHostsFile=${knownHostsFile}`, "-o", "GlobalKnownHostsFile=/dev/null"]
 			: []
 		const result = commandOutput([
 			"ssh",
