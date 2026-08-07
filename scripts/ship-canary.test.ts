@@ -511,8 +511,8 @@ test("sanitized public candidates are deterministic root commits with no reposit
 	try {
 		expect(first.sha).toBe(second.sha)
 		expect(first.environment).not.toHaveProperty("CANARY_GH_TOKEN")
+		expect(first.environment.SSH_AUTH_SOCK).toBe(process.env.SSH_AUTH_SOCK)
 		expect(first.environment).not.toHaveProperty("GH_TOKEN")
-		expect(first.environment).not.toHaveProperty("SSH_AUTH_SOCK")
 		expect(Object.keys(first.environment).sort()).toEqual([
 			"GIT_AUTHOR_DATE",
 			"GIT_AUTHOR_EMAIL",
@@ -525,6 +525,7 @@ test("sanitized public candidates are deterministic root commits with no reposit
 			"GIT_CONFIG_SYSTEM",
 			"HOME",
 			"PATH",
+			"SSH_AUTH_SOCK",
 		])
 		const tree = Bun.spawnSync({
 			cmd: ["git", "ls-tree", "-r", "--name-only", first.sha],
@@ -891,18 +892,18 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}")
 	expect(workflow).toContain("CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}")
 	expect(workflow).toContain("GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}")
-	expect(workflow).toContain('credential.helper "cache --socket $credential_socket --timeout 1800"')
+	expect(workflow).toContain("CANARY_SSH_KNOWN_HOSTS: ${{ secrets.CANARY_SSH_KNOWN_HOSTS }}")
+	expect(workflow).toContain("CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}")
 	expect(workflow).toContain('export GIT_CONFIG_NOSYSTEM="1"')
-	expect(workflow).toContain("git credential approve")
-	expect(workflow).toContain('git credential-cache --socket "$credential_socket" exit')
+	expect(workflow).toContain('ssh-add - <<< "$CANARY_SSH_PRIVATE_KEY"')
+	expect(workflow).toContain('unset CANARY_SSH_KNOWN_HOSTS CANARY_SSH_PRIVATE_KEY')
+	expect(workflow).toContain('ssh-agent -k')
 	expect(workflow).toContain('rm -rf "$credential_root"')
 	expect(workflow).not.toContain("gh auth setup-git")
-	expect(workflow).toContain('git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"')
-	expect(workflow).not.toContain("CANARY_SSH_KNOWN_HOSTS")
-	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
+	expect(workflow).toContain('git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"')
 	expect(workflow).not.toContain("CHECK_RUN_ID")
-	expect(readme).toContain("token-backed GitHub API and HTTPS Git identity")
-	expect(readme).not.toContain("token and SSH identities")
+	expect(readme).toContain("token-backed GitHub API identity and SSH Git identity")
+	expect(readme).not.toContain("HTTPS Git identity")
 })
 
 test("hosted canary workflow gives fork authors a same-repository qualification path", () => {

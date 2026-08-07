@@ -19,10 +19,14 @@ const releaseAutomationRepair =
 const releaseEnvironmentRepair =
 	"Settings > Environments > release > Deployment protection rules: enable Required reviewers and add at least one reviewer"
 const hostedCanaryRepair =
-	"Settings > Environments > hosted-canary-qualification: create the environment and add secret CANARY_GH_TOKEN"
+	"Settings > Environments > hosted-canary-qualification: create the environment and add secrets CANARY_GH_TOKEN, CANARY_SSH_KNOWN_HOSTS, and CANARY_SSH_PRIVATE_KEY"
 
 const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
-export const REQUIRED_HOSTED_CANARY_SECRETS = ["CANARY_GH_TOKEN"] as const
+export const REQUIRED_HOSTED_CANARY_SECRETS = [
+	"CANARY_GH_TOKEN",
+	"CANARY_SSH_KNOWN_HOSTS",
+	"CANARY_SSH_PRIVATE_KEY",
+] as const
 
 const help = `Verify human-owned GitHub repository safeguards without changing them.
 
