@@ -234,6 +234,19 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 			`const { require: load } = import.meta;load(process.env.TARGET_MODULE);`,
 		),
 	).toThrow(/destructured runtime module-loader escape/)
+	expect(() =>
+		validateBundleText(
+			"skill-a",
+			`const { ["require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
+		),
+	).toThrow(/computed-key destructured runtime module-loader escape/)
+})
+
+test("validateBundleText allows ordinary methods named require", () => {
+	validateBundleText(
+		"skill-a",
+		`const registry = { require(name) { return this[name] } }; class Catalog { require(name) { return registry[name] } }`,
+	)
 })
 
 test("validateBundleText rejects runtime code generation", () => {
