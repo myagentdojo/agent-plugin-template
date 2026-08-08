@@ -483,6 +483,70 @@ test("workspace peer imports resolve through the admitted graph and validate the
 	).rejects.toMatchObject({ code: "lock-invalid" })
 })
 
+test("semver workspace peers resolve through the referenced workspace version", async () => {
+	const fixture = fixtureWorkspace(`import shared from "shared";console.log(shared);`, {
+		name: "fixture-skill",
+		private: true,
+		type: "module",
+		main: "src/main.js",
+		peerDependencies: { shared: "^1.0.0" },
+	})
+	const sharedWorkspace = join(fixture.fixtureRoot, "packages", "shared")
+	mkdirSync(sharedWorkspace, { recursive: true })
+	writeFileSync(
+		join(sharedWorkspace, "package.json"),
+		`${JSON.stringify({
+			name: "shared",
+			version: "1.2.0",
+			type: "module",
+			main: "index.js",
+		})}\n`,
+	)
+	writeFileSync(join(sharedWorkspace, "index.js"), `export default "workspace-range-proof";\n`)
+	writeFileSync(
+		join(fixture.fixtureRoot, "package.json"),
+		'{"name":"fixture-root","private":true,"workspaces":["packages/*"]}\n',
+	)
+	const lockPath = join(fixture.fixtureRoot, "bun.lock")
+	const lock = {
+		lockfileVersion: 1,
+		workspaces: {
+			"": { name: "fixture-root" },
+			"packages/fixture-skill": {
+				name: "fixture-skill",
+				peerDependencies: { shared: "^1.0.0" },
+			},
+			"packages/shared": { name: "shared", version: "1.2.0" },
+		},
+		packages: {
+			"fixture-skill": ["fixture-skill@workspace:packages/fixture-skill"],
+			shared: ["shared@workspace:packages/shared"],
+		},
+	}
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	mkdirSync(join(fixture.fixtureRoot, "node_modules"), { recursive: true })
+	symlinkSync(sharedWorkspace, join(fixture.fixtureRoot, "node_modules", "shared"), "dir")
+
+	const artifact = await bundleWorkspaceSkill(
+		fixture.fixtureRoot,
+		"fixture-skill",
+		fixture.workspace,
+		fixture.staging,
+	)
+	expect(new TextDecoder().decode(artifact.contents)).toContain("workspace-range-proof")
+
+	lock.workspaces["packages/shared"].version = "2.0.0"
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	await expect(
+		bundleWorkspaceSkill(
+			fixture.fixtureRoot,
+			"fixture-skill",
+			fixture.workspace,
+			join(fixture.fixtureRoot, "invalid-workspace-peer-staging"),
+		),
+	).rejects.toMatchObject({ code: "lock-invalid" })
+})
+
 test("dependency admission rejects a root manifest declaring trustedDependencies", () => {
 	const fixtureRoot = temporaryDirectory("trusted-dependencies-")
 	writeFileSync(

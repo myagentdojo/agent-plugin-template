@@ -494,6 +494,7 @@ export async function bundleWorkspaceSkill(
 
 interface FrozenLockWorkspace {
 	name?: string
+	version?: string
 	dependencies?: Record<string, string>
 	peerDependencies?: Record<string, string>
 	peerDependenciesMeta?: Record<string, { optional?: boolean }>
@@ -562,44 +563,43 @@ function parseLockPackage(key: string, value: unknown): ParsedLockPackage {
 }
 
 function resolveLockDependency(
+	lock: FrozenLock,
 	packages: Map<string, ParsedLockPackage>,
 	name: string,
 	requested: string,
 	parent?: ParsedLockPackage,
 ): ParsedLockPackage {
+	const satisfies = (entry: ParsedLockPackage | undefined): entry is ParsedLockPackage => {
+		if (entry?.name !== name) return false
+		if (requested.startsWith("workspace:")) return entry.reference.startsWith("workspace:")
+		if (!entry.reference.startsWith("workspace:")) {
+			return Bun.semver.satisfies(entry.reference, requested)
+		}
+		const workspace = lock.workspaces[entry.reference.slice("workspace:".length)]
+		return (
+			workspace?.name === entry.name &&
+			typeof workspace.version === "string" &&
+			Bun.semver.satisfies(workspace.version, requested)
+		)
+	}
 	if (parent) {
 		const nested = packages.get(`${parent.key}/${name}`)
-		if (nested?.name === name && Bun.semver.satisfies(nested.reference, requested)) return nested
+		if (satisfies(nested)) return nested
 		const hoisted = packages.get(name)
-		if (hoisted?.name === name && Bun.semver.satisfies(hoisted.reference, requested)) return hoisted
+		if (satisfies(hoisted)) return hoisted
 		throw new DependencyAdmissionError(
 			"lock-invalid",
 			`bun.lock cannot resolve ${name}@${requested} from ${parent.key}`,
 		)
 	}
 	const direct = packages.get(name)
-	if (
-		direct?.name === name &&
-		requested.startsWith("workspace:") &&
-		direct.reference.startsWith("workspace:")
-	) {
-		return direct
-	}
+	if (requested.startsWith("workspace:") && satisfies(direct)) return direct
 	if (direct?.name === name && direct.reference === requested) return direct
-	if (
-		direct?.name === name &&
-		!direct.reference.startsWith("workspace:") &&
-		Bun.semver.satisfies(direct.reference, requested)
-	) {
-		return direct
-	}
+	if (satisfies(direct)) return direct
 	const candidates = [...packages.values()].filter((entry) => entry.name === name)
 	const exact = candidates.filter((entry) => entry.reference === requested)
 	if (exact.length === 1) return exact[0]
-	const satisfying = candidates.filter(
-		(entry) =>
-			!entry.reference.startsWith("workspace:") && Bun.semver.satisfies(entry.reference, requested),
-	)
+	const satisfying = candidates.filter(satisfies)
 	if (satisfying.length === 1) return satisfying[0]
 	throw new DependencyAdmissionError(
 		"lock-invalid",
@@ -653,6 +653,7 @@ function resolveWorkspaceDependencyGraph(
 			parent?: ParsedLockPackage
 		}
 		const locked = resolveLockDependency(
+			lock,
 			packages,
 			dependency.name,
 			dependency.requested,
@@ -878,7 +879,7 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 			if (manifest.peerDependenciesMeta?.[peerName]?.optional === true) continue
 			let selectedPeer: ParsedLockPackage
 			try {
-				selectedPeer = resolveLockDependency(packages, peerName, peerRange, locked)
+				selectedPeer = resolveLockDependency(lock, packages, peerName, peerRange, locked)
 			} catch {
 				throw new DependencyAdmissionError(
 					"unresolved-peer",
