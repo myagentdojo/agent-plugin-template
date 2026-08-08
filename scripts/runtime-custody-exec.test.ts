@@ -1,6 +1,7 @@
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -993,6 +994,28 @@ test("AE8: a live writer's lock is never reclaimed", async () => {
 		sleeper.kill()
 		await sleeper.exited
 	}
+})
+
+test("a symlink-shaped repair lock is rejected without touching its target", () => {
+	const fixture = makeFixture()
+	const externalLock = temporaryDirectory("external-repair-lock-")
+	writeFileSync(
+		join(externalLock, "record"),
+		`host=${hostId()}\npid=999999\nstart=Thu Jan 1 00:00:00 1970\nstaging=stalenonce\n`,
+	)
+	const lockRoot = join(fixture.storeRoot, "locks")
+	mkdirSync(lockRoot, { recursive: true })
+	const lockPath = join(lockRoot, `bun-${fixture.lock.executableSha256}`)
+	symlinkSync(externalLock, lockPath)
+
+	const applied = runEngine(fixture, ["repair", "--apply"])
+	expect(applied.exitCode).toBe(20)
+	const envelope = readEnvelope(applied)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual([])
+	expect(lstatSync(lockPath).isSymbolicLink()).toBe(true)
+	expect(readdirSync(externalLock)).toEqual(["record"])
+	expect(existsSync(join(externalLock, ".reclaim-claim"))).toBe(false)
 })
 
 test("an unreadable existing lock record emits one envelope without reclaiming it", () => {

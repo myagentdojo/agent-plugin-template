@@ -551,6 +551,10 @@ writer_is_live() {
 
 reclaim_stale_lock() {
 	_rsl_expected_identity=$1
+	if [ -L "$lock_dir" ] || [ ! -d "$lock_dir" ]; then
+		diag 'repair lock path is not a plain directory'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed repair lock path from the private runtime cache, then retry.'
+	fi
 	# Atomically claim this exact directory before the final identity check. The
 	# fixed marker means only one current-version contender can reach rename; if
 	# the directory was replaced first, the marker lands in the replacement and
@@ -651,6 +655,10 @@ acquire_lock() {
 		if [ ! -e "$lock_dir" ] && [ ! -L "$lock_dir" ]; then
 			diag 'could not create the repair lock in the private runtime cache'
 			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache lock directory writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
+		if [ -L "$lock_dir" ] || [ ! -d "$lock_dir" ]; then
+			diag 'repair lock path is not a plain directory'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed repair lock path from the private runtime cache, then retry.'
 		fi
 		_al_attempts=$((_al_attempts + 1))
 		if [ "$_al_attempts" -gt 3 ]; then
