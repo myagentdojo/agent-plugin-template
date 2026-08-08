@@ -435,9 +435,9 @@ test("dependency admission follows the bounded production dependency graph", () 
 	})
 	const lockPath = join(fixtureRoot, "bun.lock")
 	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
-	lock.packages["runtime-package"][2] = { dependencies: { "runtime-child": "2.0.0" } }
+	lock.packages["runtime-package"][2] = { dependencies: { "runtime-child": "^2.0.0" } }
 	lock.packages["runtime-child"] = [
-		"runtime-child@2.0.0",
+		"runtime-child@2.3.1",
 		"",
 		{},
 		"sha512-runtime-child",
@@ -445,13 +445,55 @@ test("dependency admission follows the bounded production dependency graph", () 
 	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
 	writeFixturePackageStore(fixtureRoot, {
 		name: "runtime-child",
-		version: "2.0.0",
+		version: "2.3.1",
 		license: "ISC",
 	})
 	expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual([
 		"runtime-child",
 		"runtime-package",
 	])
+})
+
+test("dependency admission follows the parent-specific lock selection", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+	})
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.packages["runtime-package"][2] = { dependencies: { "runtime-child": "^2.0.0" } }
+	lock.packages["runtime-child"] = ["runtime-child@3.0.0", "", {}, "sha512-hoisted"]
+	lock.packages["runtime-package/runtime-child"] = [
+		"runtime-child@2.3.1",
+		"",
+		{},
+		"sha512-nested",
+	]
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	for (const version of ["2.3.1", "3.0.0"]) {
+		writeFixturePackageStore(fixtureRoot, {
+			name: "runtime-child",
+			version,
+			license: "ISC",
+		})
+	}
+	expect(admitDependencyClosure(fixtureRoot).map(({ name, version }) => `${name}@${version}`)).toEqual([
+		"runtime-child@2.3.1",
+		"runtime-package@1.0.0",
+	])
+})
+
+test("dependency admission rejects a transitive selection outside its requested range", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+	})
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.packages["runtime-package"][2] = { dependencies: { "runtime-child": "^2.0.0" } }
+	lock.packages["runtime-child"] = ["runtime-child@3.0.0", "", {}, "sha512-wrong-range"]
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(
+		/bun\.lock cannot resolve runtime-child@\^2\.0\.0 from runtime-package/,
+	)
 })
 
 test("dependency admission rejects a bare-key package at the wrong locked version", () => {

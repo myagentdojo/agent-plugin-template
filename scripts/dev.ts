@@ -22,6 +22,18 @@ const developmentMarketplaceName = `${pluginName}-dev`
 const developmentRoot = join(root, ".dev", "codex-marketplace")
 const stagedPluginRoot = join(developmentRoot, "plugins", pluginName)
 
+export const claudeWatchSources = [
+	{ relativePath: "runtime", recursive: true },
+	{ relativePath: "packages", recursive: true },
+	{ relativePath: "plugin/skills", recursive: true },
+	{ relativePath: "plugin/.claude-plugin", recursive: true },
+	{ relativePath: "plugin/.codex-plugin", recursive: true },
+	{ relativePath: "package.json", recursive: false },
+	{ relativePath: "bun.lock", recursive: false },
+	{ relativePath: "bunfig.toml", recursive: false },
+	{ relativePath: "plugin.config.json", recursive: false },
+] as const
+
 const help = `Usage: bun run dev -- <command> [options]
 
 Commands:
@@ -171,15 +183,9 @@ async function runClaude(options: Options): Promise<void> {
 		return
 	}
 
-	const watchedPaths = [
-		"runtime/src",
-		"plugin/skills",
-		"plugin/.claude-plugin",
-		"plugin/.codex-plugin",
-	]
 	let rebuildTimer: ReturnType<typeof setTimeout> | undefined
-	const watchers = watchedPaths.map((relativePath) =>
-		watch(join(root, relativePath), { recursive: true }, () => {
+	const watchers = claudeWatchSources.map(({ relativePath, recursive }) =>
+		watch(join(root, relativePath), { recursive }, () => {
 			if (rebuildTimer) clearTimeout(rebuildTimer)
 			rebuildTimer = setTimeout(() => {
 				console.error("\nPlugin source changed. Rebuilding portable distribution...")
@@ -222,27 +228,31 @@ function runCodex(options: Options): void {
 	if (options.launch) run(["codex"])
 }
 
-const options = parseOptions(process.argv.slice(2))
-if (!options) process.exit(0)
+async function main(): Promise<void> {
+	const options = parseOptions(process.argv.slice(2))
+	if (!options) return
 
-if (options.dryRun) {
-	const plan = {
-		harness: options.harness,
-		build: "bun run build",
-		source: options.harness === "claude" ? pluginRoot : stagedPluginRoot,
-		install:
-			options.harness === "claude"
-				? `claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`
-				: `codex plugin add ${pluginName}@${developmentMarketplaceName}`,
-		reload:
-			options.harness === "claude"
-				? "Run /reload-plugins after the watcher rebuilds"
-				: "Start a fresh Codex task after reinstall",
+	if (options.dryRun) {
+		const plan = {
+			harness: options.harness,
+			build: "bun run build",
+			source: options.harness === "claude" ? pluginRoot : stagedPluginRoot,
+			install:
+				options.harness === "claude"
+					? `claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`
+					: `codex plugin add ${pluginName}@${developmentMarketplaceName}`,
+			reload:
+				options.harness === "claude"
+					? "Run /reload-plugins after the watcher rebuilds"
+					: "Start a fresh Codex task after reinstall",
+		}
+		if (options.json) console.log(JSON.stringify(plan))
+		else console.log(Object.values(plan).join("\n"))
+	} else if (options.harness === "claude") {
+		await runClaude(options)
+	} else {
+		runCodex(options)
 	}
-	if (options.json) console.log(JSON.stringify(plan))
-	else console.log(Object.values(plan).join("\n"))
-} else if (options.harness === "claude") {
-	await runClaude(options)
-} else {
-	runCodex(options)
 }
+
+if (import.meta.main) await main()

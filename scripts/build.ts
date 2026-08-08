@@ -463,7 +463,18 @@ function resolveLockDependency(
 	packages: Map<string, ParsedLockPackage>,
 	name: string,
 	requested: string,
+	parent?: ParsedLockPackage,
 ): ParsedLockPackage {
+	if (parent) {
+		const nested = packages.get(`${parent.key}/${name}`)
+		if (nested?.name === name && Bun.semver.satisfies(nested.reference, requested)) return nested
+		const hoisted = packages.get(name)
+		if (hoisted?.name === name && Bun.semver.satisfies(hoisted.reference, requested)) return hoisted
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`bun.lock cannot resolve ${name}@${requested} from ${parent.key}`,
+		)
+	}
 	const direct = packages.get(name)
 	if (direct?.name === name && direct.reference === requested) return direct
 	const candidates = [...packages.values()].filter((entry) => entry.name === name)
@@ -552,7 +563,7 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 		Object.entries(lock.packages).map(([key, value]) => [key, parseLockPackage(key, value)]),
 	)
 	const catalog = loadSkillCatalog(root)
-	const pending: Array<{ name: string; requested: string }> = []
+	const pending: Array<{ name: string; requested: string; parent?: ParsedLockPackage }> = []
 	for (const skill of Object.values(catalog.skills)) {
 		if (skill.workspace === undefined) continue
 		const workspace = lock.workspaces[skill.workspace]
@@ -568,8 +579,17 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 	const reachablePackages = new Map<string, ParsedLockPackage>()
 	const visitedWorkspaces = new Set<string>()
 	while (pending.length > 0) {
-		const dependency = pending.pop() as { name: string; requested: string }
-		const locked = resolveLockDependency(packages, dependency.name, dependency.requested)
+		const dependency = pending.pop() as {
+			name: string
+			requested: string
+			parent?: ParsedLockPackage
+		}
+		const locked = resolveLockDependency(
+			packages,
+			dependency.name,
+			dependency.requested,
+			dependency.parent,
+		)
 		if (locked.reference.startsWith("workspace:")) {
 			const workspacePath = locked.reference.slice("workspace:".length)
 			if (visitedWorkspaces.has(workspacePath)) continue
@@ -586,7 +606,13 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 		}
 		if (reachablePackages.has(locked.key)) continue
 		reachablePackages.set(locked.key, locked)
-		pending.push(...Object.entries(locked.metadata.dependencies ?? {}).map(([name, requested]) => ({ name, requested })))
+		pending.push(
+			...Object.entries(locked.metadata.dependencies ?? {}).map(([name, requested]) => ({
+				name,
+				requested,
+				parent: locked,
+			})),
+		)
 	}
 	const lockedNames = new Set([...reachablePackages.values()].map((entry) => entry.name))
 

@@ -423,7 +423,11 @@ codexNativeTest("Codex local refresh changes bytes (Codex CLI required; fallback
 	expect(proof.codex.localRefresh.failureRestored).toBe(true)
 })
 
-test("Codex activation uses explicit skill launchers without lifecycle hooks", () => {
+test("Codex activation evidence matches the proof mode", () => {
+	if (proof.codex.mode === "fixture-copy") {
+		expect(proof.codex.activation).toBeNull()
+		return
+	}
 	expect(proof.codex.activation).toMatchObject({
 		pluginEnabled: true,
 		lifecycleHookPresent: false,
