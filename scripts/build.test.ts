@@ -150,6 +150,15 @@ test("validateBundleText keeps division after postfix operators executable", () 
 	}
 })
 
+test("validateBundleText keeps division after a contextual of identifier executable", () => {
+	expect(() =>
+		validateBundleText(
+			"skill-a",
+			`function ratio(of, target, y) { return of / import(target) / y; }`,
+		),
+	).toThrow(/computed dynamic import/)
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,

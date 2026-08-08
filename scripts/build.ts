@@ -152,7 +152,6 @@ function executableCodeMask(code: string): string {
 		"in",
 		"instanceof",
 		"new",
-		"of",
 		"return",
 		"throw",
 		"typeof",
