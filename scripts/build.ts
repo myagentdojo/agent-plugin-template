@@ -15,11 +15,7 @@ import { dirname, join, relative, resolve } from "node:path"
 
 import { loadPluginConfig } from "./plugin-config"
 import { compareCodeUnits, pluginPayloadInventory } from "./plugin-files"
-import {
-	checkRuntimeCustodyFiles,
-	loadSkillCatalog,
-	shellQuote,
-} from "./runtime-custody-config"
+import { checkRuntimeCustodyFiles, loadSkillCatalog, shellQuote } from "./runtime-custody-config"
 
 const nodeBuiltins = new Set(builtinModules)
 const managedBundlePattern = /^([a-z0-9]+(?:-[a-z0-9]+)*)-[a-f0-9]{16}\.js$/
@@ -36,8 +32,10 @@ const lifecycleScripts = ["preinstall", "install", "postinstall"] as const
 /** Precise reason one skill bundle was rejected before materialization. */
 export type BundleValidationCode =
 	| "missing-entry"
+	| "unsupported-entry"
 	| "entry-escape"
 	| "unresolved-import"
+	| "unadmitted-import"
 	| "parent-resolution"
 	| "native-addon"
 	| "computed-dynamic-import"
@@ -211,11 +209,40 @@ function isInsideDirectory(path: string, directory: string): boolean {
 	return path === directory || path.startsWith(`${directory}/`)
 }
 
+interface AdmittedModuleOwner {
+	root: string
+	bareImports: Set<string>
+}
+
+interface CatalogRuntimeSkill {
+	entry: string
+	workspace?: string
+}
+
+function isOwnedHelloWorldAdapter(skillId: string, skill: CatalogRuntimeSkill): boolean {
+	return (
+		skillId === "hello-world" &&
+		skill.workspace === undefined &&
+		skill.entry === "runtime/hello-world.js"
+	)
+}
+
+function barePackageName(specifier: string): string {
+	if (!specifier.startsWith("@")) return specifier.split("/", 1)[0]
+	return specifier.split("/", 2).join("/")
+}
+
 function createClosedResolutionPlugin(
 	realRoot: string,
 	skillId: string,
 	violations: BundleValidationError[],
+	allowedModuleRoots: string[],
+	moduleOwners: AdmittedModuleOwner[],
 ): import("bun").BunPlugin {
+	const ownersBySpecificity = [...moduleOwners].sort(
+		(left, right) => right.root.length - left.root.length,
+	)
+	const importerOwners = new Map<string, AdmittedModuleOwner | undefined>()
 	return {
 		name: "closed-dependency-resolution",
 		setup(builder) {
@@ -234,6 +261,29 @@ function createClosedResolutionPlugin(
 							skillId,
 							"unresolved-import",
 							`unresolved bare import "${specifier}" from ${relative(realRoot, args.importer)}`,
+						),
+					)
+					return { path: specifier, external: true }
+				}
+				let importer = args.importer
+				try {
+					importer = realpathSync(importer)
+				} catch {
+					// The resolver probe above already proved the importer's directory exists.
+				}
+				let owner = importerOwners.get(importer)
+				if (!importerOwners.has(importer)) {
+					owner = ownersBySpecificity.find((candidate) =>
+						isInsideDirectory(importer, candidate.root),
+					)
+					importerOwners.set(importer, owner)
+				}
+				if (!owner?.bareImports.has(barePackageName(specifier))) {
+					violations.push(
+						new BundleValidationError(
+							skillId,
+							"unadmitted-import",
+							`bare import "${specifier}" is not declared by ${relative(realRoot, importer)}`,
 						),
 					)
 					return { path: specifier, external: true }
@@ -264,6 +314,15 @@ function createClosedResolutionPlugin(
 						),
 					)
 					return undefined
+				}
+				if (!allowedModuleRoots.some((root) => isInsideDirectory(realResolved, root))) {
+					violations.push(
+						new BundleValidationError(
+							skillId,
+							"unadmitted-import",
+							`module is outside the workspace production dependency graph: ${relative(realRoot, realResolved)}`,
+						),
+					)
 				}
 				return undefined
 			})
@@ -296,9 +355,9 @@ export async function bundleWorkspaceSkill(
 	const workspaceRoot = join(realRoot, workspace)
 	let workspaceManifest: { main?: string }
 	try {
-		workspaceManifest = JSON.parse(
-			readFileSync(join(workspaceRoot, "package.json"), "utf8"),
-		) as { main?: string }
+		workspaceManifest = JSON.parse(readFileSync(join(workspaceRoot, "package.json"), "utf8")) as {
+			main?: string
+		}
 	} catch (error) {
 		throw new BundleValidationError(
 			skillId,
@@ -307,7 +366,11 @@ export async function bundleWorkspaceSkill(
 		)
 	}
 	const entryPoint = join(workspaceRoot, workspaceManifest.main ?? "")
-	if (typeof workspaceManifest.main !== "string" || !workspaceManifest.main || !existsSync(entryPoint)) {
+	if (
+		typeof workspaceManifest.main !== "string" ||
+		!workspaceManifest.main ||
+		!existsSync(entryPoint)
+	) {
 		throw new BundleValidationError(
 			skillId,
 			"missing-entry",
@@ -330,7 +393,14 @@ export async function bundleWorkspaceSkill(
 	}
 
 	const violations: BundleValidationError[] = []
-	const closedResolution = createClosedResolutionPlugin(realRoot, skillId, violations)
+	const moduleAdmission = workspaceModuleAdmission(realRoot, workspace, realWorkspaceRoot)
+	const closedResolution = createClosedResolutionPlugin(
+		realRoot,
+		skillId,
+		violations,
+		moduleAdmission.roots,
+		moduleAdmission.owners,
+	)
 
 	const outputDirectory = join(stagingDirectory, skillId)
 	mkdirSync(outputDirectory, { recursive: true })
@@ -486,6 +556,130 @@ function resolveLockDependency(
 	)
 }
 
+interface ResolvedWorkspaceDependencyGraph {
+	workspacePaths: Set<string>
+	packages: Map<string, ParsedLockPackage>
+}
+
+function resolveWorkspaceDependencyGraph(
+	lock: FrozenLock,
+	packages: Map<string, ParsedLockPackage>,
+	workspacePath: string,
+): ResolvedWorkspaceDependencyGraph {
+	const workspace = lock.workspaces[workspacePath]
+	if (!workspace) {
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`catalog workspace ${JSON.stringify(workspacePath)} is absent from bun.lock`,
+		)
+	}
+	const workspacePaths = new Set([workspacePath])
+	const reachablePackages = new Map<string, ParsedLockPackage>()
+	const pending: Array<{
+		name: string
+		requested: string
+		parent?: ParsedLockPackage
+	}> = Object.entries(workspace.dependencies ?? {}).map(([name, requested]) => ({
+		name,
+		requested,
+	}))
+
+	while (pending.length > 0) {
+		const dependency = pending.pop() as {
+			name: string
+			requested: string
+			parent?: ParsedLockPackage
+		}
+		const locked = resolveLockDependency(
+			packages,
+			dependency.name,
+			dependency.requested,
+			dependency.parent,
+		)
+		if (locked.reference.startsWith("workspace:")) {
+			const dependencyWorkspacePath = locked.reference.slice("workspace:".length)
+			if (workspacePaths.has(dependencyWorkspacePath)) continue
+			workspacePaths.add(dependencyWorkspacePath)
+			const dependencyWorkspace = lock.workspaces[dependencyWorkspacePath]
+			if (!dependencyWorkspace) {
+				throw new DependencyAdmissionError(
+					"lock-invalid",
+					`package ${locked.name} refers to missing workspace ${JSON.stringify(dependencyWorkspacePath)}`,
+				)
+			}
+			pending.push(
+				...Object.entries(dependencyWorkspace.dependencies ?? {}).map(([name, requested]) => ({
+					name,
+					requested,
+				})),
+			)
+			continue
+		}
+		if (reachablePackages.has(locked.key)) continue
+		reachablePackages.set(locked.key, locked)
+		pending.push(
+			...Object.entries(locked.metadata.dependencies ?? {}).map(([name, requested]) => ({
+				name,
+				requested,
+				parent: locked,
+			})),
+		)
+	}
+	return { workspacePaths, packages: reachablePackages }
+}
+
+function moduleOwner(root: string): AdmittedModuleOwner {
+	const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+		name?: string
+		dependencies?: Record<string, string>
+		peerDependencies?: Record<string, string>
+	}
+	return {
+		root,
+		bareImports: new Set([
+			...Object.keys(manifest.dependencies ?? {}),
+			...Object.keys(manifest.peerDependencies ?? {}),
+			...(manifest.name ? [manifest.name] : []),
+		]),
+	}
+}
+
+function workspaceModuleAdmission(
+	realRoot: string,
+	workspacePath: string,
+	realWorkspaceRoot: string,
+): { roots: string[]; owners: AdmittedModuleOwner[] } {
+	if (!existsSync(join(realRoot, "bun.lock"))) {
+		return {
+			roots: [realWorkspaceRoot],
+			owners: [moduleOwner(realWorkspaceRoot)],
+		}
+	}
+	const lock = parseFrozenLock(realRoot)
+	if (!lock.workspaces[workspacePath]) {
+		return {
+			roots: [realWorkspaceRoot],
+			owners: [moduleOwner(realWorkspaceRoot)],
+		}
+	}
+	const packages = new Map(
+		Object.entries(lock.packages).map(([key, value]) => [key, parseLockPackage(key, value)]),
+	)
+	const graph = resolveWorkspaceDependencyGraph(lock, packages, workspacePath)
+	const roots = [
+		...new Set([
+			...[...graph.workspacePaths].map((path) => realpathSync(join(realRoot, path))),
+			...[...graph.packages.values()].map((entry) =>
+				realpathSync(dependencyStoreDirectory(realRoot, entry.name, entry.reference)),
+			),
+		]),
+	]
+	return {
+		roots,
+		owners: roots.map(moduleOwner),
+	}
+}
+
 function dependencyStoreDirectory(root: string, name: string, version: string): string {
 	for (const storeName of [`${name}@${version}`, `${name.replace("/", "+")}@${version}`]) {
 		const candidate = join(root, "node_modules", ".bun", storeName, "node_modules", name)
@@ -563,63 +757,30 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 		Object.entries(lock.packages).map(([key, value]) => [key, parseLockPackage(key, value)]),
 	)
 	const catalog = loadSkillCatalog(root)
-	const pending: Array<{ name: string; requested: string; parent?: ParsedLockPackage }> = []
+	const graphs: ResolvedWorkspaceDependencyGraph[] = []
 	for (const skill of Object.values(catalog.skills)) {
 		if (skill.workspace === undefined) continue
-		const workspace = lock.workspaces[skill.workspace]
-		if (!workspace) {
-			throw new DependencyAdmissionError(
-				"lock-invalid",
-				`catalog workspace ${JSON.stringify(skill.workspace)} is absent from bun.lock`,
-			)
-		}
-		pending.push(...Object.entries(workspace.dependencies ?? {}).map(([name, requested]) => ({ name, requested })))
+		graphs.push(resolveWorkspaceDependencyGraph(lock, packages, skill.workspace))
 	}
 
 	const reachablePackages = new Map<string, ParsedLockPackage>()
-	const visitedWorkspaces = new Set<string>()
-	while (pending.length > 0) {
-		const dependency = pending.pop() as {
-			name: string
-			requested: string
-			parent?: ParsedLockPackage
+	const graphsByPackage = new Map<string, ResolvedWorkspaceDependencyGraph[]>()
+	for (const graph of graphs) {
+		for (const [key, locked] of graph.packages) {
+			reachablePackages.set(key, locked)
+			const packageGraphs = graphsByPackage.get(key) ?? []
+			packageGraphs.push(graph)
+			graphsByPackage.set(key, packageGraphs)
 		}
-		const locked = resolveLockDependency(
-			packages,
-			dependency.name,
-			dependency.requested,
-			dependency.parent,
-		)
-		if (locked.reference.startsWith("workspace:")) {
-			const workspacePath = locked.reference.slice("workspace:".length)
-			if (visitedWorkspaces.has(workspacePath)) continue
-			visitedWorkspaces.add(workspacePath)
-			const workspace = lock.workspaces[workspacePath]
-			if (!workspace) {
-				throw new DependencyAdmissionError(
-					"lock-invalid",
-					`package ${locked.name} refers to missing workspace ${JSON.stringify(workspacePath)}`,
-				)
-			}
-			pending.push(...Object.entries(workspace.dependencies ?? {}).map(([name, requested]) => ({ name, requested })))
-			continue
-		}
-		if (reachablePackages.has(locked.key)) continue
-		reachablePackages.set(locked.key, locked)
-		pending.push(
-			...Object.entries(locked.metadata.dependencies ?? {}).map(([name, requested]) => ({
-				name,
-				requested,
-				parent: locked,
-			})),
-		)
 	}
-	const lockedNames = new Set([...reachablePackages.values()].map((entry) => entry.name))
 
 	const admitted: AdmittedDependency[] = []
-	for (const { name, reference: version } of [...reachablePackages.values()].sort((left, right) =>
+	const admittedIdentities = new Set<string>()
+	for (const locked of [...reachablePackages.values()].sort(
+		(left, right) =>
 		compareCodeUnits(left.name, right.name) || compareCodeUnits(left.reference, right.reference),
 	)) {
+		const { name, reference: version } = locked
 		const packageDirectory = dependencyStoreDirectory(root, name, version)
 		const manifest = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"))
 		for (const script of lifecycleScripts) {
@@ -649,13 +810,29 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 				`${name}@${version} declares optionalDependencies, which may carry undeclared native artifacts`,
 			)
 		}
-		for (const peerName of Object.keys(manifest.peerDependencies ?? {})) {
+		for (const [peerName, peerRange] of Object.entries(
+			(manifest.peerDependencies ?? {}) as Record<string, string>,
+		)) {
 			if (manifest.peerDependenciesMeta?.[peerName]?.optional === true) continue
-			if (!lockedNames.has(peerName)) {
+			let selectedPeer: ParsedLockPackage
+			try {
+				selectedPeer = resolveLockDependency(packages, peerName, peerRange, locked)
+			} catch {
 				throw new DependencyAdmissionError(
 					"unresolved-peer",
-					`${name}@${version} has unresolved peer "${peerName}"`,
+					`${name}@${version} has unresolved peer "${peerName}" for ${peerRange}`,
 				)
+			}
+			for (const graph of graphsByPackage.get(locked.key) ?? []) {
+				const peerReachable = selectedPeer.reference.startsWith("workspace:")
+					? graph.workspacePaths.has(selectedPeer.reference.slice("workspace:".length))
+					: graph.packages.has(selectedPeer.key)
+				if (!peerReachable) {
+					throw new DependencyAdmissionError(
+						"unresolved-peer",
+						`${name}@${version} has unresolved peer "${peerName}" for ${peerRange}`,
+					)
+				}
 			}
 		}
 		if (typeof manifest.license !== "string" || !permissiveLicenses.has(manifest.license)) {
@@ -664,12 +841,16 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 				`${name}@${version} license ${JSON.stringify(manifest.license ?? null)} is not in the permissive allowlist`,
 			)
 		}
+		const identity = `${name}@${version}`
+		if (!admittedIdentities.has(identity)) {
+			admittedIdentities.add(identity)
 		admitted.push({
 			name,
 			version,
 			license: manifest.license,
 			licenseText: readLicenseText(packageDirectory),
 		})
+	}
 	}
 	return admitted
 }
@@ -689,7 +870,9 @@ export function renderThirdPartyNotices(dependencies: AdmittedDependency[]): str
 	const sections = dependencies.map((dependency) => {
 		const heading = `## ${dependency.name}@${dependency.version} (${dependency.license})`
 		const text = dependency.licenseText?.trimEnd()
-		return text ? `${heading}\n\n${text}\n` : `${heading}\n\nLicense text not distributed by the package.\n`
+		return text
+			? `${heading}\n\n${text}\n`
+			: `${heading}\n\nLicense text not distributed by the package.\n`
 	})
 	return `# Third-Party Notices\n\nGenerated from bun.lock. Edit workspace dependencies, run bun install, then bun run build.\n\n${sections.join("\n")}`
 }
@@ -756,6 +939,15 @@ function serializeInventory(result: BundleClosureResult): string {
  */
 export async function buildWorkspaceBundles(root: string): Promise<BundleClosureResult> {
 	const catalog = loadSkillCatalog(root)
+	for (const [skillId, skill] of Object.entries(catalog.skills)) {
+		if (skill.workspace === undefined && !isOwnedHelloWorldAdapter(skillId, skill)) {
+			throw new BundleValidationError(
+				skillId,
+				"unsupported-entry",
+				"non-workspace runtime entries are unsupported; add a workspace bundle or use the owned hello-world adapter",
+			)
+		}
+	}
 	const workspaceSkills = Object.entries(catalog.skills)
 		.filter(([, skill]) => skill.workspace !== undefined)
 		.sort(([left], [right]) => compareCodeUnits(left, right))
@@ -767,7 +959,7 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 	const artifacts: BundleArtifact[] = []
 	try {
 		const helloWorld = catalog.skills["hello-world"]
-		if (helloWorld?.workspace === undefined && helloWorld?.entry === "runtime/hello-world.js") {
+		if (helloWorld && isOwnedHelloWorldAdapter("hello-world", helloWorld)) {
 			artifacts.push(await buildHelloWorldRuntime(root, stagingDirectory))
 		}
 		for (const [skillId, skill] of workspaceSkills) {
@@ -784,24 +976,20 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 	for (const [skillId, skill] of Object.entries(catalog.skills).sort(([left], [right]) =>
 		compareCodeUnits(left, right),
 	)) {
-		if (skill.workspace !== undefined) continue
-		const generatedArtifact = artifactsBySkill.get(skillId)
-		const bundle = generatedArtifact?.contents ?? readFileSync(join(root, "plugin", skill.entry))
-		bundles[skillId] = {
-			path: skill.entry,
-			bytes: bundle.byteLength,
-			sha256: sha256Hex(new Uint8Array(bundle)),
-		}
+		const artifact = artifactsBySkill.get(skillId)
+		if (!artifact) {
+			throw new BundleValidationError(
+				skillId,
+				"unsupported-entry",
+				"catalog runtime entry has no generated artifact",
+			)
 	}
-	for (const artifact of artifacts) {
-		if (catalog.skills[artifact.skillId]?.workspace !== undefined) {
-			bundles[artifact.skillId] = {
-				path: `runtime/${artifact.fileName}`,
+		bundles[skillId] = {
+			path: skill.workspace === undefined ? skill.entry : `runtime/${artifact.fileName}`,
 				bytes: artifact.bytes,
 				sha256: artifact.sha256,
 			}
 		}
-	}
 	const result: BundleClosureResult = {
 		bundles,
 		notices: {
@@ -861,6 +1049,11 @@ export function validateBundleClosure(root: string): void {
 	}
 
 	for (const [skillId, skill] of Object.entries(catalog.skills)) {
+		if (skill.workspace === undefined && !isOwnedHelloWorldAdapter(skillId, skill)) {
+			throw new Error(
+				`bundle closure: unsupported non-workspace runtime entry for ${skillId}; add a workspace bundle`,
+			)
+		}
 		if (!existsSync(join(root, "plugin", "skills", skillId, "SKILL.md"))) {
 			throw new Error(`bundle closure: missing SKILL.md for ${skillId}`)
 		}
@@ -893,7 +1086,10 @@ export function validateBundleClosure(root: string): void {
 			throw new Error(`bundle closure: missing bundle file ${record.path} for ${skillId}`)
 		}
 		const contents = readFileSync(bundlePath)
-		if (contents.byteLength !== record.bytes || sha256Hex(new Uint8Array(contents)) !== record.sha256) {
+		if (
+			contents.byteLength !== record.bytes ||
+			sha256Hex(new Uint8Array(contents)) !== record.sha256
+		) {
 			throw new Error(`bundle closure: stale bundle for ${skillId}; run bun run build`)
 		}
 	}
@@ -972,7 +1168,7 @@ export function validateBunOnlyPayload(root: string): void {
 		required.push(
 			skill.workspace === undefined
 				? skill.entry
-				: bundleInventory.bundles[skillId]?.path ?? `runtime/${skillId}-MISSING.js`,
+				: (bundleInventory.bundles[skillId]?.path ?? `runtime/${skillId}-MISSING.js`),
 		)
 	}
 	for (const path of required) {
@@ -1020,7 +1216,10 @@ export function validateBunOnlyPayload(root: string): void {
 		}
 		if (manifestPath === ".codex-plugin/plugin.json") {
 			const capabilities = manifest.interface?.capabilities
-			if (!Array.isArray(capabilities) || requiredCapabilities.some((item) => !capabilities.includes(item))) {
+			if (
+				!Array.isArray(capabilities) ||
+				requiredCapabilities.some((item) => !capabilities.includes(item))
+			) {
 				throw new Error("Bun payload closure: Codex capability disclosure is incomplete")
 			}
 		}
@@ -1048,7 +1247,15 @@ export async function buildHelloWorldRuntime(
 			sourcemap: "none",
 			minify: true,
 			env: "disable",
-			plugins: [createClosedResolutionPlugin(realpathSync(root), skillId, violations)],
+			plugins: [
+				createClosedResolutionPlugin(
+					realpathSync(root),
+					skillId,
+					violations,
+					[realpathSync(join(root, "runtime", "src"))],
+					[],
+				),
+			],
 			banner: "// Generated from runtime/src/. Edit source, then run bun run build.",
 		})
 	} catch (error) {
