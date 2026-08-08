@@ -246,6 +246,34 @@ function createClosedResolutionPlugin(
 	return {
 		name: "closed-dependency-resolution",
 		setup(builder) {
+			const rejectedLoad = { contents: "export default {};", loader: "js" as const }
+			function resolvedPathViolation(
+				requestedPath: string,
+				realResolved: string,
+			): BundleValidationError | undefined {
+				if (requestedPath.endsWith(".node") || realResolved.endsWith(".node")) {
+					return new BundleValidationError(
+						skillId,
+						"native-addon",
+						`native addon resolved to ${realResolved}`,
+					)
+				}
+				if (!isInsideDirectory(realResolved, realRoot)) {
+					return new BundleValidationError(
+						skillId,
+						"parent-resolution",
+						`module resolved outside the repository: ${realResolved}`,
+					)
+				}
+				if (!allowedModuleRoots.some((root) => isInsideDirectory(realResolved, root))) {
+					return new BundleValidationError(
+						skillId,
+						"unadmitted-import",
+						`module is outside the workspace production dependency graph: ${relative(realRoot, realResolved)}`,
+					)
+				}
+				return undefined
+			}
 			builder.onResolve({ filter: /^(?:\.{1,2}\/|\/)/ }, (args) => {
 				let realResolved: string
 				try {
@@ -255,47 +283,22 @@ function createClosedResolutionPlugin(
 				} catch {
 					return undefined
 				}
-				if (args.path.endsWith(".node") || realResolved.endsWith(".node")) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"native-addon",
-							`native addon resolved to ${realResolved}`,
-						),
-					)
-					return { path: args.path, external: true }
-				}
-				if (!isInsideDirectory(realResolved, realRoot)) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"parent-resolution",
-							`module resolved outside the repository: ${realResolved}`,
-						),
-					)
-					return { path: args.path, external: true }
-				}
-				if (!allowedModuleRoots.some((root) => isInsideDirectory(realResolved, root))) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"unadmitted-import",
-							`module is outside the workspace production dependency graph: ${relative(realRoot, realResolved)}`,
-						),
-					)
+				const violation = resolvedPathViolation(args.path, realResolved)
+				if (violation) {
+					violations.push(violation)
 					return { path: args.path, external: true }
 				}
 				return undefined
 			})
-			// Validation only: Bun's own condition-aware resolver performs the real
-			// resolution so require and import conditions stay correct. This probe is
-			// used only to turn a missing bare import into our typed error; containment
-			// and native-addon checks use Bun's actual resolved onLoad path below.
+			// Validation only: Bun's own condition-aware resolver still performs the
+			// build resolution. This probe fails closed before Bun loads a bare asset;
+			// onLoad below repeats containment against Bun's actual resolved file path.
 			builder.onResolve({ filter: /^[^./]/ }, (args) => {
 				const specifier = args.path
 				if (allowedRuntimeSpecifier(specifier)) return undefined
+				let realResolved: string
 				try {
-					Bun.resolveSync(specifier, dirname(args.importer))
+					realResolved = realpathSync(Bun.resolveSync(specifier, dirname(args.importer)))
 				} catch {
 					violations.push(
 						new BundleValidationError(
@@ -329,44 +332,30 @@ function createClosedResolutionPlugin(
 					)
 					return { path: specifier, external: true }
 				}
+				const violation = resolvedPathViolation(specifier, realResolved)
+				if (violation) {
+					violations.push(violation)
+					return { path: specifier, external: true }
+				}
 				return undefined
 			})
-			builder.onLoad({ filter: /\.(?:[cm]?[jt]sx?|json|node)$/ }, (args) => {
-				if (args.namespace !== "file") return undefined
-				const realResolved = realpathSync(args.path)
-				if (args.path.endsWith(".node") || realResolved.endsWith(".node")) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"native-addon",
-							`native addon resolved to ${realResolved}`,
-						),
-					)
-					// Do not hand a rejected native file back to Bun's loader. The
-					// accumulated typed violation is thrown immediately after the build.
-					return { contents: "export default {};", loader: "js" }
-				}
-				if (!isInsideDirectory(realResolved, realRoot)) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"parent-resolution",
-							`module resolved outside the repository: ${realResolved}`,
-						),
-					)
+			builder.onLoad(
+				{
+					filter: /\.(?:[cm]?[jt]sx?|css|jsonc?|json5|toml|ya?ml|txt|wasm|node|html)$/,
+					namespace: "file",
+				},
+				(args) => {
+					const realResolved = realpathSync(args.path)
+					const violation = resolvedPathViolation(args.path, realResolved)
+					if (violation) {
+						violations.push(violation)
+						// Do not hand a rejected file back to Bun's loader. The accumulated
+						// typed violation is thrown immediately after the build.
+						return rejectedLoad
+					}
 					return undefined
-				}
-				if (!allowedModuleRoots.some((root) => isInsideDirectory(realResolved, root))) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"unadmitted-import",
-							`module is outside the workspace production dependency graph: ${relative(realRoot, realResolved)}`,
-						),
-					)
-				}
-				return undefined
-			})
+				},
+			)
 		},
 	}
 }

@@ -6,10 +6,11 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { afterEach, beforeAll, expect, test } from "bun:test"
 
@@ -713,6 +714,71 @@ test("a non-JavaScript asset outside the production graph is rejected", async ()
 		fixture,
 		"unadmitted-import",
 		/module is outside the workspace production dependency graph/,
+	)
+})
+
+test("an admitted workspace text asset keeps Bun's built-in loader behavior", async () => {
+	const fixture = fixtureWorkspace(`import text from "./message.txt";console.log(text);`)
+	writeFileSync(
+		join(fixture.fixtureRoot, "packages", "fixture-skill", "src", "message.txt"),
+		"allowed workspace text\n",
+	)
+	const artifact = await bundleWorkspaceSkill(
+		fixture.fixtureRoot,
+		"fixture-skill",
+		fixture.workspace,
+		fixture.staging,
+	)
+	expect(new TextDecoder().decode(artifact.contents)).toContain("allowed workspace text")
+})
+
+test("a bare non-JavaScript asset resolving outside the repository is rejected", async () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "asset-package", version: "1.0.0", license: "MIT" },
+	})
+	const workspaceDirectory = join(fixtureRoot, "packages", "fixture-skill")
+	mkdirSync(join(workspaceDirectory, "src"), { recursive: true })
+	writeFileSync(
+		join(workspaceDirectory, "package.json"),
+		`${JSON.stringify({
+			name: "fixture-skill",
+			private: true,
+			type: "module",
+			main: "src/main.js",
+			dependencies: { "asset-package": "1.0.0" },
+		})}\n`,
+	)
+	writeFileSync(
+		join(workspaceDirectory, "src", "main.js"),
+		`import text from "asset-package/asset.txt";console.log(text);`,
+	)
+	const outsideRoot = temporaryDirectory("bare-asset-escape-")
+	const outsideAsset = join(outsideRoot, "asset.txt")
+	writeFileSync(outsideAsset, "build-host content\n")
+	const packageAsset = join(
+		fixtureRoot,
+		"node_modules",
+		".bun",
+		"asset-package@1.0.0",
+		"node_modules",
+		"asset-package",
+		"asset.txt",
+	)
+	symlinkSync(outsideAsset, packageAsset)
+	symlinkSync(
+		dirname(packageAsset),
+		join(fixtureRoot, "node_modules", "asset-package"),
+		"dir",
+	)
+
+	await expectBundleRejection(
+		{
+			fixtureRoot,
+			workspace: "packages/fixture-skill",
+			staging: join(fixtureRoot, "staging"),
+		},
+		"parent-resolution",
+		/resolved outside the repository/,
 	)
 })
 
