@@ -764,6 +764,20 @@ test("AE8: concurrent applies publish exactly one valid blob and both callers en
 	expect(run.exitCode).toBe(0)
 })
 
+test("AE8: repair fails closed when its process start identity cannot be established", () => {
+	const toolDir = makeToolDir({ ps: "#!/bin/sh\nexit 1\n" })
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual([])
+	expect(String(envelope.nextAction)).toContain("process inspection")
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+})
+
 test("AE8: a provably dead writer's lock is reclaimed with only its staging removed", () => {
 	const fixture = makeFixture()
 	// a reaped process: provably dead pid with a mismatching start token

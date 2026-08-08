@@ -715,7 +715,10 @@ acquire_lock() {
 	while :; do
 		if "$tool_mkdir" "$lock_dir" 2>/dev/null; then
 			lock_acquired=1
-			_al_start=$(start_token "$$") || _al_start=unknown
+			_al_start=$(start_token "$$") || {
+				diag 'could not establish repair writer identity'
+				fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore process inspection for the current user, then retry runtime repair.'
+			}
 			# Publish the record atomically: a contender reading $lock_dir/record
 			# never sees a half-written record and so never classifies this live
 			# writer as dead from an empty pid field.
