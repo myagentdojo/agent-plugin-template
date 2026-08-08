@@ -695,7 +695,10 @@ verify_staged() {
 		fail_apply 23 EXECUTABLE_HASH_MISMATCH "$(side_effects_json)" false 'The extracted executable hash does not match the lock; do not install it. Refresh the runtime lock through review.'
 	fi
 	# Execute permission is granted only after byte and hash verification (R12).
-	"$tool_chmod" 700 "$staged_path"
+	if ! "$tool_chmod" 700 "$staged_path" 2>/dev/null; then
+		diag 'could not make the verified staged runtime executable'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
 	sanitize_bun_environment
 	_vs_version=''
 	if ! _vs_version=$("$staged_path" --config=/dev/null --version </dev/null 2>/dev/null); then

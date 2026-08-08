@@ -818,6 +818,20 @@ exec ${realMv} "$@"
 	expect(existsSync(fixture.blobPath)).toBe(false)
 })
 
+test("a staged chmod failure emits one envelope and releases apply state", () => {
+	const toolDir = makeToolDir({
+		chmod: "#!/bin/sh\nexit 1\n",
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	expect(readEnvelope(apply).code).toBe("CACHE_ROOT_UNSAFE")
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
 // --- run stays custody-read-only, including on a read-only cache --------------
 
 test("run does not write into the custody store and launches from a read-only cache", () => {
