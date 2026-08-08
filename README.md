@@ -520,7 +520,7 @@ These canaries prove this repository's Git publishing transport and native Git-m
   executes `bun --version` before publication and refuses an unusable binary.
 - Bun is pinned by version and per-target archive/executable digests; users do not install or pin it themselves.
 - Publisher-reviewed bundles and dependencies execute with the user's normal Bun and OS capabilities. This is not a sandbox or an untrusted-plugin runtime.
-- Native addons, computed dynamic imports, runtime code generation, undeclared assets, and runtime package installation are rejected from the closed bundle contract.
+- The build rejects native addons, statically visible computed loaders and direct `eval`/`Function` use, undeclared assets, and runtime package installation. These are deterministic bundle-hygiene checks, not adversarial capability confinement; publisher review owns indirect or obfuscated code, and architecture-layer isolation owns untrusted code (ADR 0006).
 - Claude reloads a direct development plugin in the existing session. Codex needs a staged reinstall and fresh task.
 - Runtime lifecycle hooks, prewarm, doctor, inventory, and prune commands are intentionally absent.
 - Managed, workspace-installed, or non-removable plugins require administrator replacement or rollback.
