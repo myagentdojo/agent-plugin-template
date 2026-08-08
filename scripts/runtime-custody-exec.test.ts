@@ -662,6 +662,48 @@ test("AE6: a tampered blob never executes, denied repair preserves state, approv
 	expect(bundleReport(retried).skill).toBe("skill-a")
 })
 
+test("approved repair replaces a directory-shaped corrupt blob destination", () => {
+	const fixture = makeFixture()
+	mkdirSync(fixture.blobPath, { recursive: true })
+	writeFileSync(join(fixture.blobPath, "debris"), "not-a-runtime")
+
+	const preview = runEngine(fixture, ["repair"])
+	expect(preview.exitCode).toBe(0)
+	expect((readEnvelope(preview).state as { before: string }).before).toBe("corrupt")
+
+	const applied = applyRepair(fixture)
+	expect(applied.sideEffects).toEqual(["published-runtime"])
+	expect(applied.state).toEqual({ before: "corrupt", after: "valid" })
+	expect(statSync(fixture.blobPath).isFile()).toBe(true)
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+})
+
+test("a directory-shaped corrupt blob removal failure emits one envelope and cleans apply state", () => {
+	const realRm = Bun.which("rm")
+	if (!realRm) throw new Error("rm is required by the test fixture")
+	const toolDir = makeToolDir({
+		rm: `#!/bin/sh
+last=''
+for arg in "$@"; do last=$arg; done
+case "$last" in */bun/*/bun) exit 1 ;; esac
+exec ${realRm} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	mkdirSync(fixture.blobPath, { recursive: true })
+	writeFileSync(join(fixture.blobPath, "debris"), "not-a-runtime")
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual([])
+	expect(envelope.retrySafe).toBe(true)
+	expect(statSync(fixture.blobPath).isDirectory()).toBe(true)
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+})
+
 // --- AE7: cold offline stays read-only; apply retries later -------------------
 
 test("AE7: cold offline run stays read-only and apply fails retry-later, then succeeds with connectivity", () => {
@@ -736,6 +778,72 @@ test("AE8: a provably dead writer's lock is reclaimed with only its staging remo
 	// only the dead writer's staging was removed
 	expect(existsSync(join(fixture.storeRoot, "staging", "stalenonce"))).toBe(false)
 	expect(existsSync(join(fixture.storeRoot, "staging", "othernonce"))).toBe(true)
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+})
+
+test("a stale writer staging cleanup failure emits one envelope after freeing the lock", () => {
+	const realRm = Bun.which("rm")
+	if (!realRm) throw new Error("rm is required by the test fixture")
+	const toolDir = makeToolDir({
+		rm: `#!/bin/sh
+last=''
+for arg in "$@"; do last=$arg; done
+case "$last" in */staging/stalenonce) exit 1 ;; esac
+exec ${realRm} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	mkdirSync(join(fixture.storeRoot, "staging", "stalenonce"), { recursive: true })
+	writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual(["reclaimed-stale-lock"])
+	expect(envelope.retrySafe).toBe(true)
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(existsSync(join(fixture.storeRoot, "staging", "stalenonce"))).toBe(true)
+	expect(existsSync(fixture.blobPath)).toBe(false)
+	const retried = applyRepair(fixture)
+	expect(retried.code).toBe("REPAIR_APPLIED")
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+})
+
+test("a claimed stale-lock cleanup failure emits one envelope after clearing staging", () => {
+	const realRm = Bun.which("rm")
+	if (!realRm) throw new Error("rm is required by the test fixture")
+	const toolDir = makeToolDir({
+		rm: `#!/bin/sh
+last=''
+for arg in "$@"; do last=$arg; done
+case "$last" in */locks/reclaim-*) exit 1 ;; esac
+exec ${realRm} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	mkdirSync(join(fixture.storeRoot, "staging", "stalenonce"), { recursive: true })
+	writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual(["reclaimed-stale-lock"])
+	expect(envelope.retrySafe).toBe(true)
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toHaveLength(1)
+	expect(existsSync(join(fixture.storeRoot, "staging", "stalenonce"))).toBe(false)
+	expect(existsSync(fixture.blobPath)).toBe(false)
+	const retried = applyRepair(fixture)
+	expect(retried.code).toBe("REPAIR_APPLIED")
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 })
 

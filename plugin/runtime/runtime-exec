@@ -544,12 +544,24 @@ reclaim_stale_lock() {
 		# Someone else already claimed or re-created the lock; retry acquisition.
 		return 0
 	fi
+	_rsl_cleanup_failed=0
 	case "$rec_staging" in
 	'' | *[!a-zA-Z0-9-]*) : ;;
-	*) "$tool_rm" -rf "$store_root/staging/$rec_staging" ;;
+	*)
+		if ! "$tool_rm" -rf "$store_root/staging/$rec_staging" 2>/dev/null; then
+			diag 'could not remove staging left by the stale repair writer'
+			_rsl_cleanup_failed=1
+		fi
+		;;
 	esac
-	"$tool_rm" -rf "$_rsl_claim"
+	if ! "$tool_rm" -rf "$_rsl_claim" 2>/dev/null; then
+		diag 'could not remove the claimed stale repair lock'
+		_rsl_cleanup_failed=1
+	fi
 	add_side_effect 'reclaimed-stale-lock'
+	if [ "$_rsl_cleanup_failed" = 1 ]; then
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The stale repair lock was reclaimed, but cleanup failed. Make the private runtime cache writable, remove stale staging or reclaim debris, then retry.'
+	fi
 	diag 'reclaimed a stale repair lock left by a dead writer'
 }
 
@@ -737,6 +749,15 @@ publish_blob() {
 	if ! path_is_safe "$blob_dir" 'runtime blob directory'; then
 		diag "unsafe blob directory: $unsafe_reason"
 		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Make the runtime cache private: chown it to the current user with mode 700, or point XDG_CACHE_HOME at a private directory.'
+	fi
+	# mv replaces a regular file or symlink, but treats an existing directory as
+	# a destination. Remove a verified-corrupt non-regular destination first so
+	# the digest path can be restored to exactly one executable file.
+	if { [ -e "$blob_path" ] || [ -L "$blob_path" ]; } && { [ -L "$blob_path" ] || [ ! -f "$blob_path" ]; }; then
+		if ! "$tool_rm" -rf "$blob_path" 2>/dev/null; then
+			diag 'could not remove the non-regular corrupt runtime destination'
+			fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
 	fi
 	# Same-filesystem atomic rename: a partial executable is never visible at
 	# the blob path, and a prior valid blob is replaced only by verified bytes.
