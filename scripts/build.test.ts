@@ -170,9 +170,11 @@ test("validateBundleText keeps division after expression parentheses executable"
 })
 
 test("validateBundleText does not treat control-keyword member names as conditions", () => {
-	expect(() =>
-		validateBundleText("skill-a", `const ratio = obj.if(ok) / import(target) / y;`),
-	).toThrow(/computed dynamic import/)
+	for (const memberCall of ["obj.if(ok)", "obj /*a*/ . /*b*/ if(ok)", "this.#if(ok)"]) {
+		expect(() =>
+			validateBundleText("skill-a", `const ratio = ${memberCall} / import(target) / y;`),
+		).toThrow(/computed dynamic import/)
+	}
 })
 
 test("validateBundleText rejects a computed runtime require", () => {

@@ -801,7 +801,7 @@ test("AE8: a provably dead writer's lock is reclaimed with only its staging remo
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 })
 
-test("an abandoned stale-lock reclaim marker is recovered after a bounded grace period", () => {
+test("an abandoned stale-lock reclaim marker fails closed without unlinking inspected state", () => {
 	const fixture = makeFixture()
 	const lockDir = writeLockRecord(fixture, {
 		pid: 999999,
@@ -816,32 +816,13 @@ test("an abandoned stale-lock reclaim marker is recovered after a bounded grace 
 	const old = new Date(Date.now() - 2 * 60 * 1000)
 	utimesSync(marker, old, old)
 
-	const applied = applyRepair(fixture)
-	expect(applied.code).toBe("REPAIR_APPLIED")
-	expect(applied.sideEffects).toEqual([
-		"cleared-stale-reclaim-marker",
-		"reclaimed-stale-lock",
-		"published-runtime",
-	])
-	expect(existsSync(marker)).toBe(false)
-})
-
-test("a fresh stale-lock reclaim marker remains owned by its contender", () => {
-	const fixture = makeFixture()
-	const lockDir = writeLockRecord(fixture, {
-		pid: 999999,
-		start: "Thu Jan 1 00:00:00 1970",
-		staging: "stalenonce",
-	})
-	const marker = join(lockDir, ".reclaim-claim")
-	writeFileSync(
-		marker,
-		`host=${hostId()}\npid=999999\nstart=Thu Jan 1 00:00:00 1970\nnonce=dead-claimant\n`,
-	)
-
 	const apply = runEngine(fixture, ["repair", "--apply"])
-	expect(apply.exitCode).toBe(22)
-	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual([])
+	expect(envelope.retrySafe).toBe(false)
+	expect(String(envelope.nextAction)).toContain("approve removal")
 	expect(existsSync(marker)).toBe(true)
 })
 
@@ -864,45 +845,6 @@ test("a live reclaim claimant remains protected after the grace period", () => {
 	expect(apply.exitCode).toBe(22)
 	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
 	expect(existsSync(marker)).toBe(true)
-})
-
-test("stale-marker recovery revalidates the exact identity that was aged", () => {
-	const realFind = Bun.which("find")
-	const realMv = Bun.which("mv")
-	if (!realFind) throw new Error("find is required by the test fixture")
-	if (!realMv) throw new Error("mv is required by the test fixture")
-	const liveHost = hostId()
-	const liveStart = startToken(process.pid)
-	const toolDir = makeToolDir({
-		find: `#!/bin/sh
-target=$1
-${realFind} "$@"
-case "$target" in
-*/.reclaim-claim)
-	printf 'host=%s\npid=%s\nstart=%s\nnonce=%s\n' '${liveHost}' '${process.pid}' '${liveStart}' 'replacement-live-claimant' >"$target.replacement"
-	${realMv} -f "$target.replacement" "$target"
-	;;
-esac
-`,
-	})
-	const fixture = makeFixture({ hostToolDirs: toolDir })
-	const lockDir = writeLockRecord(fixture, {
-		pid: 999999,
-		start: "Thu Jan 1 00:00:00 1970",
-		staging: "stalenonce",
-	})
-	const marker = join(lockDir, ".reclaim-claim")
-	writeFileSync(
-		marker,
-		`host=${liveHost}\npid=999999\nstart=Thu Jan 1 00:00:00 1970\nnonce=aged-dead-claimant\n`,
-	)
-	const old = new Date(Date.now() - 2 * 60 * 1000)
-	utimesSync(marker, old, old)
-
-	const apply = runEngine(fixture, ["repair", "--apply"])
-	expect(apply.exitCode).toBe(22)
-	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
-	expect(readFileSync(marker, "utf8")).toContain("nonce=replacement-live-claimant")
 })
 
 test("concurrent stale-lock reclaimers cannot claim a replacement lock", async () => {

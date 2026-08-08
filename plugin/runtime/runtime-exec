@@ -519,11 +519,6 @@ lock_is_older_than_grace() {
 	[ -n "$_lig_hit" ]
 }
 
-reclaim_marker_is_older_than_grace() {
-	_rmig_hit=$("$tool_find" "$1" -prune -mmin "+$RECORDLESS_LOCK_GRACE_MINS" 2>/dev/null) || return 1
-	[ -n "$_rmig_hit" ]
-}
-
 read_reclaim_marker() {
 	mr_host=''
 	mr_pid=''
@@ -546,13 +541,6 @@ read_reclaim_marker() {
 	case "$mr_pid" in '' | *[!0-9]*) return 1 ;; esac
 	case "$mr_nonce" in '' | *[!A-Za-z0-9_.:-]*) return 1 ;; esac
 	[ -n "$mr_host" ] && [ -n "$mr_start" ]
-}
-
-reclaim_marker_identity() {
-	_rmi_line=$("$tool_ls" -idn "$1" 2>/dev/null) || _rmi_line=''
-	set -- $_rmi_line
-	printf 'inode=%s\nhost=%s\npid=%s\nstart=%s\nnonce=%s\n' \
-		"${1-}" "$mr_host" "$mr_pid" "$mr_start" "$mr_nonce"
 }
 
 reclaim_marker_owner_is_live() {
@@ -635,18 +623,9 @@ reclaim_stale_lock() {
 			if ! read_reclaim_marker "$_rsl_marker"; then
 				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed reclaim marker from the private runtime cache, then retry.'
 			fi
-			_rsl_marker_identity=$(reclaim_marker_identity "$_rsl_marker")
-			if ! reclaim_marker_is_older_than_grace "$_rsl_marker"; then return 0; fi
-			if ! read_reclaim_marker "$_rsl_marker"; then return 0; fi
-			_rsl_current_marker_identity=$(reclaim_marker_identity "$_rsl_marker")
-			if [ "$_rsl_current_marker_identity" != "$_rsl_marker_identity" ]; then return 0; fi
 			if reclaim_marker_owner_is_live; then return 0; fi
-			if ! "$tool_rm" -f "$_rsl_marker" 2>/dev/null; then
-				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'An abandoned reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
-			fi
-			add_side_effect 'cleared-stale-reclaim-marker'
-			diag 'cleared an abandoned stale-lock reclaim marker'
-			return 0
+			diag 'repair lock has an abandoned reclaim marker'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Confirm that no repair is active, ask the user to approve removal of the abandoned .reclaim-claim file, then retry runtime repair.'
 		fi
 		diag 'could not claim the stale repair lock safely'
 		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the private runtime cache writable and remove malformed reclaim debris, then retry.'
