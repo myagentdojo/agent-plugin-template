@@ -1057,6 +1057,21 @@ test("AE8: a live writer's lock is never reclaimed", async () => {
 	}
 })
 
+test("AE8: a writer remains live when its start identity cannot be re-inspected", () => {
+	const toolDir = makeToolDir({ ps: "#!/bin/sh\nexit 1\n" })
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	const lockDir = writeLockRecord(fixture, {
+		pid: process.pid,
+		start: startToken(process.pid),
+		staging: "livewriter",
+	})
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(22)
+	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
+	expect(existsSync(lockDir)).toBe(true)
+})
+
 test("a symlink-shaped repair lock is rejected without touching its target", () => {
 	const fixture = makeFixture()
 	const externalLock = temporaryDirectory("external-repair-lock-")

@@ -222,7 +222,9 @@ function executableCodeMask(code: string): string {
 		let braceDepth = 0
 		let regexAllowed = true
 		let pendingControlCondition = false
+		let pendingControlBlock = false
 		const controlConditionParens: boolean[] = []
+		const statementBlockBraces: boolean[] = []
 		while (index < code.length) {
 			const character = code[index]
 			if (/\s/.test(character)) {
@@ -231,11 +233,13 @@ function executableCodeMask(code: string): string {
 			}
 			if (character === "'" || character === '"') {
 				skipQuoted(character)
+				pendingControlBlock = false
 				regexAllowed = false
 				continue
 			}
 			if (character === "`") {
 				scanTemplate()
+				pendingControlBlock = false
 				regexAllowed = false
 				continue
 			}
@@ -253,6 +257,7 @@ function executableCodeMask(code: string): string {
 			}
 			if (character === "/" && regexAllowed) {
 				skipRegex()
+				pendingControlBlock = false
 				regexAllowed = false
 				continue
 			}
@@ -269,6 +274,7 @@ function executableCodeMask(code: string): string {
 						masked[before] !== "#" &&
 						controlConditionKeywords.has(identifier)
 				}
+				pendingControlBlock = false
 				regexAllowed = regexPrefixKeywords.has(identifier)
 				continue
 			}
@@ -276,12 +282,15 @@ function executableCodeMask(code: string): string {
 				const start = index++
 				while (/[A-Za-z0-9_.]/.test(code[index] ?? "")) index++
 				copy(start, index)
+				pendingControlBlock = false
 				regexAllowed = false
 				continue
 			}
 			if (character === "{") {
 				masked[index++] = character
 				braceDepth++
+				statementBlockBraces.push(pendingControlBlock)
+				pendingControlBlock = false
 				regexAllowed = true
 				continue
 			}
@@ -289,12 +298,14 @@ function executableCodeMask(code: string): string {
 				masked[index++] = character
 				if (stopAtTemplateBrace && braceDepth === 0) return
 				braceDepth = Math.max(0, braceDepth - 1)
-				regexAllowed = false
+				pendingControlBlock = false
+				regexAllowed = statementBlockBraces.pop() ?? false
 				continue
 			}
 			if ((character === "+" || character === "-") && code[index + 1] === character) {
 				copy(index, index + 2)
 				index += 2
+				pendingControlBlock = false
 				regexAllowed = false
 				continue
 			}
@@ -302,17 +313,20 @@ function executableCodeMask(code: string): string {
 				masked[index++] = character
 				controlConditionParens.push(pendingControlCondition)
 				pendingControlCondition = false
+				pendingControlBlock = false
 				regexAllowed = true
 				continue
 			}
 			if (character === ")") {
 				masked[index++] = character
 				pendingControlCondition = false
-				regexAllowed = controlConditionParens.pop() ?? false
+				pendingControlBlock = controlConditionParens.pop() ?? false
+				regexAllowed = pendingControlBlock
 				continue
 			}
 			masked[index++] = character
 			pendingControlCondition = false
+			pendingControlBlock = false
 			regexAllowed = !/[)\]]/.test(character)
 		}
 	}

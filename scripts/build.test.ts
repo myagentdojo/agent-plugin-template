@@ -161,6 +161,10 @@ test("validateBundleText keeps division after a contextual of identifier executa
 
 test("validateBundleText masks regex literals after control-flow conditions", () => {
 	validateBundleText("skill-a", `if (ok) /require|Function|eval/.test(value);`)
+	validateBundleText("skill-a", `if (ok) {} /require|Function|eval/.test(value);`)
+	expect(() =>
+		validateBundleText("skill-a", `const value = {} / import(target) / y;`),
+	).toThrow(/computed dynamic import/)
 })
 
 test("validateBundleText keeps division after expression parentheses executable", () => {

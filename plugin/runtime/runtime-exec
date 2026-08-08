@@ -586,7 +586,7 @@ writer_is_live() {
 	'' | *[!0-9]*) return 1 ;;
 	esac
 	if ! kill -0 "$rec_pid" 2>/dev/null; then return 1; fi
-	_wl_now=$(start_token "$rec_pid") || _wl_now=''
+	_wl_now=$(start_token "$rec_pid") || return 0
 	if [ "$_wl_now" = "$rec_start" ]; then return 0; fi
 	return 1
 }
