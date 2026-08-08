@@ -89,6 +89,35 @@ function payloadDigest(root: string): string {
 	return payloadInventorySha256(root, regularFiles(root))
 }
 
+export function networkIsolatedCommand(
+	command: string[],
+	platform = process.platform,
+	uid = process.getuid?.(),
+	gid = process.getgid?.(),
+): string[] {
+	if (platform === "darwin") {
+		return [
+			"/usr/bin/sandbox-exec",
+			"-p",
+			"(version 1) (allow default) (deny network*)",
+			...command,
+		]
+	}
+	if (platform === "linux" && uid !== undefined && gid !== undefined) {
+		return [
+			"/usr/bin/sudo",
+			"-n",
+			"/usr/bin/unshare",
+			"--net",
+			`--setuid=${uid}`,
+			`--setgid=${gid}`,
+			"--",
+			...command,
+		]
+	}
+	throw new Error(`network isolation is unsupported on ${platform}`)
+}
+
 function runLauncher(
 	launcher: string,
 	arguments_: string[],
@@ -97,21 +126,14 @@ function runLauncher(
 	cacheRoot: string,
 	networkDenied: boolean,
 ): ReturnType<typeof Bun.spawnSync> {
+	const command = [launcher, ...arguments_]
 	return Bun.spawnSync({
-		cmd: [launcher, ...arguments_],
+		cmd: networkDenied ? networkIsolatedCommand(command) : command,
 		cwd,
 		env: {
 			HOME: homeRoot,
 			XDG_CACHE_HOME: cacheRoot,
 			PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-			...(networkDenied
-				? {
-						ALL_PROXY: "http://127.0.0.1:9",
-						HTTPS_PROXY: "http://127.0.0.1:9",
-						HTTP_PROXY: "http://127.0.0.1:9",
-						NO_PROXY: "",
-					}
-				: {}),
 		},
 		stdin: "ignore",
 		stdout: "pipe",

@@ -2,7 +2,11 @@ import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { currentRuntimeTarget, parsePlatformProofOptions } from "./prove-runtime-platform"
+import {
+	currentRuntimeTarget,
+	networkIsolatedCommand,
+	parsePlatformProofOptions,
+} from "./prove-runtime-platform"
 
 const root = resolve(import.meta.dir, "..")
 
@@ -50,6 +54,25 @@ test("host identity maps only supported Darwin and Linux architectures", () => {
 	expect(currentRuntimeTarget("linux", "arm64")).toBe("linux-arm64")
 	expect(currentRuntimeTarget("linux", "x64")).toBe("linux-x64")
 	expect(currentRuntimeTarget("win32", "x64")).toBeUndefined()
+})
+
+test("skill runs use kernel-enforced network isolation on each supported host", () => {
+	expect(networkIsolatedCommand(["/plugin/bin/skill-a"], "darwin", 501, 20)).toEqual([
+		"/usr/bin/sandbox-exec",
+		"-p",
+		"(version 1) (allow default) (deny network*)",
+		"/plugin/bin/skill-a",
+	])
+	expect(networkIsolatedCommand(["/plugin/bin/skill-a"], "linux", 1001, 1001)).toEqual([
+		"/usr/bin/sudo",
+		"-n",
+		"/usr/bin/unshare",
+		"--net",
+		"--setuid=1001",
+		"--setgid=1001",
+		"--",
+		"/plugin/bin/skill-a",
+	])
 })
 
 test.each([

@@ -712,7 +712,10 @@ publish_blob() {
 	fi
 	# Same-filesystem atomic rename: a partial executable is never visible at
 	# the blob path, and a prior valid blob is replaced only by verified bytes.
-	"$tool_mv" -f "$staged_path" "$blob_path"
+	if ! "$tool_mv" -f "$staged_path" "$blob_path" 2>/dev/null; then
+		diag 'could not publish the verified runtime blob'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
 	add_side_effect 'published-runtime'
 	assess_blob
 	if [ "$blob_status" != valid ]; then
