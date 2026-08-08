@@ -214,13 +214,11 @@ export interface CodexProof {
 		enabledStateRestored: boolean
 		failureRestored: boolean
 	}
-	trust: {
+	activation: {
 		pluginEnabled: boolean
-		hookDefinitionPresent: boolean
-		hookTrusted: false
-		preTrustExecution: "skipped"
-		separateFromEnablement: true
-		interactiveAcceptance: string
+		lifecycleHookPresent: false
+		executionEntry: "explicit skill launcher"
+		runtimeRepairOwner: "agent workflow with human approval"
 	}
 }
 
@@ -235,7 +233,7 @@ interface HarnessInstallProof {
 	claude: ClaudeProof
 	codex: CodexProof
 	versionAgreement: true
-	trustDefinitionChanged: true
+	payloadClosureChanged: true
 	skips: HarnessSkip[]
 	nextAction: string
 }
@@ -465,14 +463,6 @@ function createFixtureRelease(sourceRoot: string, temporaryRoot: string): Fixtur
 		`${JSON.stringify(targetConfig, null, 2)}\n`,
 	)
 	writeGeneratedFiles(repositoryRoot, targetConfig)
-	const runtimePath = join(repositoryRoot, "plugin", "runtime", "hello-world.js")
-	writeFileSync(
-		runtimePath,
-		readFileSync(runtimePath, "utf8").replace(
-			`const PLUGIN_VERSION = "${config.version}";`,
-			`const PLUGIN_VERSION = "${targetConfig.version}";`,
-		),
-	)
 	const targetRef = `v${targetConfig.version}`
 	snapshotFixture(repositoryRoot, targetRef, `release ${targetRef}`)
 
@@ -1067,49 +1057,35 @@ export function assertReplacementAdmission(
 }
 
 /**
- * Bind Codex trust review to the version-bearing hook command and executable closure bytes.
+ * Bind native-install review to the exact versioned plugin payload bytes.
  *
  * @param pluginRoot - Installed plugin payload root
- * @returns Exact definition and executable-closure hashes used for review comparison
- * @throws {Error} When the hook definition omits the installed manifest version
+ * @returns Exact inventory and payload hashes used for review comparison
  *
  * @example
  * ```typescript
- * const evidence = codexHookTrustEvidence(installedPath)
+ * const evidence = runtimeClosureEvidence(installedPath)
  * ```
  */
-export function codexHookTrustEvidence(pluginRoot: string): {
+export function runtimeClosureEvidence(pluginRoot: string): {
 	version: string
-	command: string
-	definitionHash: string
-	executableClosureHash: string
+	inventoryHash: string
+	payloadHash: string
 } {
 	const manifest = JSON.parse(
 		readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 	)
-	const hooks = JSON.parse(readFileSync(join(pluginRoot, "hooks", "codex", "hooks.json"), "utf8"))
-	const commandDefinition = hooks.hooks.SessionStart[0].hooks[0].command as string
-	if (!commandDefinition.includes(`--plugin-version ${manifest.version}`)) {
-		throw new Error("Codex hook definition does not carry the installed plugin version")
-	}
-	const closure = [
-		"bin/hello-world",
-		"runtime/hello-world.js",
-		...readdirSync(join(pluginRoot, "runtime"))
-			.filter((entry) => entry.startsWith("qjs-"))
-			.map((entry) => `runtime/${entry}`),
-	].sort()
-	const closureHash = createHash("sha256")
-	for (const relativePath of closure) {
-		closureHash.update(relativePath)
-		closureHash.update("\0")
-		closureHash.update(readFileSync(join(pluginRoot, relativePath)))
+	const inventory = regularFiles(pluginRoot)
+	const payloadHash = createHash("sha256")
+	for (const relativePath of inventory) {
+		payloadHash.update(relativePath)
+		payloadHash.update("\0")
+		payloadHash.update(readFileSync(join(pluginRoot, relativePath)))
 	}
 	return {
 		version: manifest.version,
-		command: commandDefinition,
-		definitionHash: createHash("sha256").update(commandDefinition).digest("hex"),
-		executableClosureHash: closureHash.digest("hex"),
+		inventoryHash: createHash("sha256").update(inventory.join("\0")).digest("hex"),
+		payloadHash: payloadHash.digest("hex"),
 	}
 }
 
@@ -1133,8 +1109,8 @@ function runHarnessInstallProof(
 	const pluginConfig = loadPluginConfig(repositoryRoot)
 	const skips: HarnessSkip[] = [
 		{
-			case: "Codex interactive /hooks trust acceptance",
-			reason: "Trust acceptance requires a human interactive task; proof records enabled plus untrusted pre-task state instead.",
+			case: "Codex Desktop discovery and approved repair/retry smoke",
+			reason: "A named manual release receipt in private XDG state owns the Desktop interaction.",
 		},
 		{
 			case: "Private SSH/HTTPS marketplace fetch and background refresh",
@@ -1170,13 +1146,13 @@ function runHarnessInstallProof(
 			reason: "Codex CLI unavailable; isolated direct-copy cache evidence remains byte-complete.",
 		})
 	}
-	const trustBase = codexHookTrustEvidence(join(fixture.base.checkoutRoot, "plugin"))
-	const trustTarget = codexHookTrustEvidence(join(fixture.target.checkoutRoot, "plugin"))
+	const trustBase = runtimeClosureEvidence(join(fixture.base.checkoutRoot, "plugin"))
+	const trustTarget = runtimeClosureEvidence(join(fixture.target.checkoutRoot, "plugin"))
 	if (
-		trustBase.definitionHash === trustTarget.definitionHash ||
-		trustBase.executableClosureHash === trustTarget.executableClosureHash
+		trustBase.inventoryHash !== trustTarget.inventoryHash ||
+		trustBase.payloadHash === trustTarget.payloadHash
 	) {
-		throw new Error("Codex release change did not invalidate exact-definition trust evidence")
+		throw new Error("release change did not preserve inventory while changing exact payload bytes")
 	}
 	const versionAgreement =
 		claude.version === fixture.base.manifestVersion && codex.version === fixture.base.manifestVersion
@@ -1192,7 +1168,7 @@ function runHarnessInstallProof(
 		claude,
 		codex,
 		versionAgreement,
-		trustDefinitionChanged: true,
+		payloadClosureChanged: true,
 		skips,
 		nextAction: "Review the JSON evidence; run hosted and interactive qualifications only when their paths changed.",
 	}

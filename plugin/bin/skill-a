@@ -2,4 +2,4 @@
 # Generated from runtime/skill-catalog.json. Edit the source, then run bun run generate.
 set -eu
 plugin_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-exec "$plugin_root/runtime/runtime-exec" run hello-world -- "$@"
+exec "$plugin_root/runtime/runtime-exec" run skill-a -- "$@"

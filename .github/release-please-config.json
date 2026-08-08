@@ -24,9 +24,7 @@
         { "type": "json", "path": "plugin.config.json", "jsonpath": "$.version" },
         { "type": "json", "path": ".claude-plugin/marketplace.json", "jsonpath": "$.metadata.version" },
         { "type": "json", "path": "plugin/.claude-plugin/plugin.json", "jsonpath": "$.version" },
-        { "type": "json", "path": "plugin/.codex-plugin/plugin.json", "jsonpath": "$.version" },
-        { "type": "generic", "path": "plugin/hooks/codex/hooks.json" },
-        { "type": "generic", "path": "plugin/runtime/hello-world.js" }
+        { "type": "json", "path": "plugin/.codex-plugin/plugin.json", "jsonpath": "$.version" }
       ]
     }
   }

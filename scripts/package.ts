@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { validateBundleClosure } from "./build"
+import { validateBunOnlyPayload } from "./build"
 import { copyPluginPayload, directoryArchiveEntries } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
@@ -61,7 +61,7 @@ function validateSourceCommit(value: string, source: string): string {
 
 try {
 	// Missing, stale, or orphaned bundle mappings fail before packaging.
-	validateBundleClosure(root)
+	validateBunOnlyPayload(root)
 	const sourceCommit = resolveSourceCommit()
 	mkdirSync(outputRoot, { recursive: true })
 	copyPluginPayload(root, packageRoot)

@@ -383,7 +383,6 @@ function claudeManifest(config: PluginConfig): GeneratedFile {
 			license: config.license,
 			keywords: config.keywords,
 			skills: "./skills/",
-			hooks: "./hooks/claude/hooks.json",
 		}),
 	}
 }
@@ -400,7 +399,6 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 			license: config.license,
 			keywords: config.keywords,
 			skills: "./skills/",
-			hooks: "./hooks/codex/hooks.json",
 			interface: {
 				displayName: config.displayName,
 				shortDescription: config.shortDescription,
@@ -413,41 +411,6 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 		}),
 	}
 }
-
-function codexHooks(config: PluginConfig): GeneratedFile {
-	return {
-		path: "plugin/hooks/codex/hooks.json",
-		contents: serialize({
-			hooks: {
-				SessionStart: [
-					{
-						matcher: "*",
-						hooks: [
-							{
-								type: "command",
-								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event SessionStart --plugin-version ${config.version} # x-release-please-version`,
-								timeout: 10,
-								statusMessage: "Running portable plugin hook",
-							},
-						],
-					},
-				],
-				Stop: [
-					{
-						hooks: [
-							{
-								type: "command",
-								command: `"\${PLUGIN_ROOT}/bin/hello-world" hook --harness codex --event Stop --plugin-version ${config.version} # x-release-please-version`,
-								timeout: 10,
-							},
-						],
-					},
-				],
-			},
-		}),
-	}
-}
-
 /** Render native Claude and Codex files from canonical metadata. */
 export function renderGeneratedFiles(config: PluginConfig): GeneratedFile[] {
 	validateConfig(config)
@@ -456,7 +419,6 @@ export function renderGeneratedFiles(config: PluginConfig): GeneratedFile[] {
 		codexMarketplace(config),
 		claudeManifest(config),
 		codexManifest(config),
-		codexHooks(config),
 	]
 }
 

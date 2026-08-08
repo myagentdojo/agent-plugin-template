@@ -39,7 +39,6 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 		"license",
 		"keywords",
 		"skills",
-		"hooks",
 	]) {
 		expect(claudeManifest[field], `Claude manifest field ${field}`).toBeDefined()
 		expect(codexManifest[field], `Codex manifest field ${field}`).toBeDefined()
@@ -84,7 +83,8 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 	expect(config.defaultPrompts.every((prompt: string) => prompt.length <= 128)).toBe(true)
 
 	for (const manifest of [claudeManifest, codexManifest]) {
-		for (const field of ["skills", "hooks"]) {
+		expect(manifest).not.toHaveProperty("hooks")
+		for (const field of ["skills"]) {
 			const path = manifest[field]
 			expect(path.startsWith("./"), `${field} must be plugin-relative`).toBe(true)
 			expect(existsSync(join(pluginRoot, path)), `${field} target must exist`).toBe(true)
@@ -232,17 +232,6 @@ test("package validation and directory-readiness text limits remain separate bou
 		errors: ["displayName must be at most 30 characters"],
 	})
 	expect(() => renderGeneratedFiles(packageReady)).toThrow("directory-readiness text subset")
-})
-
-test("generated Codex hook commands bind the canonical plugin version", () => {
-	const codexHooks = JSON.parse(
-		readFileSync(join(pluginRoot, "hooks", "codex", "hooks.json"), "utf8"),
-	)
-	for (const event of ["SessionStart", "Stop"]) {
-		expect(codexHooks.hooks[event][0].hooks[0].command).toContain(
-			`--plugin-version ${config.version}`,
-		)
-	}
 })
 
 const claudeExecutable = Bun.which("claude")

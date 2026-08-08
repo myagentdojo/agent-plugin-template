@@ -5,8 +5,6 @@ description: "Run the bundled skill-a proof to show an ESM skill using ESM and C
 
 # Skill A
 
-Status: not yet invocable — the custody launcher for this skill is not rendered against the runtime custody engine yet; it activates with launcher rendering.
+Resolve the installed plugin root two directories above this `SKILL.md`, then run its `bin/skill-a` launcher.
 
-Resolve the installed plugin root two directories above this `SKILL.md`, then run the active `runtime/skill-a-*.js` bundle listed in `runtime/bundle-inventory.json` with the plugin-managed Bun runtime.
-
-Report the JSON result. The bundle carries its dependencies inside one file. It makes no network request and needs no source workspace, package metadata, or `node_modules`.
+Report the JSON result. If the launcher returns a custody JSON envelope, follow the `runtime-custody` skill to preview repair, ask for approval, apply the repair, and retry. The bundle carries its dependencies inside one file and needs no source workspace, package metadata, or `node_modules`.

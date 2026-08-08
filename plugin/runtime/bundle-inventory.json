@@ -1,6 +1,11 @@
 {
   "schemaVersion": 1,
   "bundles": {
+    "hello-world": {
+      "path": "runtime/hello-world.js",
+      "bytes": 995,
+      "sha256": "aedde54417e663d86bb183dda8115095c48e53a9e9fc91d8b0d4dec4b09e6202"
+    },
     "skill-a": {
       "path": "runtime/skill-a-27cb243179e5c93d.js",
       "bytes": 7838,

@@ -20,12 +20,10 @@ const resetPaths = [
 	".agents/plugins/marketplace.json",
 	"plugin/.claude-plugin/plugin.json",
 	"plugin/.codex-plugin/plugin.json",
-	"plugin/hooks/codex/hooks.json",
 	".github/release-please-config.json",
 	"package.json",
 	".github/.release-please-manifest.json",
 	"CHANGELOG.md",
-	"plugin/runtime/hello-world.js",
 ]
 
 function copyTemplate(prefix: string): string {
@@ -128,22 +126,6 @@ function createReleasedTemplate(prefix: string): string {
 		writeJson(manifestPath, manifest)
 	}
 
-	const runtimePath = join(temporaryRoot, "plugin", "runtime", "hello-world.js")
-	writeFileSync(
-		runtimePath,
-		readFileSync(runtimePath, "utf8").replace(
-			'const PLUGIN_VERSION = "0.1.0";',
-			'const PLUGIN_VERSION = "9.9.9";',
-		),
-	)
-	const codexHooksPath = join(temporaryRoot, "plugin", "hooks", "codex", "hooks.json")
-	writeFileSync(
-		codexHooksPath,
-		readFileSync(codexHooksPath, "utf8").replaceAll(
-			"--plugin-version 0.1.0",
-			"--plugin-version 9.9.9",
-		),
-	)
 	writeJson(join(temporaryRoot, ".github", ".release-please-manifest.json"), { ".": "9.9.9" })
 	writeFileSync(join(temporaryRoot, "CHANGELOG.md"), "# Changelog\n\n## 9.9.9\n\n- Template history\n")
 	return temporaryRoot
@@ -221,8 +203,8 @@ test("template user initializes both harness manifests from one metadata source"
 		version: initialVersion,
 		defaultEnabled: false,
 		skills: "./skills/",
-		hooks: "./hooks/claude/hooks.json",
 	})
+	expect(claudeManifest).not.toHaveProperty("hooks")
 	const claudeMarketplace = JSON.parse(
 		readFileSync(join(temporaryRoot, ".claude-plugin", "marketplace.json"), "utf8"),
 	)
@@ -239,9 +221,9 @@ test("template user initializes both harness manifests from one metadata source"
 		name: "dojo-hello",
 		version: initialVersion,
 		skills: "./skills/",
-		hooks: "./hooks/codex/hooks.json",
 		interface: { displayName: "Dojo Hello" },
 	})
+	expect(codexManifest).not.toHaveProperty("hooks")
 
 	const codexMarketplace = JSON.parse(
 		readFileSync(join(temporaryRoot, ".agents", "plugins", "marketplace.json"), "utf8"),
@@ -357,8 +339,6 @@ test("initialization resets recipient release lineage to 0.1.0", () => {
 	expect(codexManifest.version).toBe("0.1.0")
 	expect(claudeMarketplace.metadata.version).toBe("0.1.0")
 
-	const runtime = readFileSync(join(temporaryRoot, "plugin", "runtime", "hello-world.js"), "utf8")
-	expect(runtime).toContain('// x-release-please-start-version\nconst PLUGIN_VERSION = "0.1.0";\n// x-release-please-end')
 	expect(
 		JSON.parse(readFileSync(join(temporaryRoot, ".github", ".release-please-manifest.json"), "utf8")),
 	).toEqual({})
@@ -368,12 +348,7 @@ test("initialization resets recipient release lineage to 0.1.0", () => {
 	)
 	expect(releaseConfig.packages["."]["package-name"]).toBe("dojo-hello")
 
-	const codexHooks = JSON.parse(
-		readFileSync(join(temporaryRoot, "plugin", "hooks", "codex", "hooks.json"), "utf8"),
-	)
-	for (const event of ["SessionStart", "Stop"]) {
-		expect(codexHooks.hooks[event][0].hooks[0].command).toContain("--plugin-version 0.1.0")
-	}
+	expect(existsSync(join(temporaryRoot, "plugin", "hooks"))).toBe(false)
 })
 
 test("reinitialization without force preserves recipient release files", () => {
@@ -430,18 +405,6 @@ test.each([
 		mutate: (temporaryRoot: string) =>
 			writeFileSync(join(temporaryRoot, ".github", "release-please-config.json"), "{\n"),
 		expected: "release reset file .github/release-please-config.json is not valid JSON",
-	},
-	{
-		case: "missing runtime version markers",
-		path: "plugin/runtime/hello-world.js",
-		mutate: (temporaryRoot: string) => {
-			const path = join(temporaryRoot, "plugin", "runtime", "hello-world.js")
-			writeFileSync(
-				path,
-				readFileSync(path, "utf8").replace("// x-release-please-start-version", "// missing"),
-			)
-		},
-		expected: "plugin/runtime/hello-world.js is missing release version markers",
 	},
 ] as const)("$case returns structured failure naming $path before writes", ({ mutate, expected }) => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-reset-failure-")

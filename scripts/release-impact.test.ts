@@ -110,8 +110,6 @@ describe("release impact", () => {
 			".claude-plugin/marketplace.json",
 			"plugin/.claude-plugin/plugin.json",
 			"plugin/.codex-plugin/plugin.json",
-			"plugin/runtime/hello-world.js",
-			"plugin/hooks/codex/hooks.json",
 			".github/.release-please-manifest.json",
 			"CHANGELOG.md",
 		].map((path) => ({ path, versionOnly: true }))
@@ -141,8 +139,6 @@ describe("release impact", () => {
 			".claude-plugin/marketplace.json",
 			"plugin/.claude-plugin/plugin.json",
 			"plugin/.codex-plugin/plugin.json",
-			"plugin/runtime/hello-world.js",
-			"plugin/hooks/codex/hooks.json",
 			".github/.release-please-manifest.json",
 			"CHANGELOG.md",
 		].map((path) => ({ path, versionOnly: true }))
@@ -253,19 +249,19 @@ describe("release impact", () => {
 		})
 	})
 
-	test("recognizes generated hook and runtime version markers", () => {
+	test("generated runtime bundles are not release-version projections", () => {
 		expect(
 			isReleasePleaseVersionOnlyChange(
 				"plugin/hooks/codex/hooks.json",
-				'{"command":"hello --plugin-version 1.2.2 # x-release-please-version"}',
-				'{"command":"hello --plugin-version 1.2.3 # x-release-please-version"}',
+				'{"command":"old"}',
+				'{"command":"new"}',
 			),
-		).toBe(true)
+		).toBe(false)
 		expect(
 			isReleasePleaseVersionOnlyChange(
 				"plugin/runtime/hello-world.js",
-				'const PLUGIN_VERSION = "1.2.2";\nrunOld()',
-				'const PLUGIN_VERSION = "1.2.3";\nrunNew()',
+				"runOld()",
+				"runNew()",
 			),
 		).toBe(false)
 	})

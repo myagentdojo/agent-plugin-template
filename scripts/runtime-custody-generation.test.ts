@@ -105,31 +105,18 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 		}
 	}
 
-	// Preflight gate: while launcher rendering is inactive, the checked-in
-	// launcher stays spike-owned and must not target the missing custody engine.
-	const launcher = await Bun.file(new URL("../plugin/bin/hello-world", import.meta.url)).text()
-	expect(launcher).not.toContain("runtime-exec")
-
-	// Honest SKILL status rides the same gate, keyed on the canonical activation
-	// state rather than a substring of the checked-in launcher: launcher
-	// activation is exactly whether the generator renders any plugin/bin/*
-	// launcher file. While inactive, each workspace skill's SKILL.md must carry
-	// the not-yet-invocable caveat; activating launchers must remove it in the
-	// same change.
+	// Every logical catalog member is active through one generated custody launcher.
 	const { renderRuntimeCustodyFiles } = await import("./runtime-custody-config")
 	const generated = renderRuntimeCustodyFiles(new URL("..", import.meta.url).pathname)
-	const launcherGateActive = generated.some((file) => file.path.startsWith("plugin/bin/"))
-	for (const [skillId, skill] of Object.entries(
-		catalog.skills as Record<string, { workspace?: string }>,
-	)) {
-		if (!skill.workspace) continue
+	for (const skillId of Object.keys(catalog.skills)) {
+		const launcher = await Bun.file(new URL(`../plugin/bin/${skillId}`, import.meta.url)).text()
+		expect(launcher).toContain(`runtime-exec\" run ${skillId} --`)
 		const skillDocument = await Bun.file(
 			new URL(`../plugin/skills/${skillId}/SKILL.md`, import.meta.url),
 		).text()
-		expect(`${skillId} caveat ${skillDocument.includes("Status: not yet invocable")}`).toBe(
-			`${skillId} caveat ${!launcherGateActive}`,
-		)
+		expect(skillDocument).not.toContain("Status: not yet invocable")
 	}
+	expect(generated.filter((file) => file.path.startsWith("plugin/bin/")).length).toBe(3)
 
 	const lockProjection = await Bun.file(
 		new URL("../plugin/runtime/runtime-lock.sh", import.meta.url),

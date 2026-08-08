@@ -3,7 +3,7 @@
   "displayName": "Harness Plugin Prototype",
   "version": "0.1.1",
   "defaultEnabled": false,
-  "description": "Prove native plugin distribution with a Bun-authored portable runtime",
+  "description": "Dependency-closed skills using a verified, plugin-managed Bun runtime",
   "author": {
     "name": "Prototype"
   },
@@ -11,9 +11,7 @@
   "license": "MIT",
   "keywords": [
     "agent-plugin",
-    "bun",
-    "quickjs"
+    "bun"
   ],
-  "skills": "./skills/",
-  "hooks": "./hooks/claude/hooks.json"
+  "skills": "./skills/"
 }

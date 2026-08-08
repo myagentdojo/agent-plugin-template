@@ -23,10 +23,7 @@
     "prove:distribution": "bun run scripts/prove-distribution.ts",
     "prove:harness-install": "bun run scripts/prove-harness-install.ts",
     "prove:dx": "bun run scripts/prove-dx.ts",
-    "prove:quickjs-ci": "bun run scripts/prove-quickjs-ci.ts",
     "prove:runtime-custody": "bun run scripts/prove-runtime-custody.ts",
-    "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:quickjs-ci && bun run prove:runtime-custody && bun run prove:harness-install -- --require-native && bun run prove:dx",
-    "spike:quickjs": "bun run scripts/quickjs-spike.ts",
-    "spike:quickjs:ci": "bun run scripts/quickjs-spike.ts --ci"
+    "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:runtime-custody && bun run prove:harness-install -- --require-native && bun run prove:distribution && bun run prove:dx"
   }
 }

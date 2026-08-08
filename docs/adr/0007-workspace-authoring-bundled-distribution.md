@@ -20,21 +20,23 @@ reconciliation across many packages, offline failure, and the Python-style
 "present but fighting the package manager" friction — the exact costs the
 runtime bootstrap was designed to avoid.
 
-The repository already demonstrates the answer. It is a Bun workspace whose
-members are the skills and runtime packages, with a **catalog** pinning shared
-dependency versions once. Its browser-use skill ships `files: ["dist"]` built
-by a bundling step — it distributes a bundled artifact, not its `package.json`
-dependencies or a `node_modules` tree.
+The repository demonstrates the answer with two isolated workspace members and
+one frozen root lock. Each member declares exact dependency versions and the
+build admits the resolved pure-JavaScript closure before emitting bundled
+artifacts. The runtime skill catalog is a separate owner: it maps logical skill
+ids to launchers, bundles, and runtime identity; it is not a dependency-version
+catalog.
 
 ## Decision
 
 Separate authoring from distribution.
 
 - **Authoring: one Bun workspace.** All skills are workspace members. A
-  workspace **catalog** pins shared dependency versions once, so 20 skills
-  cannot drift onto different versions of a shared library, and one root
-  `bun install` resolves everything into one hoisted `node_modules`. Adding a
-  skill is adding a workspace member.
+  frozen root lock resolves exact member dependencies through Bun's isolated
+  linker with lifecycle scripts ignored. Dependency admission rejects phantom
+  dependencies, native artifacts, unresolved peers, and unreviewed lifecycle
+  behavior. Adding a dependency-bearing skill is adding a workspace member and
+  a logical runtime-catalog entry.
 - **Distribution: per-skill bundles, dependency-free.** Each skill is bundled
   (`bun build`) into a self-contained artifact with its dependencies inlined.
   The shipped plugin contains bundled entrypoints, never `node_modules`, never
@@ -64,9 +66,9 @@ trivial next to the ~60 MB bootstrapped runtime. Not worth the coupling.
   ship. They are authoring-time inputs only.
 - Consumer install cost is the runtime bootstrap alone. No dependency fetch, no
   lockfile reconciliation, no offline-install failure.
-- Shared dependency versions are governed once by the workspace catalog, so
-  skills cannot silently diverge; a build-time check can enforce that a skill
-  declares only catalog-pinned or explicitly-allowed versions.
+- Exact dependency versions and their resolved bytes are governed by member
+  manifests plus the one frozen root lock. The build admits the complete
+  resolved closure and generates third-party notices.
 - A shared library used by several skills is duplicated across their bundles.
   This costs bundle size, not install time, and is negligible against the
   runtime. Revisit only if total artifact size becomes a real constraint.
@@ -74,13 +76,10 @@ trivial next to the ~60 MB bootstrapped runtime. Not worth the coupling.
   distribution proof (from the publishing-hardening work) apply to the bundled
   artifacts, not to source or `node_modules`.
 
-## Follow-up
+## Implemented follow-up
 
-- Make per-skill bundling a generated, catalog-aware build step in the template
-  (each workspace skill → one `dist/<skill>.js`), mirroring browser-use's
-  `build-dist`.
-- Add a build-time check that a skill's dependencies resolve only to
-  catalog-pinned (or explicitly allowed) versions, preventing drift across the
-  workspace.
-- Confirm the bundled artifacts are what the ADR 0005 catalog entries point at,
-  so custody/exec runs the bundle, never a source tree needing install.
+- The fixed builder emits one digest-named ESM artifact per workspace skill,
+  validates the inventory and notices, and rejects stale or orphaned outputs.
+- The generated runtime inventory maps each logical catalog skill to its exact
+  bundle digest; custody executes that bundle, never a source tree or
+  `node_modules`.

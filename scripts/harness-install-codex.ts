@@ -72,7 +72,7 @@ export function proveCodexNative(
 	)
 	assertCodexReportedVersion(initial, fixture.base.manifestVersion, "install")
 	const initialInventory = dependencies.comparePayload(fixture.base, initial.add.installedPath)
-	const initialRuntimeDigest = digestFile(join(initial.add.installedPath, "runtime", "hello-world.js"))
+	const initialReleaseDigest = digestFile(join(initial.add.installedPath, ".codex-plugin", "plugin.json"))
 	const priorRecovery = {
 		source: initial.plugin.marketplaceSource.source,
 		ref: fixture.base.requestedRef,
@@ -98,8 +98,8 @@ export function proveCodexNative(
 	)
 	assertCodexReportedVersion(upgraded, fixture.target.manifestVersion, "upgrade")
 	const upgradedInventory = dependencies.comparePayload(fixture.target, upgraded.add.installedPath)
-	const upgradedRuntimeDigest = digestFile(join(upgraded.add.installedPath, "runtime", "hello-world.js"))
-	if (initialRuntimeDigest === upgradedRuntimeDigest) {
+	const upgradedReleaseDigest = digestFile(join(upgraded.add.installedPath, ".codex-plugin", "plugin.json"))
+	if (initialReleaseDigest === upgradedReleaseDigest) {
 		throw new Error("Codex local reinstall did not change installed bytes")
 	}
 
@@ -161,13 +161,10 @@ export function proveCodexNative(
 	if (marketplaceState.marketplaceSource?.sourceType !== "local") {
 		throw new Error("Codex local proof did not report a local marketplace cache source")
 	}
-	const hookSource = readFileSync(
-		join(restored.add.installedPath, "hooks", "codex", "hooks.json"),
-		"utf8",
+	const manifest = JSON.parse(
+		readFileSync(join(restored.add.installedPath, ".codex-plugin", "plugin.json"), "utf8"),
 	)
-	if (!hookSource.includes(`--plugin-version ${fixture.base.manifestVersion}`)) {
-		throw new Error("Codex installed hook is not bound to the tagged plugin version")
-	}
+	if (manifest.hooks !== undefined) throw new Error("Codex installed payload activates lifecycle hooks")
 	return {
 		mode: "native-local-marketplace",
 		version: restored.add.version,
@@ -199,13 +196,11 @@ export function proveCodexNative(
 			enabledStateRestored: true,
 			failureRestored,
 		},
-		trust: {
+		activation: {
 			pluginEnabled: restored.plugin.enabled,
-			hookDefinitionPresent: true,
-			hookTrusted: false,
-			preTrustExecution: "skipped",
-			separateFromEnablement: true,
-			interactiveAcceptance: "skipped: /hooks trust acceptance requires a human interactive task",
+			lifecycleHookPresent: false,
+			executionEntry: "explicit skill launcher",
+			runtimeRepairOwner: "agent workflow with human approval",
 		},
 	}
 }
@@ -249,13 +244,11 @@ export function proveCodexFixtureCopy(
 			enabledStateRestored: false,
 			failureRestored: false,
 		},
-		trust: {
+		activation: {
 			pluginEnabled: true,
-			hookDefinitionPresent: true,
-			hookTrusted: false,
-			preTrustExecution: "skipped",
-			separateFromEnablement: true,
-			interactiveAcceptance: "skipped: Codex CLI unavailable",
+			lifecycleHookPresent: false,
+			executionEntry: "explicit skill launcher",
+			runtimeRepairOwner: "agent workflow with human approval",
 		},
 	}
 }

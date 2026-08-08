@@ -12,8 +12,6 @@ export const RELEASE_PROJECTION_PATHS = [
 	"plugin.config.json",
 	"plugin/.claude-plugin/plugin.json",
 	"plugin/.codex-plugin/plugin.json",
-	"plugin/hooks/codex/hooks.json",
-	"plugin/runtime/hello-world.js",
 ] as const
 
 export const RELEASE_PROJECTION_PATH_SET = new Set<string>(RELEASE_PROJECTION_PATHS)
@@ -69,25 +67,6 @@ export function isReleaseProjectionVersionOnlyChange(
 		)
 		const version = match?.[1] ?? match?.[2]
 		return version !== undefined && (expectedVersion === undefined || version === expectedVersion)
-	}
-	if (path === "plugin/hooks/codex/hooks.json") {
-		const normalize = (contents: string): string | undefined => {
-			const versionProjection = new RegExp(
-				`--plugin-version\\s+${SEMANTIC_VERSION}(?=\\s+# x-release-please-version)`,
-				"g",
-			)
-			if (!versionProjection.test(contents)) return undefined
-			versionProjection.lastIndex = 0
-			return contents.replace(versionProjection, "--plugin-version VERSION")
-		}
-		const normalizedBefore = normalize(before)
-		const normalizedAfter = normalize(after)
-		return normalizedBefore !== undefined && normalizedBefore === normalizedAfter
-	}
-	if (path === "plugin/runtime/hello-world.js") {
-		const normalize = (contents: string): string =>
-			contents.replace(/const PLUGIN_VERSION = "[^"]+";/g, 'const PLUGIN_VERSION = "VERSION";')
-		return normalize(before) === normalize(after)
 	}
 	const normalizedBefore = normalizedJsonVersion(path, before)
 	const normalizedAfter = normalizedJsonVersion(path, after)

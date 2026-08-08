@@ -174,7 +174,6 @@ async function runClaude(options: Options): Promise<void> {
 	const watchedPaths = [
 		"runtime/src",
 		"plugin/skills",
-		"plugin/hooks",
 		"plugin/.claude-plugin",
 		"plugin/.codex-plugin",
 	]

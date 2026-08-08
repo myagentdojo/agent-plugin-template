@@ -62,8 +62,6 @@ const allowedProjection = [
 	"plugin.config.json",
 	"plugin/.claude-plugin/plugin.json",
 	"plugin/.codex-plugin/plugin.json",
-	"plugin/hooks/codex/hooks.json",
-	"plugin/runtime/hello-world.js",
 ]
 
 function releasePullRequest(overrides: Record<string, unknown> = {}) {
@@ -110,23 +108,6 @@ function writeSynchronizedVersion(repositoryRoot: string, version: string): void
 	marketplace.metadata.version = version
 	writeFileSync(marketplacePath, `${JSON.stringify(marketplace, null, 2)}\n`)
 
-	const runtimePath = join(repositoryRoot, "plugin", "runtime", "hello-world.js")
-	writeFileSync(
-		runtimePath,
-		readFileSync(runtimePath, "utf8").replace(
-			/const PLUGIN_VERSION = "\d+\.\d+\.\d+";/,
-			`const PLUGIN_VERSION = "${version}";`,
-		),
-	)
-
-	const hooksPath = join(repositoryRoot, "plugin", "hooks", "codex", "hooks.json")
-	writeFileSync(
-		hooksPath,
-		readFileSync(hooksPath, "utf8").replaceAll(
-			/--plugin-version \d+\.\d+\.\d+ # x-release-please-version/g,
-			`--plugin-version ${version} # x-release-please-version`,
-		),
-	)
 }
 
 function writeReleasedMetadata(

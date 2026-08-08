@@ -5,8 +5,6 @@ export interface CommandResult {
 	stderr: string
 }
 
-declare const PLUGIN_VERSION: string
-
 function success(stdout = "", stderr = ""): CommandResult {
 	return { exitCode: 0, stdout, stderr }
 }
@@ -26,20 +24,12 @@ function optionValue(arguments_: string[], option: string): string | undefined {
 }
 
 function help(): string {
-	return `hello-world ${PLUGIN_VERSION}
-
-Usage:
+	return `Usage:
   hello-world hello [--name <name>] [--json]
-  hello-world hook --harness claude --event <event>
-  hello-world hook --harness codex --event <event> --plugin-version <version>
   hello-world --help
 
 Commands:
   hello  Print a greeting. No files, network calls, or durable state.
-  hook   Accept a harness hook payload on stdin and exit successfully.
-
-Hook options:
-  --plugin-version <version>  Required for Codex hooks only.
 `
 }
 
@@ -47,18 +37,16 @@ Hook options:
  * Execute the portable command contract without depending on a host runtime.
  *
  * @param arguments_ - Command arguments after the executable name
- * @param standardInput - Complete hook payload supplied by the adapter
  * @param runId - Adapter-owned invocation identity
  * @returns Complete process output and exit status for the adapter to emit
  *
  * @example
  * ```ts
- * executeCommand(["hello", "--json"], "", "proof-run")
+ * executeCommand(["hello", "--json"], "proof-run")
  * ```
  */
 export function executeCommand(
 	arguments_: string[],
-	standardInput: string,
 	runId: string,
 ): CommandResult {
 	const [command, ...commandArguments] = arguments_
@@ -66,8 +54,6 @@ export function executeCommand(
 	if (command === undefined || command === "--help" || command === "-h") {
 		return success(help())
 	}
-	if (command === "--version" || command === "-v") return success(`${PLUGIN_VERSION}\n`)
-
 	if (command === "hello") {
 		const name = optionValue(commandArguments, "--name") ?? "world"
 		if (commandArguments.includes("--json")) {
@@ -75,7 +61,6 @@ export function executeCommand(
 				`${JSON.stringify({
 					ok: true,
 					command: "hello",
-					pluginVersion: PLUGIN_VERSION,
 					message: `Hello, ${name}!`,
 					sideEffects: "none",
 					runId,
@@ -83,30 +68,6 @@ export function executeCommand(
 			)
 		}
 		return success(`Hello, ${name}!\n`)
-	}
-
-	if (command === "hook") {
-		const harness = optionValue(commandArguments, "--harness")
-		const event = optionValue(commandArguments, "--event")
-		const pluginVersion = optionValue(commandArguments, "--plugin-version")
-		if (harness !== "codex" && harness !== "claude") {
-			return failure("--harness must be codex or claude")
-		}
-		if (!event) return failure("--event is required")
-		if (harness === "codex" && !pluginVersion) {
-			return failure("--plugin-version is required for codex hooks")
-		}
-		if (pluginVersion && pluginVersion !== PLUGIN_VERSION) {
-			return failure(`--plugin-version must be ${PLUGIN_VERSION}`)
-		}
-		if (standardInput.trim()) {
-			try {
-				JSON.parse(standardInput)
-			} catch {
-				return failure("hook stdin must be JSON")
-			}
-		}
-		return success("", `hello-world hook: ${harness} ${event}\n`)
 	}
 
 	return failure(`unknown command: ${command}`)

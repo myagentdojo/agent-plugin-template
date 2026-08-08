@@ -47,7 +47,7 @@ bootstrapped Bun via the shared runtime-custody engine (ADR 0005).
   shim, and no "does this need OS access?" classification.
 - Custody is unchanged: one template-wide, version-exact Bun pin; a closed
   skill catalog; generated per-skill launchers; one shared
-  `profile/version/platform` cache; typed doctor/repair; fail-closed on unknown
+  digest-addressed cache; typed run/repair; fail-closed on unknown
   skill and checksum mismatch; drift blocked mechanically (ADR 0005).
 - **Sandboxing, when required, is an architecture-layer concern.** Run the
   agent (and its plugins) inside a container, VM, or agent-sandbox framework.
@@ -80,15 +80,10 @@ bootstrapped Bun via the shared runtime-custody engine (ADR 0005).
   bundler parity, measured bootstrap cost, Bun-in-Rust and Python/`uv` facts);
   only its two-tier decision is superseded.
 
-## Follow-up
+## Implemented follow-up
 
-- Remove the QuickJS runtime, shim layer, `qjs-*` assets, and QuickJS proof
-  from the plugin path (a distinct, larger change — do not fold into unrelated
-  work).
-- Route all plugins through the runtime-custody engine; choose its bootstrap
-  host (shell vs QuickJS-hosted is now moot for sandboxing but still the
-  stage-zero implementation choice — a shell or a small self-contained
-  fetch/verify tool) and replace the stubbed transport with the real
-  checksum-pinned download.
+- The active payload, launchers, proof, and workflows are Bun-only.
+- Every catalog skill routes through the POSIX-shell runtime-custody engine and
+  the real checksum-pinned acquisition path.
 - Keep the capability-flag alternative on file against a future untrusted
   audience.

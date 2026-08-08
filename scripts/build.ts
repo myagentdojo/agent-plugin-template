@@ -6,6 +6,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs"
 import { builtinModules } from "node:module"
@@ -13,7 +14,13 @@ import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 
 import { loadPluginConfig } from "./plugin-config"
-import { compareCodeUnits, loadSkillCatalog, shellQuote } from "./runtime-custody-config"
+import { pluginPayloadInventory } from "./plugin-files"
+import {
+	checkRuntimeCustodyFiles,
+	compareCodeUnits,
+	loadSkillCatalog,
+	shellQuote,
+} from "./runtime-custody-config"
 
 const nodeBuiltins = new Set(builtinModules)
 const managedBundlePattern = /^([a-z0-9]+(?:-[a-z0-9]+)*)-[a-f0-9]{16}\.js$/
@@ -623,6 +630,17 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 		}
 	}
 	const bundles: Record<string, BundleRecord> = {}
+	for (const [skillId, skill] of Object.entries(catalog.skills).sort(([left], [right]) =>
+		compareCodeUnits(left, right),
+	)) {
+		if (skill.workspace !== undefined) continue
+		const bundle = readFileSync(join(root, "plugin", skill.entry))
+		bundles[skillId] = {
+			path: skill.entry,
+			bytes: bundle.byteLength,
+			sha256: sha256Hex(new Uint8Array(bundle)),
+		}
+	}
 	for (const artifact of artifacts) {
 		writeFileSync(join(runtimeDirectory, artifact.fileName), artifact.contents)
 		bundles[artifact.skillId] = {
@@ -675,27 +693,17 @@ export function validateBundleClosure(root: string): void {
 		throw new Error("bundle closure: bundle-inventory.json schemaVersion must be 1")
 	}
 
-	const workspaceSkillIds = new Set(
-		Object.entries(catalog.skills)
-			.filter(([, skill]) => skill.workspace !== undefined)
-			.map(([skillId]) => skillId),
-	)
 	for (const [skillId, skill] of Object.entries(catalog.skills)) {
 		if (!existsSync(join(root, "plugin", "skills", skillId, "SKILL.md"))) {
 			throw new Error(`bundle closure: missing SKILL.md for ${skillId}`)
-		}
-		if (skill.workspace === undefined) {
-			if (!existsSync(join(root, "plugin", skill.entry))) {
-				throw new Error(`bundle closure: missing entry ${skill.entry} for ${skillId}`)
-			}
-			continue
 		}
 		if (inventory.bundles[skillId] === undefined) {
 			throw new Error(`bundle closure: missing bundle mapping for ${skillId}; run bun run build`)
 		}
 	}
 	for (const [skillId, record] of Object.entries(inventory.bundles)) {
-		if (!workspaceSkillIds.has(skillId)) {
+		const skill = catalog.skills[skillId]
+		if (!skill) {
 			throw new Error(`bundle closure: orphaned mapping for ${skillId}; run bun run build`)
 		}
 		// The recorded path must be exactly the digest-derived name inside
@@ -704,7 +712,11 @@ export function validateBundleClosure(root: string): void {
 		if (!/^[a-f0-9]{64}$/.test(record.sha256)) {
 			throw new Error(`bundle closure: invalid bundle digest for ${skillId}; run bun run build`)
 		}
-		if (record.path !== `runtime/${skillId}-${record.sha256.slice(0, 16)}.js`) {
+		const expectedPath =
+			skill.workspace === undefined
+				? skill.entry
+				: `runtime/${skillId}-${record.sha256.slice(0, 16)}.js`
+		if (record.path !== expectedPath) {
 			throw new Error(
 				`bundle closure: invalid bundle path ${record.path} for ${skillId}; run bun run build`,
 			)
@@ -751,22 +763,115 @@ export function validateBundleClosure(root: string): void {
 	}
 }
 
-async function buildHelloWorldRuntime(root: string, version: string): Promise<string> {
+const forbiddenRuntimePaths = [
+	/^hooks\//,
+	/^runtime\/qjs-/,
+	/^runtime\/quickjs-assets\.json$/,
+	/^QUICKJS-LICENSE$/,
+]
+const requiredCapabilities = [
+	"Execute verified Bun code",
+	"Download Bun after approval",
+	"Write private runtime cache",
+	"Use network during repair",
+]
+
+/**
+ * Admit the complete installable payload only when it is one current Bun closure.
+ *
+ * @param root - Repository root containing canonical sources and plugin payload
+ * @throws {Error} On generated drift, missing members, legacy runtime surfaces, or incomplete disclosure
+ */
+export function validateBunOnlyPayload(root: string): void {
+	validateBundleClosure(root)
+	const catalog = loadSkillCatalog(root)
+	const inventory = pluginPayloadInventory(root)
+	const inventorySet = new Set(inventory)
+	const required = [
+		".claude-plugin/plugin.json",
+		".codex-plugin/plugin.json",
+		"THIRD-PARTY-NOTICES.md",
+		"runtime/bundle-inventory.json",
+		"runtime/bundle-inventory.sh",
+		"runtime/runtime-exec",
+		"runtime/runtime-lock.sh",
+		"runtime/skill-catalog.sh",
+	]
+	const bundleInventory = JSON.parse(
+		readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json"), "utf8"),
+	) as { bundles: Record<string, BundleRecord> }
+	for (const [skillId, skill] of Object.entries(catalog.skills)) {
+		required.push(`bin/${skillId}`, `skills/${skillId}/SKILL.md`)
+		required.push(
+			skill.workspace === undefined
+				? skill.entry
+				: bundleInventory.bundles[skillId]?.path ?? `runtime/${skillId}-MISSING.js`,
+		)
+	}
+	for (const path of required) {
+		if (!inventorySet.has(path)) throw new Error(`Bun payload closure: missing ${path}`)
+	}
+
+	const drifted = checkRuntimeCustodyFiles(root)
+	if (drifted.length > 0) {
+		throw new Error(`Bun payload closure: stale generated file ${drifted[0]}`)
+	}
+	const launchers = inventory
+		.filter((path) => path.startsWith("bin/"))
+		.map((path) => path.slice("bin/".length))
+	const expectedLaunchers = Object.keys(catalog.skills).sort(compareCodeUnits)
+	if (launchers.join("\0") !== expectedLaunchers.join("\0")) {
+		throw new Error("Bun payload closure: launcher inventory does not match the skill catalog")
+	}
+	for (const path of ["runtime/runtime-exec", ...expectedLaunchers.map((id) => `bin/${id}`)]) {
+		if ((statSync(join(root, "plugin", path)).mode & 0o111) === 0) {
+			throw new Error(`Bun payload closure: ${path} is not executable`)
+		}
+	}
+	for (const path of inventory) {
+		if (forbiddenRuntimePaths.some((pattern) => pattern.test(path))) {
+			throw new Error(`Bun payload closure: legacy runtime surface ${path}`)
+		}
+		if (/\.(?:js|json|md|sh)$/.test(path) || path.startsWith("bin/")) {
+			const text = readFileSync(join(root, "plugin", path), "utf8")
+			if (/qjs:std|QuickJS/i.test(text)) {
+				throw new Error(`Bun payload closure: legacy runtime claim in ${path}`)
+			}
+		}
+	}
+	for (const manifestPath of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]) {
+		const manifest = JSON.parse(readFileSync(join(root, "plugin", manifestPath), "utf8")) as {
+			hooks?: unknown
+			description?: unknown
+			interface?: { capabilities?: unknown }
+		}
+		if (manifest.hooks !== undefined) {
+			throw new Error(`Bun payload closure: runtime hooks remain active in ${manifestPath}`)
+		}
+		if (typeof manifest.description !== "string" || !manifest.description.includes("Bun")) {
+			throw new Error(`Bun payload closure: ${manifestPath} does not disclose Bun execution`)
+		}
+		if (manifestPath === ".codex-plugin/plugin.json") {
+			const capabilities = manifest.interface?.capabilities
+			if (!Array.isArray(capabilities) || requiredCapabilities.some((item) => !capabilities.includes(item))) {
+				throw new Error("Bun payload closure: Codex capability disclosure is incomplete")
+			}
+		}
+	}
+}
+
+async function buildHelloWorldRuntime(root: string): Promise<string> {
 	const sourceRoot = join(root, "runtime", "src")
 	const outputDirectory = join(root, "plugin", "runtime")
 	mkdirSync(outputDirectory, { recursive: true })
 	const result = await Bun.build({
-		entrypoints: [join(sourceRoot, "quickjs-adapter.ts")],
+		entrypoints: [join(sourceRoot, "bun-proof-adapter.ts")],
 		outdir: outputDirectory,
 		naming: "hello-world.js",
-		target: "browser",
+		target: "bun",
 		format: "esm",
-		external: ["qjs:std"],
 		minify: true,
-		banner: `// Generated from runtime/src/. Edit source, then run bun run build.
-// x-release-please-start-version
-const PLUGIN_VERSION = ${JSON.stringify(version)};
-// x-release-please-end`,
+		banner: "// Generated from runtime/src/. Edit source, then run bun run build.",
 	})
 	if (!result.success) {
 		for (const log of result.logs) console.error(log)
@@ -788,7 +893,7 @@ async function main(): Promise<void> {
 		}
 	}
 
-	const helloWorldPath = await buildHelloWorldRuntime(root, pluginConfig.version)
+	const helloWorldPath = await buildHelloWorldRuntime(root)
 
 	const install = Bun.spawnSync({
 		cmd: [process.execPath, "install", "--frozen-lockfile"],

@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, expect, test } from "bun:test"
 
-import { loadSkillCatalog } from "./runtime-custody-config"
+import { loadSkillCatalog, renderRuntimeCustodyFiles } from "./runtime-custody-config"
 
 const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "")
 const temporaryRoots: string[] = []
@@ -36,6 +36,22 @@ function custodyFixture(mutate: (lock: any, catalog: any) => void): string {
 
 test("the unmodified lock and catalog validate", () => {
 	expect(() => loadSkillCatalog(custodyFixture(() => {}))).not.toThrow()
+})
+
+test("renders one custody launcher for every catalog skill", () => {
+	const files = renderRuntimeCustodyFiles(root)
+	const launchers = files
+		.filter((file) => file.path.startsWith("plugin/bin/"))
+		.map((file) => file.path)
+
+	expect(launchers).toEqual([
+		"plugin/bin/hello-world",
+		"plugin/bin/skill-a",
+		"plugin/bin/skill-b",
+	])
+	for (const launcher of files.filter((file) => file.path.startsWith("plugin/bin/"))) {
+		expect(launcher.contents).toContain('exec "$plugin_root/runtime/runtime-exec" run')
+	}
 })
 
 test("rejects a runtime lock schema version other than 1", () => {

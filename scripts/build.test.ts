@@ -1,4 +1,5 @@
 import {
+	cpSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -19,6 +20,7 @@ import {
 	DependencyAdmissionError,
 	renderBundleInventoryProjection,
 	renderThirdPartyNotices,
+	validateBunOnlyPayload,
 	validateBundleClosure,
 	validateBundleText,
 } from "./build"
@@ -448,7 +450,7 @@ function runRepositoryBuild(): {
 
 test("workspace bundles build, relocate, and execute without workspaces or node_modules", () => {
 	const result = runRepositoryBuild()
-	expect(Object.keys(result.bundles)).toEqual(["skill-a", "skill-b"])
+	expect(Object.keys(result.bundles)).toEqual(["hello-world", "skill-a", "skill-b"])
 	validateBundleClosure(root)
 
 	const installedRoot = temporaryDirectory("relocated-plugin-")
@@ -493,6 +495,31 @@ test("workspace bundles build, relocate, and execute without workspaces or node_
 		const contents = readFileSync(join(installedRoot, bundle.path), "utf8")
 		expect(() => validateBundleText("relocated", contents)).not.toThrow()
 	}
+})
+
+function bunPayloadFixture(): string {
+	const fixtureRoot = temporaryDirectory("bun-payload-")
+	mkdirSync(join(fixtureRoot, "runtime"), { recursive: true })
+	cpSync(join(root, "runtime", "runtime.lock.json"), join(fixtureRoot, "runtime", "runtime.lock.json"))
+	cpSync(join(root, "runtime", "skill-catalog.json"), join(fixtureRoot, "runtime", "skill-catalog.json"))
+	cpSync(join(root, "plugin"), join(fixtureRoot, "plugin"), { recursive: true })
+	return fixtureRoot
+}
+
+test("Bun-only release admission accepts the complete current payload", () => {
+	expect(() => validateBunOnlyPayload(bunPayloadFixture())).not.toThrow()
+})
+
+test("Bun-only release admission rejects a legacy runtime surface", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", "runtime", "qjs-legacy"), "legacy\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/legacy runtime surface/)
+})
+
+test("Bun-only release admission rejects an orphaned launcher", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", "bin", "orphan"), "#!/bin/sh\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/launcher inventory/)
 })
 
 test("repeated builds produce identical bundle, inventory, and notices bytes", () => {

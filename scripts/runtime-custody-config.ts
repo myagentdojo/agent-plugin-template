@@ -195,12 +195,6 @@ ${cases.join("\n")}
 `
 }
 
-// Preflight gate: launcher rendering stays inactive until the custody engine
-// exists at plugin/runtime/runtime-exec (U2) and U3 activates the Bun-only
-// payload. While inactive, checked-in launchers remain spike-owned so the
-// current proof stays executable.
-const launcherRenderingActive = false
-
 function renderLauncher(skillId: string): string {
 	return `#!/bin/sh
 # Generated from runtime/skill-catalog.json. Edit the source, then run bun run generate.
@@ -236,14 +230,12 @@ export function renderRuntimeCustodyFiles(root: string): GeneratedFile[] {
 			path: "plugin/runtime/skill-catalog.sh",
 			contents: renderCatalogProjection(catalog),
 		},
-		...(launcherRenderingActive
-			? Object.keys(catalog.skills)
-					.sort(compareCodeUnits)
-					.map((skillId) => ({
-						path: `plugin/bin/${skillId}`,
-						contents: renderLauncher(skillId),
-					}))
-			: []),
+		...Object.keys(catalog.skills)
+			.sort(compareCodeUnits)
+			.map((skillId) => ({
+				path: `plugin/bin/${skillId}`,
+				contents: renderLauncher(skillId),
+			})),
 	]
 }
 
