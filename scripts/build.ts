@@ -121,6 +121,180 @@ function sha256Hex(contents: Uint8Array | string): string {
 	return new Bun.CryptoHasher("sha256").update(contents).digest("hex")
 }
 
+const bundleTranspiler = new Bun.Transpiler({ loader: "js" })
+
+/**
+ * Preserve JavaScript tokens while blanking comments and literal bodies.
+ *
+ * The validator only needs to distinguish executable loader identifiers from
+ * the same words in strings, comments, templates, and regular expressions. A
+ * same-length mask keeps call-site offsets aligned with the original bundle.
+ */
+function executableCodeMask(code: string): string {
+	const masked = Array<string>(code.length).fill(" ")
+	for (let index = 0; index < code.length; index++) {
+		if (/\s/.test(code[index])) masked[index] = code[index]
+	}
+	let index = 0
+
+	const copy = (start: number, end: number): void => {
+		for (let cursor = start; cursor < end; cursor++) masked[cursor] = code[cursor]
+	}
+	const identifierStart = (character: string): boolean => /[A-Za-z_$]/.test(character)
+	const identifierPart = (character: string): boolean => /[A-Za-z0-9_$]/.test(character)
+	const regexPrefixKeywords = new Set([
+		"await",
+		"case",
+		"delete",
+		"do",
+		"else",
+		"in",
+		"instanceof",
+		"new",
+		"of",
+		"return",
+		"throw",
+		"typeof",
+		"void",
+		"yield",
+	])
+
+	const skipQuoted = (quote: string): void => {
+		masked[index] = quote
+		index++
+		while (index < code.length) {
+			if (code[index] === "\\") {
+				index += 2
+				continue
+			}
+			if (code[index] === quote) {
+				masked[index] = quote
+				index++
+				return
+			}
+			index++
+		}
+	}
+
+	const skipRegex = (): void => {
+		index++
+		let inClass = false
+		while (index < code.length) {
+			if (code[index] === "\\") {
+				index += 2
+				continue
+			}
+			if (code[index] === "[") inClass = true
+			else if (code[index] === "]") inClass = false
+			else if (code[index] === "/" && !inClass) {
+				index++
+				while (/[A-Za-z]/.test(code[index] ?? "")) index++
+				return
+			}
+			if (code[index] === "\n" || code[index] === "\r") return
+			index++
+		}
+	}
+
+	const scanTemplate = (): void => {
+		index++
+		while (index < code.length) {
+			if (code[index] === "\\") {
+				index += 2
+				continue
+			}
+			if (code[index] === "`") {
+				index++
+				return
+			}
+			if (code[index] === "$" && code[index + 1] === "{") {
+				copy(index, index + 2)
+				index += 2
+				scanCode(true)
+				continue
+			}
+			index++
+		}
+	}
+
+	const scanCode = (stopAtTemplateBrace: boolean): void => {
+		let braceDepth = 0
+		let regexAllowed = true
+		while (index < code.length) {
+			const character = code[index]
+			if (/\s/.test(character)) {
+				index++
+				continue
+			}
+			if (character === "'" || character === '"') {
+				skipQuoted(character)
+				regexAllowed = false
+				continue
+			}
+			if (character === "`") {
+				scanTemplate()
+				regexAllowed = false
+				continue
+			}
+			if (character === "/" && code[index + 1] === "/") {
+				index += 2
+				while (index < code.length && code[index] !== "\n") index++
+				continue
+			}
+			if (character === "/" && code[index + 1] === "*") {
+				index += 2
+				while (index < code.length && !(code[index] === "*" && code[index + 1] === "/"))
+					index++
+				index = Math.min(code.length, index + 2)
+				continue
+			}
+			if (character === "/" && regexAllowed) {
+				skipRegex()
+				regexAllowed = false
+				continue
+			}
+			if (identifierStart(character)) {
+				const start = index++
+				while (identifierPart(code[index] ?? "")) index++
+				copy(start, index)
+				regexAllowed = regexPrefixKeywords.has(code.slice(start, index))
+				continue
+			}
+			if (/[0-9]/.test(character)) {
+				const start = index++
+				while (/[A-Za-z0-9_.]/.test(code[index] ?? "")) index++
+				copy(start, index)
+				regexAllowed = false
+				continue
+			}
+			if (character === "{") {
+				masked[index++] = character
+				braceDepth++
+				regexAllowed = true
+				continue
+			}
+			if (character === "}") {
+				masked[index++] = character
+				if (stopAtTemplateBrace && braceDepth === 0) return
+				braceDepth = Math.max(0, braceDepth - 1)
+				regexAllowed = false
+				continue
+			}
+			masked[index++] = character
+			regexAllowed = !/[)\]]/.test(character)
+		}
+	}
+
+	scanCode(false)
+	return masked.join("")
+}
+
+function isPropertyLabel(code: string, start: number, length: number): boolean {
+	let after = start + length
+	while (after < code.length && /\s/.test(code[after])) after++
+	return code[after] === ":"
+}
+
 /**
  * Collect every string-literal module specifier used by bundle text.
  *
@@ -133,15 +307,13 @@ function sha256Hex(contents: Uint8Array | string): string {
  * ```
  */
 export function collectModuleSpecifiers(code: string): string[] {
-	const patterns = [
-		/\bfrom\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1/g,
-		/\bimport\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1/g,
-		/\bimport\(\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g,
-		/\b(?:__require|require)\(\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g,
-	]
-	const specifiers = new Set<string>()
-	for (const pattern of patterns) {
-		for (const match of code.matchAll(pattern)) specifiers.add(match[2])
+	const specifiers = new Set(bundleTranspiler.scanImports(code).map((entry) => entry.path))
+	const executable = executableCodeMask(code)
+	for (const match of executable.matchAll(/\b__require\(\s*(["'])(?:(?!\1)[^\\]|\\.)*\1\s*\)/g)) {
+		const raw = /^__require\(\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/.exec(
+			code.slice(match.index),
+		)
+		if (raw) specifiers.add(raw[2])
 	}
 	return [...specifiers].sort(compareCodeUnits)
 }
@@ -165,14 +337,17 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  * ```
  */
 export function validateBundleText(skillId: string, code: string): void {
-	if (/\b(?:eval|Function)\b/.test(code)) {
+	const executable = executableCodeMask(code)
+	const codeGeneration = /\b(?:eval|Function)\b/g
+	for (const match of executable.matchAll(codeGeneration)) {
+		if (isPropertyLabel(executable, match.index, match[0].length)) continue
 		throw new BundleValidationError(
 			skillId,
 			"dynamic-code-generation",
 			"bundle retains runtime code generation; eval and Function are not allowed",
 		)
 	}
-	if (/\b(?:createRequire|getBuiltinModule)\b/.test(code)) {
+	if (/\b(?:createRequire|getBuiltinModule)\b/.test(executable)) {
 		throw new BundleValidationError(
 			skillId,
 			"runtime-loader",
@@ -183,8 +358,8 @@ export function validateBundleText(skillId: string, code: string): void {
 	// literal: any other argument shape (concatenation, identifier, member
 	// expression, template) is a runtime-computed load the closure cannot prove.
 	const literalCallTail = /^\s*(["'])(?:(?!\1)[^\\]|\\.)*\1\s*\)/
-	for (const match of code.matchAll(/\bimport\s*\(/g)) {
-		if (!literalCallTail.test(code.slice(match.index + match[0].length))) {
+	for (const match of executable.matchAll(/\bimport\s*\(/g)) {
+		if (!literalCallTail.test(executable.slice(match.index + match[0].length))) {
 			throw new BundleValidationError(
 				skillId,
 				"computed-dynamic-import",
@@ -192,8 +367,9 @@ export function validateBundleText(skillId: string, code: string): void {
 			)
 		}
 	}
-	for (const match of code.matchAll(/\b(?:__require|require)\b/g)) {
-		const tail = code.slice(match.index + match[0].length)
+	for (const match of executable.matchAll(/\b(?:__require|require)\b/g)) {
+		if (isPropertyLabel(executable, match.index, match[0].length)) continue
+		const tail = executable.slice(match.index + match[0].length)
 		const callOpen = /^\s*\(/.exec(tail)
 		if (!callOpen || !literalCallTail.test(tail.slice(callOpen[0].length))) {
 			throw new BundleValidationError(

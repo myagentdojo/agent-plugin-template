@@ -786,25 +786,51 @@ test("AE8: a provably dead writer's lock is reclaimed with only its staging remo
 })
 
 test("concurrent stale-lock reclaimers cannot claim a replacement lock", async () => {
-	const fixture = makeFixture()
+	const realMv = Bun.which("mv")
+	if (!realMv) throw new Error("mv is required by the test fixture")
+	const signal = join(temporaryDirectory("reclaim-contention-"), "record-published")
+	const release = join(temporaryDirectory("reclaim-contention-release-"), "continue")
+	const toolDir = makeToolDir({
+		mv: `#!/bin/sh
+${realMv} "$@" || exit $?
+last=''
+for arg in "$@"; do last=$arg; done
+case "\${PAUSE_AFTER_LOCK_RECORD-}:$last" in
+1:*/locks/bun-*/record)
+	: >"$LOCK_RECORD_SIGNAL"
+	while [ ! -f "$LOCK_RECORD_RELEASE" ]; do /bin/sleep 0.01; done
+	;;
+esac
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
 	writeLockRecord(fixture, {
 		pid: 999999,
 		start: "Thu Jan 1 00:00:00 1970",
 		staging: "stalenonce",
 	})
-	const spawnApply = () =>
+	const spawnApply = (env: Record<string, string> = {}) =>
 		Bun.spawn({
 			cmd: [fixture.engine, "repair", "--apply"],
 			cwd: fixture.root,
-			env: fixture.env,
+			env: { ...fixture.env, ...env },
 			stdout: "pipe",
 			stderr: "pipe",
 		})
-	const first = spawnApply()
-	const second = spawnApply()
-	const exits = await Promise.all([first.exited, second.exited])
-	expect(exits).toContain(0)
-	for (const exitCode of exits) expect([0, 22]).toContain(exitCode)
+	const first = spawnApply({
+		PAUSE_AFTER_LOCK_RECORD: "1",
+		LOCK_RECORD_SIGNAL: signal,
+		LOCK_RECORD_RELEASE: release,
+	})
+	try {
+		for (let attempt = 0; attempt < 500 && !existsSync(signal); attempt++) await Bun.sleep(10)
+		expect(existsSync(signal)).toBe(true)
+		const second = spawnApply()
+		expect(await second.exited).toBe(22)
+	} finally {
+		writeFileSync(release, "continue\n")
+	}
+	expect(await first.exited).toBe(0)
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
 })

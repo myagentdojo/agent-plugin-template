@@ -143,6 +143,23 @@ test("validateBundleText rejects a computed runtime require", () => {
 	)
 })
 
+test("validateBundleText ignores loader words outside executable call sites", () => {
+	validateBundleText(
+		"skill-a",
+		`const text = "require eval Function";
+		// require(commentedTarget)
+		const pattern = /require\\(eval|Function/;
+		const object = { require: true, eval: true, Function: true };
+		console.log(object.value, text, pattern);`,
+	)
+})
+
+test("validateBundleText inspects loader calls inside template expressions", () => {
+	expect(() =>
+		validateBundleText("skill-a", "const text = `value: ${require(target)}`;"),
+	).toThrow(/computed runtime require/)
+})
+
 test("validateBundleText rejects indirect runtime require calls", () => {
 	for (const code of [
 		`__require.call(null, target);`,
