@@ -251,7 +251,7 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 test("validateBundleText allows ordinary methods named require", () => {
 	validateBundleText(
 		"skill-a",
-		`const registry = { require(name) { return this[name] } }; class Catalog { require(callback = () => "ok") { return callback() } }`,
+		`const registry = { require(name) { return this[name] } }; class Catalog { require(callback = () => "ok") { return callback() } }; registry.require("x"); new Catalog().require()`,
 	)
 })
 
@@ -296,6 +296,8 @@ test("validateBundleText rejects a member-access runtime require", () => {
 		`const key = "require";const fs = globalThis?.[key]?.("node:fs");`,
 		`const key = process.env.KEY;const load = import.meta[key];load(process.env.TARGET);`,
 		`const key = process.env.KEY;const load = globalThis[key];load(process.env.TARGET);`,
+		`const meta = import.meta;const key = process.env.KEY;meta[key](process.env.TARGET);`,
+		`const root = globalThis;const key = process.env.KEY;root[key](process.env.TARGET);`,
 	]) {
 		expect(() => validateBundleText("skill-a", code)).toThrow(/ambient runtime/)
 	}

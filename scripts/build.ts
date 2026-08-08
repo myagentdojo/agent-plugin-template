@@ -451,17 +451,12 @@ export function validateBundleText(skillId: string, code: string): void {
 		)
 	}
 	for (const match of executable.matchAll(/\b(?:import\s*\.\s*meta|globalThis)\b/g)) {
-		let cursor = match.index + match[0].length
-		while (/\s/.test(executable[cursor] ?? "")) cursor++
-		if (executable.slice(cursor, cursor + 2) === "?.") {
-			cursor += 2
-			while (/\s/.test(executable[cursor] ?? "")) cursor++
-		}
-		if (executable[cursor] !== "[") continue
+		const tail = executable.slice(match.index + match[0].length)
+		if (/^\s*(?:\?\s*)?\.\s*[A-Za-z_$]/.test(tail)) continue
 		throw new BundleValidationError(
 			skillId,
 			"runtime-loader",
-			`bundle retains a computed ambient runtime reference near "${code.slice(match.index, match.index + 48)}"`,
+			`bundle retains a computed or escaping ambient runtime reference near "${code.slice(match.index, match.index + 48)}"`,
 		)
 	}
 	// Every dynamic-load call site must be a single immediately-closed string
@@ -482,11 +477,15 @@ export function validateBundleText(skillId: string, code: string): void {
 		let before = match.index - 1
 		while (before >= 0 && /\s/.test(executable[before])) before--
 		if (executable[before] === ".") {
-			throw new BundleValidationError(
-				skillId,
-				"runtime-loader",
-				`bundle retains an ambient runtime module loader near "${code.slice(Math.max(0, match.index - 16), match.index + 32)}"`,
-			)
+			const owner = executable.slice(0, before)
+			if (/\b(?:globalThis|import\s*\.\s*meta)\s*(?:\?\s*)?$/.test(owner)) {
+				throw new BundleValidationError(
+					skillId,
+					"runtime-loader",
+					`bundle retains an ambient runtime module loader near "${code.slice(Math.max(0, match.index - 16), match.index + 32)}"`,
+				)
+			}
+			continue
 		}
 		const tail = executable.slice(match.index + match[0].length)
 		if (isMethodDeclarationTail(tail)) continue
