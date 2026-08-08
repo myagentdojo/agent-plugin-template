@@ -785,6 +785,41 @@ test("AE8: a provably dead writer's lock is reclaimed with only its staging remo
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 })
 
+test("a stale lock replaced by a live writer is revalidated before reclamation", () => {
+	const realWc = Bun.which("wc")
+	if (!realWc) throw new Error("wc is required by the test fixture")
+	const liveHost = hostId()
+	const liveStart = startToken(process.pid)
+	const toolDir = makeToolDir({
+		wc: `#!/bin/sh
+count_file="$XDG_CACHE_HOME/lock-record-read-count"
+count=0
+if [ -f "$count_file" ]; then IFS= read -r count <"$count_file" || count=0; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
+if [ "$count" -eq 2 ]; then
+	for record in "$XDG_CACHE_HOME"/agent-plugin-runtime/locks/bun-*/record; do
+		printf 'host=%s\npid=%s\nstart=%s\nstaging=%s\n' '${liveHost}' '${process.pid}' '${liveStart}' 'livenonce' >"$record"
+		break
+	done
+fi
+exec ${realWc} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	const lockDir = writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(22)
+	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
+	expect(readFileSync(join(lockDir, "record"), "utf8")).toContain("staging=livenonce")
+	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
 test("a stale writer staging cleanup failure emits one envelope after freeing the lock", () => {
 	const realRm = Bun.which("rm")
 	if (!realRm) throw new Error("rm is required by the test fixture")
@@ -1382,6 +1417,25 @@ test("a world-writable cache root is rejected for run and repair with exit 20", 
 	expect(apply.exitCode).toBe(20)
 	expect(readEnvelope(apply).code).toBe("CACHE_ROOT_UNSAFE")
 	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
+test("an unwritable lock root is a cache failure rather than false contention", () => {
+	const fixture = makeFixture()
+	mkdirSync(join(fixture.storeRoot, "bun"), { recursive: true, mode: 0o700 })
+	const lockRoot = join(fixture.storeRoot, "locks")
+	mkdirSync(lockRoot, { mode: 0o700 })
+	mkdirSync(join(fixture.storeRoot, "staging"), { mode: 0o700 })
+	chmodSync(lockRoot, 0o500)
+	try {
+		const apply = runEngine(fixture, ["repair", "--apply"])
+		expect(apply.exitCode).toBe(20)
+		const envelope = readEnvelope(apply)
+		expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+		expect(envelope.sideEffects).toEqual([])
+		expect(existsSync(fixture.blobPath)).toBe(false)
+	} finally {
+		chmodSync(lockRoot, 0o700)
+	}
 })
 
 test("an unwritable staging root fails with one envelope and releases its lock", () => {

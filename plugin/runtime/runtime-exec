@@ -495,6 +495,11 @@ read_lock_record() {
 	return 0
 }
 
+lock_record_identity() {
+	printf 'host=%s\npid=%s\nstart=%s\nstaging=%s\n' \
+		"$rec_host" "$rec_pid" "$rec_start" "$rec_staging"
+}
+
 # Recordless grace in whole minutes. find -mmin only accepts an integer on BSD
 # (macOS): a fractional argument like +0.5 exits "illegal trailing character",
 # which silently defeats reclaim and strands every future repair in LOCK_HELD.
@@ -543,6 +548,23 @@ writer_is_live() {
 }
 
 reclaim_stale_lock() {
+	_rsl_expected_identity=$1
+	# The stale judgment and rename are separate filesystem operations. Re-read
+	# the record immediately before the rename so a contender cannot replace the
+	# inspected stale lock with a new live lock (ABA) and have that lock moved.
+	if ! read_lock_record; then
+		diag 'could not re-read the repair lock before reclamation'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	_rsl_current_identity=$(lock_record_identity)
+	if [ "$_rsl_current_identity" != "$_rsl_expected_identity" ]; then
+		diag 'repair lock changed before stale reclamation; retrying acquisition'
+		return 0
+	fi
+	if [ -z "$rec_host" ] && [ -z "$rec_pid" ] && ! lock_is_older_than_grace; then
+		diag 'recordless repair lock was replaced before reclamation; retrying acquisition'
+		return 0
+	fi
 	# Claim the stale lock by renaming its directory to a private nonce-suffixed
 	# name before removing anything. Two contenders that both judged the same
 	# record dead cannot both win: the loser's rename fails because the source no
@@ -603,6 +625,13 @@ acquire_lock() {
 			fi
 			return 0
 		fi
+		# mkdir reports both EEXIST and real filesystem failures. Only enter the
+		# contention path when a lock actually exists; otherwise an unwritable lock
+		# root would masquerade indefinitely as LOCK_HELD.
+		if [ ! -e "$lock_dir" ] && [ ! -L "$lock_dir" ]; then
+			diag 'could not create the repair lock in the private runtime cache'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache lock directory writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
 		_al_attempts=$((_al_attempts + 1))
 		if [ "$_al_attempts" -gt 3 ]; then
 			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply shortly.'
@@ -611,6 +640,7 @@ acquire_lock() {
 			diag 'could not read the existing repair lock record'
 			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
 		fi
+		_al_lock_identity=$(lock_record_identity)
 		if writer_is_live; then
 			diag 'repair lock is held by a live writer'
 			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply after it finishes.'
@@ -621,7 +651,7 @@ acquire_lock() {
 				die 20 FOREIGN_LOCK_REQUIRES_APPROVAL "$(side_effects_json)" false 'Confirm that no other machine is repairing this private cache, ask the user to approve foreign-lock reclamation, then run runtime-exec repair --apply --reclaim-foreign-lock.'
 			fi
 		fi
-		reclaim_stale_lock
+		reclaim_stale_lock "$_al_lock_identity"
 	done
 }
 
