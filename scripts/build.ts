@@ -158,7 +158,8 @@ function executableCodeMask(code: string): string {
 		"void",
 		"yield",
 	])
-	const controlConditionKeywords = new Set(["for", "if", "switch", "while", "with"])
+	const controlConditionKeywords = new Set(["catch", "for", "if", "switch", "while", "with"])
+	const directStatementBlockKeywords = new Set(["catch", "do", "else", "finally", "try"])
 
 	const skipQuoted = (quote: string): void => {
 		masked[index] = quote
@@ -223,6 +224,7 @@ function executableCodeMask(code: string): string {
 		let regexAllowed = true
 		let pendingControlCondition = false
 		let pendingControlBlock = false
+		let pendingDirectStatementBlock = false
 		let pendingFunctionDeclaration = false
 		let pendingClassDeclarationDepth: number | null = null
 		let declarationBodyReady = false
@@ -277,6 +279,8 @@ function executableCodeMask(code: string): string {
 					pendingControlCondition =
 						!isMemberIdentifier && controlConditionKeywords.has(identifier)
 				}
+				pendingDirectStatementBlock =
+					!isMemberIdentifier && directStatementBlockKeywords.has(identifier)
 				if (
 					!isMemberIdentifier &&
 					(identifier === "function" || identifier === "class") &&
@@ -301,13 +305,22 @@ function executableCodeMask(code: string): string {
 				continue
 			}
 			if (character === "{") {
+				let before = index - 1
+				while (before >= 0 && /\s/.test(masked[before])) before--
 				masked[index++] = character
 				braceDepth++
 				const isDeclarationBlock =
 					declarationBodyReady ||
 					pendingClassDeclarationDepth === controlConditionParens.length
-				statementBlockBraces.push(pendingControlBlock || isDeclarationBlock)
+				const isStandaloneBlock = before < 0 || /[;{}]/.test(masked[before])
+				statementBlockBraces.push(
+					pendingControlBlock ||
+						pendingDirectStatementBlock ||
+						isDeclarationBlock ||
+						isStandaloneBlock,
+				)
 				pendingControlBlock = false
+				pendingDirectStatementBlock = false
 				if (isDeclarationBlock) {
 					declarationBodyReady = false
 					pendingClassDeclarationDepth = null
@@ -336,6 +349,7 @@ function executableCodeMask(code: string): string {
 				functionParameterParens.push(pendingFunctionDeclaration)
 				pendingFunctionDeclaration = false
 				pendingControlCondition = false
+				pendingDirectStatementBlock = false
 				pendingControlBlock = false
 				regexAllowed = true
 				continue

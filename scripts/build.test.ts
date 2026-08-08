@@ -195,6 +195,18 @@ test("validateBundleText masks regex literals after declaration blocks", () => {
 	).toThrow(/computed dynamic import/)
 })
 
+test("validateBundleText masks regex literals after other statement blocks", () => {
+	validateBundleText(
+		"skill-a",
+		`try { work() } catch (error) {} finally {} /require/.test(value)`,
+	)
+	validateBundleText("skill-a", `try { work() } catch {} /require/.test(value)`)
+	validateBundleText("skill-a", `{ work() } /require/.test(value)`)
+	expect(() =>
+		validateBundleText("skill-a", `const value = {} / import(target) / y;`),
+	).toThrow(/computed dynamic import/)
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,
