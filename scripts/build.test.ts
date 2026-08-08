@@ -514,6 +514,29 @@ test("dependency admission follows the bounded production dependency graph", () 
 	])
 })
 
+test("dependency admission resolves a workspace protocol dependency by package identity", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+	})
+	const sharedWorkspace = join(fixtureRoot, "packages", "shared-runtime")
+	mkdirSync(sharedWorkspace, { recursive: true })
+	writeFileSync(
+		join(sharedWorkspace, "package.json"),
+		'{"name":"shared-runtime","private":true,"type":"module"}\n',
+	)
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.workspaces["packages/fixture-skill"].dependencies["shared-runtime"] = "workspace:*"
+	lock.workspaces["packages/shared-runtime"] = { name: "shared-runtime" }
+	lock.packages["shared-runtime"] = [
+		"shared-runtime@workspace:packages/shared-runtime",
+	]
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual([
+		"runtime-package",
+	])
+})
+
 test("dependency admission follows the parent-specific lock selection", () => {
 	const fixtureRoot = admissionFixture({
 		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },

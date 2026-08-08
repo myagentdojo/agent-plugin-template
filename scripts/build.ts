@@ -546,6 +546,13 @@ function resolveLockDependency(
 		)
 	}
 	const direct = packages.get(name)
+	if (
+		direct?.name === name &&
+		requested.startsWith("workspace:") &&
+		direct.reference.startsWith("workspace:")
+	) {
+		return direct
+	}
 	if (direct?.name === name && direct.reference === requested) return direct
 	const candidates = [...packages.values()].filter((entry) => entry.name === name)
 	const exact = candidates.filter((entry) => entry.reference === requested)
