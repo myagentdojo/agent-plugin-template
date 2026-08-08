@@ -377,6 +377,8 @@ const engineToolNames = [
 	"curl",
 	"unzip",
 	"ps",
+	"find",
+	"awk",
 	"sha256sum",
 	"shasum",
 ]
@@ -728,7 +730,13 @@ test("AE9: hostile env, PATH, and cwd cannot alter custody; app env is preserved
 	const hostileCwd = join(temporaryDirectory("hostile-cwd-"), "app")
 	mkdirSync(join(hostileCwd, "node_modules"), { recursive: true })
 	writeFileSync(join(hostileCwd, ".env"), "EVIL=1\n")
-	writeFileSync(join(hostileCwd, "bunfig.toml"), '[run]\npreload = ["./evil.ts"]\n')
+	// Top-level preload is the shape Bun honors for a direct `bun <script>` run;
+	// a [run] table is ignored, so the earlier fixture never exercised the vector.
+	writeFileSync(
+		join(hostileCwd, "evil.ts"),
+		'console.error("EVIL_PRELOAD_RAN");\nprocess.exit(99);\n',
+	)
+	writeFileSync(join(hostileCwd, "bunfig.toml"), 'preload = ["./evil.ts"]\n')
 	const run = runEngine(fixture, ["run", "skill-a"], {
 		cwd: hostileCwd,
 		env: {
@@ -739,6 +747,8 @@ test("AE9: hostile env, PATH, and cwd cannot alter custody; app env is preserved
 			NODE_PATH: hostileCwd,
 		},
 	})
+	// The hostile cwd bunfig preload must never run inside the verified runtime.
+	expect(run.stderr.toString()).not.toContain("EVIL_PRELOAD_RAN")
 	expect(run.stderr.toString()).toBe("")
 	expect(run.exitCode).toBe(0)
 	const report = bundleReport(run)
@@ -749,6 +759,7 @@ test("AE9: hostile env, PATH, and cwd cannot alter custody; app env is preserved
 	expect(report.DO_NOT_TRACK).toBe("1")
 	expect(report.bunflags).toContain("--no-install")
 	expect(report.bunflags).toContain("--env-file=/dev/null")
+	expect(report.bunflags).toContain("--config=")
 	// ordinary app environment is preserved: caller cwd and caller PATH
 	expect(report.cwd).toBe(hostileCwd)
 	expect(report.PATH).toBe(hostileTools)
@@ -828,6 +839,22 @@ test("AE12: unknown skills, unmapped bundles, and tampered bundles fail closed w
 test("a wrong archive size is rejected before extraction with exit 23", () => {
 	const fixture = makeFixture()
 	fixture.lock.archiveBytes -= 1
+	writeFixtureLock(fixture, fixture.lock)
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(23)
+	expect(readEnvelope(apply).code).toBe("ARCHIVE_SIZE_MISMATCH")
+	expect(existsSync(fixture.blobPath)).toBe(false)
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+})
+
+test("an oversized-lock archive that downloads whole still fails verify_archive with exit 23", () => {
+	// Recording MORE bytes than the archive holds keeps curl's --max-filesize
+	// cap above the real size, so the download completes and verify_archive's
+	// own post-download size check is the guard that rejects the mismatch --
+	// exercising a path the undersized-lock case can never reach.
+	const fixture = makeFixture()
+	fixture.lock.archiveBytes += 1
 	writeFixtureLock(fixture, fixture.lock)
 	const apply = runEngine(fixture, ["repair", "--apply"])
 	expect(apply.exitCode).toBe(23)

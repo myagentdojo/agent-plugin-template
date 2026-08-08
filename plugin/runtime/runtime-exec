@@ -166,7 +166,7 @@ resolve_sha_tool() {
 }
 
 require_common_tools() {
-	for _t in uname ls id wc; do
+	for _t in uname ls id wc rm; do
 		need_tool "$_t"
 	done
 	resolve_sha_tool
@@ -175,7 +175,7 @@ require_common_tools() {
 }
 
 require_apply_tools() {
-	for _t in mkdir rm mv chmod dd head curl unzip ps; do
+	for _t in mkdir rm mv chmod dd head curl unzip ps find awk; do
 		need_tool "$_t"
 	done
 }
@@ -339,6 +339,14 @@ resolve_cache_root() {
 verify_cache_root_safety() {
 	for _vc_path in "$cache_base" "$store_root" "$store_root/bun" "$store_root/locks" "$store_root/staging"; do
 		if [ -e "$_vc_path" ] || [ -L "$_vc_path" ]; then
+			# A cache component that exists but is not a directory would let a
+			# regular file (e.g. XDG_CACHE_HOME pointed at a file) pass the
+			# owner/mode checks, then crash the later mkdir -p under set -eu
+			# before any typed envelope is emitted. Reject it as an unsafe root.
+			if [ ! -d "$_vc_path" ]; then
+				diag "unsafe cache root: a cache directory component is not a directory"
+				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Point XDG_CACHE_HOME at a private directory owned by the current user; a cache path component is not a directory.'
+			fi
 			if ! path_is_safe "$_vc_path" 'runtime cache directory'; then
 				diag "unsafe cache root: $unsafe_reason"
 				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Make the runtime cache private: chown it to the current user with mode 700, or point XDG_CACHE_HOME at a private directory.'
@@ -420,11 +428,33 @@ read_lock_record() {
 	done <"$lock_dir/record"
 }
 
+RECORDLESS_LOCK_GRACE_SECS=30
+
+lock_is_older_than_grace() {
+	# True (exit 0) when the lock directory is older than the recordless grace
+	# window. Uses find -mmin with a fractional minute so we avoid BSD/GNU stat
+	# mtime format differences; returns non-zero (unknown -> caller keeps the
+	# conservative live default) when age cannot be established.
+	_lig_min=$(awk "BEGIN{printf \"%.6f\", $RECORDLESS_LOCK_GRACE_SECS/60}" 2>/dev/null) || return 1
+	[ -n "$_lig_min" ] || return 1
+	_lig_hit=$("$tool_find" "$lock_dir" -prune -mmin "+$_lig_min" 2>/dev/null) || return 1
+	[ -n "$_lig_hit" ]
+}
+
 writer_is_live() {
 	# A writer that cannot be proven dead is treated as live (never reclaim a
-	# live writer). A missing record means the writer may be between mkdir and
-	# its record write, so it is also treated as live; retry is safe.
-	if [ -z "$rec_host" ] && [ -z "$rec_pid" ]; then return 0; fi
+	# live writer).
+	if [ -z "$rec_host" ] && [ -z "$rec_pid" ]; then
+		# No record: either the creator is between mkdir and its atomic record
+		# publish (a sub-second window), or it died before publishing and the
+		# lock would otherwise strand every future repair forever. Treat a fresh
+		# recordless lock as live (retry is safe) but a recordless lock older
+		# than the grace window as a dead creator that may be reclaimed.
+		if lock_is_older_than_grace; then
+			return 1
+		fi
+		return 0
+	fi
 	if [ "$rec_host" != "$host_id" ]; then return 0; fi
 	case "$rec_pid" in
 	'' | *[!0-9]*) return 1 ;;
@@ -456,12 +486,16 @@ acquire_lock() {
 		if "$tool_mkdir" "$lock_dir" 2>/dev/null; then
 			lock_acquired=1
 			_al_start=$(start_token "$$") || _al_start=unknown
+			# Publish the record atomically: a contender reading $lock_dir/record
+			# never sees a half-written record and so never classifies this live
+			# writer as dead from an empty pid field.
 			{
 				printf 'host=%s\n' "$host_id"
 				printf 'pid=%s\n' "$$"
 				printf 'start=%s\n' "$_al_start"
 				printf 'staging=%s\n' "$nonce"
-			} >"$lock_dir/record"
+			} >"$lock_dir/record.$nonce"
+			"$tool_mv" -f "$lock_dir/record.$nonce" "$lock_dir/record"
 			return 0
 		fi
 		_al_attempts=$((_al_attempts + 1))
@@ -515,7 +549,7 @@ validate_asset_url() {
 download_archive() {
 	archive_path=$stage_dir/$RUNTIME_ASSET_ARCHIVE_NAME
 	_da_status=0
-	"$tool_curl" --fail --silent --show-error \
+	"$tool_curl" -q --fail --silent --show-error \
 		--location --max-redirs 3 \
 		--proto '=https,file' --proto-redir '=https' \
 		--connect-timeout 10 --max-time 300 \
@@ -603,6 +637,10 @@ publish_blob() {
 	assess_blob
 	if [ "$blob_status" != valid ]; then
 		diag "published runtime failed re-verification: $blob_reason"
+		# Remove the unverified bytes so a failed apply never leaves a broken
+		# executable at the trusted blob path, even transiently. A prior valid
+		# blob under a different digest directory is untouched.
+		"$tool_rm" -f "$blob_path" 2>/dev/null || :
 		fail_apply 23 EXECUTABLE_HASH_MISMATCH "$(side_effects_json)" false 'The published runtime failed re-verification; run runtime-exec repair --apply again.'
 	fi
 }
@@ -756,6 +794,23 @@ cmd_run() {
 	esac
 	# Launch: restore the ordinary caller environment, suppress Bun ambient
 	# control surfaces (R20), and pass stdio/exit through unchanged (R19).
+	# The caller's cwd is preserved for the skill, but Bun auto-discovers
+	# bunfig.toml from that cwd and a top-level `preload` there would run
+	# caller-controlled code inside the verified runtime. Point --config at an
+	# owner-only empty config so no ambient bunfig is loaded. This transient
+	# file is not the custody cache, so run stays custody-read-only.
+	# An owner-only empty config in the private store neutralizes cwd bunfig
+	# discovery. It lives beside the verified blob, is created only during the
+	# app phase after the launch decision, and never changes custody state, so
+	# run remains custody-read-only for the runtime blob itself.
+	empty_bunfig=$store_root/empty-bunfig.toml
+	if [ ! -f "$empty_bunfig" ] || [ -L "$empty_bunfig" ]; then
+		"$tool_rm" -f "$empty_bunfig" 2>/dev/null || :
+		(umask 077; : >"$empty_bunfig") 2>/dev/null || {
+			diag 'could not stage the empty runtime config'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Ensure the runtime cache directory is writable by the current user, then retry.'
+		}
+	fi
 	unset BUN_OPTIONS NODE_OPTIONS NODE_PATH BUN_INSTALL BUN_INSTALL_CACHE_DIR BUN_CONFIG_FILE 2>/dev/null || :
 	DO_NOT_TRACK=1
 	export DO_NOT_TRACK
@@ -773,7 +828,7 @@ cmd_run() {
 	else
 		unset PATH 2>/dev/null || :
 	fi
-	exec "$blob_path" --no-install --env-file=/dev/null "$bundle_path" "$@"
+	exec "$blob_path" --config="$empty_bunfig" --no-install --env-file=/dev/null "$bundle_path" "$@"
 }
 
 # --- dispatch -----------------------------------------------------------------
