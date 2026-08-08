@@ -212,6 +212,7 @@ function isInsideDirectory(path: string, directory: string): boolean {
 interface AdmittedModuleOwner {
 	root: string
 	bareImports: Set<string>
+	packageImports: string[]
 }
 
 interface CatalogRuntimeSkill {
@@ -230,6 +231,19 @@ function isOwnedHelloWorldAdapter(skillId: string, skill: CatalogRuntimeSkill): 
 function barePackageName(specifier: string): string {
 	if (!specifier.startsWith("@")) return specifier.split("/", 1)[0]
 	return specifier.split("/", 2).join("/")
+}
+
+function matchesPackageImport(pattern: string, specifier: string): boolean {
+	if (pattern === specifier) return true
+	const wildcard = pattern.indexOf("*")
+	if (wildcard === -1) return false
+	const prefix = pattern.slice(0, wildcard)
+	const suffix = pattern.slice(wildcard + 1)
+	return (
+		specifier.length >= prefix.length + suffix.length &&
+		specifier.startsWith(prefix) &&
+		specifier.endsWith(suffix)
+	)
 }
 
 function createClosedResolutionPlugin(
@@ -322,7 +336,11 @@ function createClosedResolutionPlugin(
 					)
 					importerOwners.set(importer, owner)
 				}
-				if (!owner?.bareImports.has(barePackageName(specifier))) {
+				const declaredImport =
+					owner?.bareImports.has(barePackageName(specifier)) ||
+					(specifier.startsWith("#") &&
+						owner?.packageImports.some((pattern) => matchesPackageImport(pattern, specifier)))
+				if (!declaredImport) {
 					violations.push(
 						new BundleValidationError(
 							skillId,
@@ -696,6 +714,7 @@ function moduleOwner(root: string): AdmittedModuleOwner {
 		name?: string
 		dependencies?: Record<string, string>
 		peerDependencies?: Record<string, string>
+		imports?: Record<string, unknown>
 	}
 	return {
 		root,
@@ -704,6 +723,9 @@ function moduleOwner(root: string): AdmittedModuleOwner {
 			...Object.keys(manifest.peerDependencies ?? {}),
 			...(manifest.name ? [manifest.name] : []),
 		]),
+		packageImports: Object.keys(manifest.imports ?? {}).filter((specifier) =>
+			specifier.startsWith("#"),
+		),
 	}
 }
 

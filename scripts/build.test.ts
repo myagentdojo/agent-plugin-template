@@ -770,6 +770,37 @@ test("a phantom bare import fails with a precise unresolved-import error", async
 	await expectBundleRejection(fixture, "unresolved-import", /unresolved bare import "left-pad"/)
 })
 
+test("declared package import aliases remain inside the workspace closure", async () => {
+	const fixture = fixtureWorkspace(
+		`import exact from "#exact";import wildcard from "#lib/value";console.log(exact, wildcard);`,
+		{
+			name: "fixture-skill",
+			private: true,
+			type: "module",
+			main: "src/main.js",
+			imports: {
+				"#exact": "./src/exact.js",
+				"#lib/*": "./src/lib/*.js",
+			},
+		},
+	)
+	const workspaceRoot = join(fixture.fixtureRoot, fixture.workspace)
+	mkdirSync(join(workspaceRoot, "src", "lib"), { recursive: true })
+	writeFileSync(join(workspaceRoot, "src", "exact.js"), `export default "exact";\n`)
+	writeFileSync(join(workspaceRoot, "src", "lib", "value.js"), `export default "wildcard";\n`)
+
+	const artifact = await bundleWorkspaceSkill(
+		fixture.fixtureRoot,
+		"fixture-skill",
+		fixture.workspace,
+		fixture.staging,
+	)
+	const bundle = new TextDecoder().decode(artifact.contents)
+	expect(bundle).toContain('var exact_default = "exact";')
+	expect(bundle).toContain('var value_default = "wildcard";')
+	expect(bundle).not.toContain('from "#')
+})
+
 test("parent dependency resolution fails with a precise parent-resolution error", async () => {
 	const parentRoot = temporaryDirectory("parent-resolution-")
 	const parentPackage = join(parentRoot, "node_modules", "leaked-pkg")
