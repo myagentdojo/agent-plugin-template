@@ -201,6 +201,8 @@ test("validateBundleText masks regex literals after other statement blocks", () 
 		`try { work() } catch (error) {} finally {} /require/.test(value)`,
 	)
 	validateBundleText("skill-a", `try { work() } catch {} /require/.test(value)`)
+	validateBundleText("skill-a", `if (ok) {} else {} /require/.test(value)`)
+	validateBundleText("skill-a", `do {} while (ok) /require/.test(value)`)
 	validateBundleText("skill-a", `{ work() } /require/.test(value)`)
 	expect(() =>
 		validateBundleText("skill-a", `const value = {} / import(target) / y;`),
@@ -215,6 +217,14 @@ test("validateBundleText distinguishes labeled blocks from object properties", (
 			`const value = { nested: {} / import(target) / y };`,
 		),
 	).toThrow(/computed dynamic import/)
+})
+
+test("validateBundleText keeps division after direct-statement keyword property values executable", () => {
+	for (const property of ["try", "catch", "do", "else", "finally"]) {
+		expect(() =>
+			validateBundleText("skill-a", `const value = { ${property}: {} / __require(target) / 1 };`),
+		).toThrow(/computed runtime require/)
+	}
 })
 
 test("validateBundleText rejects a computed runtime require", () => {
@@ -306,10 +316,16 @@ test("validateBundleText rejects runtime code generation", () => {
 	}
 })
 
+test("validateBundleText rejects constructor-based runtime code generation", () => {
+	expect(() =>
+		validateBundleText("skill-a", `(() => {}).constructor("p", "return import(p)")`),
+	).toThrow(/runtime code generation/)
+})
+
 test("validateBundleText allows non-invoked Function references", () => {
 	validateBundleText(
 		"skill-a",
-		`const call = Function.prototype.call;const isFunction = value instanceof Function;console.log(call, isFunction);`,
+		`const call = Function.prototype.call;const constructor = function () {}.prototype.constructor;const isFunction = value instanceof Function;console.log(call, constructor, isFunction);`,
 	)
 })
 

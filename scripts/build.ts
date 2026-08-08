@@ -380,6 +380,7 @@ function executableCodeMask(code: string): string {
 			masked[index++] = character
 			pendingControlCondition = false
 			pendingControlBlock = false
+			pendingDirectStatementBlock = false
 			regexAllowed = !/[)\]]/.test(character)
 		}
 	}
@@ -455,7 +456,7 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  */
 export function validateBundleText(skillId: string, code: string): void {
 	const executable = executableCodeMask(code)
-	const codeGeneration = /\b(?:eval|Function)\b/g
+	const codeGeneration = /\b(?:eval|Function)\b|\.\s*constructor\s*\(/g
 	for (const match of executable.matchAll(codeGeneration)) {
 		if (isPropertyLabel(executable, match.index, match[0].length)) continue
 		if (match[0] === "Function") {
