@@ -110,6 +110,29 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 	const launcher = await Bun.file(new URL("../plugin/bin/hello-world", import.meta.url)).text()
 	expect(launcher).not.toContain("runtime-exec")
 
+	// Honest SKILL status rides the same gate: while launchers do not reference
+	// the custody engine, each workspace skill's SKILL.md must carry the
+	// not-yet-invocable caveat, and activating launchers must remove it in the
+	// same change.
+	const launcherGateActive = launcher.includes("runtime-exec")
+	for (const [skillId, skill] of Object.entries(
+		catalog.skills as Record<string, { workspace?: string }>,
+	)) {
+		if (!skill.workspace) continue
+		const skillDocument = await Bun.file(
+			new URL(`../plugin/skills/${skillId}/SKILL.md`, import.meta.url),
+		).text()
+		if (launcherGateActive) {
+			expect(`${skillId} caveat ${skillDocument.includes("Status: not yet invocable")}`).toBe(
+				`${skillId} caveat false`,
+			)
+		} else {
+			expect(`${skillId} caveat ${skillDocument.includes("Status: not yet invocable")}`).toBe(
+				`${skillId} caveat true`,
+			)
+		}
+	}
+
 	const lockProjection = await Bun.file(
 		new URL("../plugin/runtime/runtime-lock.sh", import.meta.url),
 	).text()
