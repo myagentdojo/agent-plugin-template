@@ -1,0 +1,1153 @@
+#!/bin/sh
+# runtime-exec — stage-zero Bun runtime custody engine (ADR 0005).
+#
+# The whole command surface:
+#   run <skill> [-- args...]   execute a catalog skill on the verified runtime
+#   repair                     read-only, network-free repair preview
+#   repair --apply             the sole acquisition/replacement operation
+#   repair --apply --reclaim-foreign-lock
+#                              explicitly approved migrated-cache recovery
+#   help | -h | --help         ordinary help
+#
+# Exit classes:
+#   0   success (repair preview/apply); run passes the bundle's status through
+#   2   usage error
+#   20  actionable missing/corrupt custody state
+#   21  unsupported platform or missing host prerequisite
+#   22  retry-later repair failure
+#   23  integrity or release-contract failure
+#
+# Custody failures and repair responses emit exactly one versioned JSON
+# control object on stdout; stderr carries human diagnostics only. After a
+# successful launch the bundle's stdout/stderr/exit pass through unchanged.
+set -eu
+
+schema_version=1
+# Production acquisition is HTTPS-only. Test fixtures rewrite this internal
+# constant in their private engine copy; caller environment cannot enable it.
+test_allow_file_urls=0
+
+# --- caller environment preservation (R20) ----------------------------------
+# The ordinary app environment is preserved for the skill process; custody
+# itself never consults it.
+caller_path_set=0
+caller_path=''
+if [ "${PATH+x}" = x ]; then
+	caller_path_set=1
+	caller_path=$PATH
+fi
+caller_lc_all_set=0
+caller_lc_all=''
+if [ "${LC_ALL+x}" = x ]; then
+	caller_lc_all_set=1
+	caller_lc_all=$LC_ALL
+fi
+# Capture the caller umask so the launched skill inherits its own file-mode
+# policy; custody-owned writes still use the tightened 077 set just below.
+caller_umask=$(umask)
+
+# --- custody sanitation (R10) ------------------------------------------------
+# Fixed absolute tool locations, C locale, default field splitting, and
+# owner-only file creation. The caller's PATH is never trusted for custody.
+unset IFS CDPATH ENV BASH_ENV 2>/dev/null || :
+host_tool_dirs='/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin'
+PATH=$host_tool_dirs
+export PATH
+LC_ALL=C
+export LC_ALL
+umask 077
+
+case "$0" in
+*/*) script_source_dir=${0%/*} ;;
+*) script_source_dir=. ;;
+esac
+script_dir=$(CDPATH='' cd -- "$script_source_dir" && pwd -P)
+plugin_root=$(CDPATH='' cd -- "$script_dir/.." && pwd -P)
+
+side_effects=''
+
+# --- control-object plumbing (R19) -------------------------------------------
+
+diag() {
+	printf 'runtime-exec: %s\n' "$1" >&2
+}
+
+emit_envelope() {
+	# $1 ok  $2 code  $3 sideEffects JSON array  $4 retrySafe  $5 nextAction
+	# $6 optional extra JSON fragment starting with a comma
+	printf '{"schemaVersion":%s,"ok":%s,"code":"%s","sideEffects":%s,"retrySafe":%s,"nextAction":"%s"%s}\n' \
+		"$schema_version" "$1" "$2" "$3" "$4" "$5" "${6-}"
+}
+
+die() {
+	# $1 exit status  $2 code  $3 sideEffects JSON  $4 retrySafe  $5 nextAction
+	# $6 optional extra fragment
+	emit_envelope false "$2" "$3" "$4" "$5" "${6-}"
+	exit "$1"
+}
+
+add_side_effect() {
+	_item='"'$1'"'
+	if [ -z "$side_effects" ]; then
+		side_effects=$_item
+	else
+		side_effects=$side_effects,$_item
+	fi
+}
+
+side_effects_json() {
+	printf '[%s]' "$side_effects"
+}
+
+runtime_extra() {
+	printf ',"runtime":{"version":"%s","executableSha256":"%s"}' \
+		"$RUNTIME_LOCK_VERSION" "$RUNTIME_ASSET_EXECUTABLE_SHA256"
+}
+
+state_extra() {
+	printf '%s,"state":{"before":"%s"}' "$(runtime_extra)" "$1"
+}
+
+print_help() {
+	printf '%s\n' \
+		'runtime-exec - Bun runtime custody engine' \
+		'' \
+		'Usage:' \
+		'  runtime-exec run <skill> [-- args...]  Run a catalog skill on the verified runtime.' \
+		'  runtime-exec repair                    Preview needed repair (read-only, no network).' \
+		'  runtime-exec repair --apply            Download, verify, and install the locked runtime.' \
+		'  runtime-exec repair --apply --reclaim-foreign-lock' \
+		'                                         Reclaim a lock from another host after explicit approval.' \
+		'  runtime-exec help                      Show this help.' \
+		'' \
+		'run never downloads or repairs; repair --apply is the only operation that' \
+		'acquires or replaces the runtime. Custody results are one JSON object on' \
+		'stdout. Exit codes: 0 success, 2 usage, 20 actionable custody state,' \
+		'21 unsupported platform or missing host tool, 22 retry-later, 23 integrity' \
+		'or release-contract failure.'
+}
+
+# --- sanitized host tool resolution (R10) ------------------------------------
+
+resolve_tool() {
+	_rt_name=$1
+	_rt_dirs=$host_tool_dirs
+	while [ -n "$_rt_dirs" ]; do
+		case "$_rt_dirs" in
+		*:*)
+			_rt_dir=${_rt_dirs%%:*}
+			_rt_dirs=${_rt_dirs#*:}
+			;;
+		*)
+			_rt_dir=$_rt_dirs
+			_rt_dirs=''
+			;;
+		esac
+		if [ -n "$_rt_dir" ] && [ -f "$_rt_dir/$_rt_name" ] && [ -x "$_rt_dir/$_rt_name" ]; then
+			printf '%s' "$_rt_dir/$_rt_name"
+			return 0
+		fi
+	done
+	return 1
+}
+
+need_tool() {
+	if _nt_path=$(resolve_tool "$1"); then
+		eval "tool_$1=\$_nt_path"
+		return 0
+	fi
+	diag "required host tool not found in sanitized locations: $1"
+	die 21 HOST_TOOL_MISSING '[]' false "Install $1 in a standard system location such as /usr/bin, /bin, /usr/local/bin, or /opt/homebrew/bin, then retry."
+}
+
+resolve_sha_tool() {
+	if _st_path=$(resolve_tool sha256sum); then
+		sha_cmd=$_st_path
+		sha_args=''
+		return 0
+	fi
+	if _st_path=$(resolve_tool shasum); then
+		sha_cmd=$_st_path
+		sha_args='-a 256'
+		return 0
+	fi
+	diag 'required host tool not found in sanitized locations: sha256sum or shasum'
+	die 21 HOST_TOOL_MISSING '[]' false 'Install sha256sum or shasum in a standard system location such as /usr/bin, /bin, /usr/local/bin, or /opt/homebrew/bin, then retry.'
+}
+
+require_common_tools() {
+	for _t in uname ls id wc rm mkdir; do
+		need_tool "$_t"
+	done
+	resolve_sha_tool
+	current_uid=$("$tool_id" -u)
+	host_id=$("$tool_uname" -n)
+}
+
+require_apply_tools() {
+	for _t in mkdir rm mv ln chmod dd head curl unzip ps find awk; do
+		need_tool "$_t"
+	done
+}
+
+sha_file() {
+	_sf_file=$1
+	_sf_out=$("$sha_cmd" $sha_args "$_sf_file" 2>/dev/null) || {
+		printf ''
+		return 0
+	}
+	set -- $_sf_out
+	printf '%s' "${1-}"
+}
+
+sha_stdin() {
+	_ss_out=$("$sha_cmd" $sha_args 2>/dev/null) || return 1
+	set -- $_ss_out
+	printf '%s' "${1-}"
+}
+
+file_size() {
+	_fs_out=$("$tool_wc" -c <"$1" 2>/dev/null) || {
+		printf ''
+		return 0
+	}
+	set -- $_fs_out
+	printf '%s' "${1-}"
+}
+
+sanitize_bun_environment() {
+	unset BUN_OPTIONS NODE_OPTIONS NODE_PATH BUN_INSTALL BUN_INSTALL_CACHE_DIR BUN_CONFIG_FILE 2>/dev/null || :
+	DO_NOT_TRACK=1
+	export DO_NOT_TRACK
+	BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+	export BUN_RUNTIME_TRANSPILER_CACHE_PATH
+}
+
+# --- platform custody (R9) ----------------------------------------------------
+
+detect_platform() {
+	_dp_system=$("$tool_uname" -s)
+	_dp_machine=$("$tool_uname" -m)
+	case "$_dp_system:$_dp_machine" in
+	Darwin:arm64) platform=darwin-arm64 ;;
+	Darwin:x86_64) platform=darwin-x64 ;;
+	Linux:aarch64 | Linux:arm64) platform=linux-arm64 ;;
+	Linux:x86_64) platform=linux-x64 ;;
+	*)
+		diag "unsupported platform: $_dp_system/$_dp_machine"
+		die 21 UNSUPPORTED_PLATFORM '[]' false 'Use a supported platform: macOS arm64/x64 or Linux glibc arm64/x64.'
+		;;
+	esac
+	if [ "$_dp_system" = Linux ]; then
+		need_tool getconf
+		_dp_libc=$("$tool_getconf" GNU_LIBC_VERSION 2>/dev/null) || _dp_libc=''
+		case "$_dp_libc" in
+		glibc\ *) ;;
+		*)
+			diag 'unsupported Linux libc; this payload requires glibc'
+			die 21 UNSUPPORTED_PLATFORM '[]' false 'Use glibc Linux arm64/x64; musl and unrecognized Linux libc implementations are unsupported.'
+			;;
+		esac
+	fi
+}
+
+# --- generated projections (R14) ----------------------------------------------
+
+load_projections() {
+	for _lp_file in runtime-lock.sh skill-catalog.sh bundle-inventory.sh; do
+		if [ ! -f "$plugin_root/runtime/$_lp_file" ]; then
+			diag "generated projection missing: runtime/$_lp_file"
+			die 23 LOCK_INVALID '[]' false 'Reinstall the plugin payload; generated runtime projections are missing.'
+		fi
+	done
+	. "$plugin_root/runtime/runtime-lock.sh"
+	. "$plugin_root/runtime/skill-catalog.sh"
+	. "$plugin_root/runtime/bundle-inventory.sh"
+}
+
+is_sha256() {
+	if [ "${#1}" != 64 ]; then return 1; fi
+	case "$1" in
+	*[!0-9a-f]*) return 1 ;;
+	esac
+	return 0
+}
+
+is_number() {
+	case "$1" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	return 0
+}
+
+is_semantic_version() {
+	case "$1" in
+	'' | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	_iv_major=${1%%.*}
+	_iv_tail=${1#*.}
+	if [ "$_iv_tail" = "$1" ]; then return 1; fi
+	_iv_minor=${_iv_tail%%.*}
+	_iv_patch=${_iv_tail#*.}
+	if [ "$_iv_patch" = "$_iv_tail" ]; then return 1; fi
+	case "$_iv_patch" in *.*) return 1 ;; esac
+	for _iv_part in "$_iv_major" "$_iv_minor" "$_iv_patch"; do
+		case "$_iv_part" in
+		0) ;;
+		[1-9]*)
+			case "$_iv_part" in *[!0-9]*) return 1 ;; esac
+			;;
+		*) return 1 ;;
+		esac
+	done
+	return 0
+}
+
+select_locked_asset() {
+	if ! is_semantic_version "${RUNTIME_LOCK_VERSION-}"; then
+		diag 'runtime lock version is malformed'
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is malformed.'
+	fi
+	runtime_lock_select_asset "$platform" || {
+		diag "runtime lock has no asset for $platform"
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is incomplete.'
+	}
+	if ! is_number "$RUNTIME_ASSET_ARCHIVE_BYTES" || ! is_number "$RUNTIME_ASSET_EXECUTABLE_BYTES" ||
+		! is_sha256 "$RUNTIME_ASSET_ARCHIVE_SHA256" || ! is_sha256 "$RUNTIME_ASSET_EXECUTABLE_SHA256"; then
+		diag 'runtime lock asset metadata is malformed'
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is malformed.'
+	fi
+	case "$RUNTIME_ASSET_ARCHIVE_NAME" in
+	'' | -* | */* | *..*)
+		diag 'runtime lock archive name is malformed'
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is malformed.'
+		;;
+	esac
+	case "$RUNTIME_ASSET_EXECUTABLE_PATH" in
+	'' | /* | *..* | *'*'* | *'?'* | *'['*)
+		diag 'runtime lock executable path is malformed'
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is malformed.'
+		;;
+	esac
+}
+
+# --- private shared cache custody (R13) ---------------------------------------
+
+unsafe_reason=''
+
+path_is_safe() {
+	# $1 absolute path that exists  $2 redacted label for diagnostics
+	_ps_path=$1
+	_ps_label=$2
+	if [ -L "$_ps_path" ]; then
+		unsafe_reason="$_ps_label is a symlink"
+		return 1
+	fi
+	_ps_line=$("$tool_ls" -ldn "$_ps_path" 2>/dev/null) || {
+		unsafe_reason="$_ps_label cannot be inspected"
+		return 1
+	}
+	set -- $_ps_line
+	case "${1-}" in
+	l*)
+		unsafe_reason="$_ps_label is a symlink"
+		return 1
+		;;
+	esac
+	if [ "${3-}" != "$current_uid" ]; then
+		unsafe_reason="$_ps_label is not owned by the current user"
+		return 1
+	fi
+	case "${1-}" in
+	?????w*)
+		unsafe_reason="$_ps_label is group-writable"
+		return 1
+		;;
+	esac
+	case "${1-}" in
+	????????w*)
+		unsafe_reason="$_ps_label is world-writable"
+		return 1
+		;;
+	esac
+	return 0
+}
+
+resolve_cache_root() {
+	if [ -n "${XDG_CACHE_HOME-}" ]; then
+		cache_base=$XDG_CACHE_HOME
+	elif [ -n "${HOME-}" ]; then
+		cache_base=$HOME/.cache
+	else
+		die 20 CACHE_ROOT_UNSAFE '[]' false 'Set XDG_CACHE_HOME to a private absolute directory owned by the current user.'
+	fi
+	case "$cache_base" in
+	/*) ;;
+	*)
+		die 20 CACHE_ROOT_UNSAFE '[]' false 'Set XDG_CACHE_HOME to an absolute path.'
+		;;
+	esac
+	store_root=$cache_base/agent-plugin-runtime
+	blob_dir=$store_root/bun/$RUNTIME_ASSET_EXECUTABLE_SHA256
+	blob_path=$blob_dir/bun
+}
+
+verify_cache_root_safety() {
+	for _vc_path in "$cache_base" "$store_root" "$store_root/bun" "$store_root/locks" "$store_root/staging"; do
+		if [ -e "$_vc_path" ] || [ -L "$_vc_path" ]; then
+			# A cache component that exists but is not a directory would let a
+			# regular file (e.g. XDG_CACHE_HOME pointed at a file) pass the
+			# owner/mode checks, then crash the later mkdir -p under set -eu
+			# before any typed envelope is emitted. Reject it as an unsafe root.
+			if [ ! -d "$_vc_path" ]; then
+				diag "unsafe cache root: a cache directory component is not a directory"
+				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Point XDG_CACHE_HOME at a private directory owned by the current user; a cache path component is not a directory.'
+			fi
+			if ! path_is_safe "$_vc_path" 'runtime cache directory'; then
+				diag "unsafe cache root: $unsafe_reason"
+				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Make the runtime cache private: chown it to the current user with mode 700, or point XDG_CACHE_HOME at a private directory.'
+			fi
+		fi
+	done
+}
+
+blob_status=''
+blob_reason=''
+
+assess_blob() {
+	blob_reason=''
+	if [ ! -e "$blob_path" ] && [ ! -L "$blob_path" ]; then
+		blob_status=missing
+		return 0
+	fi
+	if [ -L "$blob_path" ] || [ ! -f "$blob_path" ]; then
+		blob_status=corrupt
+		blob_reason='runtime executable is not a regular file'
+		return 0
+	fi
+	if ! path_is_safe "$blob_dir" 'runtime blob directory'; then
+		blob_status=corrupt
+		blob_reason=$unsafe_reason
+		return 0
+	fi
+	if ! path_is_safe "$blob_path" 'runtime executable'; then
+		blob_status=corrupt
+		blob_reason=$unsafe_reason
+		return 0
+	fi
+	if [ ! -x "$blob_path" ]; then
+		blob_status=corrupt
+		blob_reason='runtime executable lost its execute permission'
+		return 0
+	fi
+	if [ "$(file_size "$blob_path")" != "$RUNTIME_ASSET_EXECUTABLE_BYTES" ]; then
+		blob_status=corrupt
+		blob_reason='runtime executable size mismatch'
+		return 0
+	fi
+	if [ "$(sha_file "$blob_path")" != "$RUNTIME_ASSET_EXECUTABLE_SHA256" ]; then
+		blob_status=corrupt
+		blob_reason='runtime executable sha256 mismatch'
+		return 0
+	fi
+	blob_status=valid
+}
+
+# --- writer lock (R13) --------------------------------------------------------
+
+start_token() {
+	_st_out=$("$tool_ps" -o lstart= -p "$1" 2>/dev/null) || return 1
+	if [ -z "$_st_out" ]; then return 1; fi
+	set -- $_st_out
+	printf '%s' "$*"
+}
+
+make_nonce() {
+	_mn_hash=$("$tool_dd" if=/dev/urandom bs=32 count=1 2>/dev/null | sha_stdin) || _mn_hash=''
+	if [ -z "$_mn_hash" ]; then _mn_hash="fallback$$"; fi
+	printf 'n%.24s-%s' "$_mn_hash" "$$"
+}
+
+read_lock_record() {
+	rec_host=''
+	rec_pid=''
+	rec_start=''
+	rec_staging=''
+	if [ ! -f "$lock_dir/record" ]; then return 0; fi
+	# Probe the complete record through a resolved host tool first. This turns
+	# permission and filesystem read failures into an ordinary return value
+	# instead of allowing a redirection error to escape under set -e.
+	if ! "$tool_wc" -c <"$lock_dir/record" >/dev/null 2>&1; then
+		return 1
+	fi
+	if ! {
+		while IFS= read -r _lr_line || [ -n "$_lr_line" ]; do
+			case "$_lr_line" in
+			host=*) rec_host=${_lr_line#host=} ;;
+			pid=*) rec_pid=${_lr_line#pid=} ;;
+			start=*) rec_start=${_lr_line#start=} ;;
+			staging=*) rec_staging=${_lr_line#staging=} ;;
+			esac
+		done
+	} <"$lock_dir/record"; then
+		return 1
+	fi
+	return 0
+}
+
+lock_record_identity() {
+	_lri_line=$("$tool_ls" -idn "$lock_dir" 2>/dev/null) || _lri_line=''
+	set -- $_lri_line
+	printf 'inode=%s\nhost=%s\npid=%s\nstart=%s\nstaging=%s\n' \
+		"${1-}" "$rec_host" "$rec_pid" "$rec_start" "$rec_staging"
+}
+
+# Recordless grace in whole minutes. find -mmin only accepts an integer on BSD
+# (macOS): a fractional argument like +0.5 exits "illegal trailing character",
+# which silently defeats reclaim and strands every future repair in LOCK_HELD.
+# One minute is a portable integer that comfortably exceeds the sub-second
+# window between mkdir and the atomic record publish.
+RECORDLESS_LOCK_GRACE_MINS=1
+
+lock_is_older_than_grace() {
+	# True (exit 0) when the lock directory is older than the recordless grace
+	# window. Uses find -mmin with an integer minute to avoid BSD/GNU stat mtime
+	# format differences and the BSD fractional-argument rejection; returns
+	# non-zero (unknown -> caller keeps the conservative live default) when age
+	# cannot be established.
+	_lig_hit=$("$tool_find" "$lock_dir" -prune -mmin "+$RECORDLESS_LOCK_GRACE_MINS" 2>/dev/null) || return 1
+	[ -n "$_lig_hit" ]
+}
+
+read_reclaim_marker() {
+	mr_host=''
+	mr_pid=''
+	mr_start=''
+	mr_nonce=''
+	if [ -L "$1" ] || [ ! -f "$1" ]; then return 1; fi
+	if ! "$tool_wc" -c <"$1" >/dev/null 2>&1; then return 1; fi
+	if ! {
+		while IFS= read -r _rm_line || [ -n "$_rm_line" ]; do
+			case "$_rm_line" in
+			host=*) mr_host=${_rm_line#host=} ;;
+			pid=*) mr_pid=${_rm_line#pid=} ;;
+			start=*) mr_start=${_rm_line#start=} ;;
+			nonce=*) mr_nonce=${_rm_line#nonce=} ;;
+			esac
+		done
+	} <"$1"; then
+		return 1
+	fi
+	case "$mr_pid" in '' | *[!0-9]*) return 1 ;; esac
+	case "$mr_nonce" in '' | *[!A-Za-z0-9_.:-]*) return 1 ;; esac
+	[ -n "$mr_host" ] && [ -n "$mr_start" ]
+}
+
+reclaim_marker_owner_is_live() {
+	if [ "$mr_host" != "$host_id" ]; then
+		if [ "$reclaim_foreign_lock" = 1 ]; then return 1; fi
+		return 0
+	fi
+	if ! kill -0 "$mr_pid" 2>/dev/null; then return 1; fi
+	_rm_owner_start=$(start_token "$mr_pid") || return 0
+	[ "$_rm_owner_start" = "$mr_start" ]
+}
+
+remove_owned_reclaim_marker() {
+	if ! read_reclaim_marker "$1"; then return 1; fi
+	if [ "$mr_host" != "$host_id" ] || [ "$mr_pid" != "$$" ] || [ "$mr_start" != "$_rsl_start" ] || [ "$mr_nonce" != "$nonce" ]; then
+		return 1
+	fi
+	"$tool_rm" -f "$1" 2>/dev/null
+}
+
+writer_is_live() {
+	# A writer that cannot be proven dead is treated as live (never reclaim a
+	# live writer).
+	if [ -z "$rec_host" ] && [ -z "$rec_pid" ]; then
+		# No record: either the creator is between mkdir and its atomic record
+		# publish (a sub-second window), or it died before publishing and the
+		# lock would otherwise strand every future repair forever. Treat a fresh
+		# recordless lock as live (retry is safe) but a recordless lock older
+		# than the grace window as a dead creator that may be reclaimed.
+		if lock_is_older_than_grace; then
+			return 1
+		fi
+		return 0
+	fi
+	if [ "$rec_host" != "$host_id" ]; then
+		if [ "$reclaim_foreign_lock" = 1 ]; then return 1; fi
+		# A PID from another host cannot be proven live or dead locally. Require a
+		# separate human-approved recovery instead of reclaiming a potentially
+		# active writer on a shared cache.
+		return 2
+	fi
+	case "$rec_pid" in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	if ! kill -0 "$rec_pid" 2>/dev/null; then return 1; fi
+	_wl_now=$(start_token "$rec_pid") || return 0
+	if [ "$_wl_now" = "$rec_start" ]; then return 0; fi
+	return 1
+}
+
+reclaim_stale_lock() {
+	_rsl_expected_identity=$1
+	if [ -L "$lock_dir" ] || [ ! -d "$lock_dir" ]; then
+		diag 'repair lock path is not a plain directory'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed repair lock path from the private runtime cache, then retry.'
+	fi
+	# Atomically claim this exact directory before the final identity check. A
+	# hard-linked, fully written owner record means contenders never observe a
+	# half-published claimant identity. A fixed marker admits only one reclaimer.
+	_rsl_marker=$lock_dir/.reclaim-claim
+	_rsl_record=$lock_dir/.reclaim-record-$nonce
+	_rsl_start=$(start_token "$$") || {
+		diag 'could not establish reclaim claimant identity'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore process inspection for the current user, then retry runtime repair.'
+	}
+	if ! {
+		printf 'host=%s\n' "$host_id"
+		printf 'pid=%s\n' "$$"
+		printf 'start=%s\n' "$_rsl_start"
+		printf 'nonce=%s\n' "$nonce"
+	} >"$_rsl_record"; then
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the private runtime cache writable, then retry.'
+	fi
+	if ! "$tool_ln" "$_rsl_record" "$_rsl_marker" 2>/dev/null; then
+		"$tool_rm" -f "$_rsl_record" 2>/dev/null || :
+		if [ ! -e "$lock_dir" ] && [ ! -L "$lock_dir" ]; then
+			return 0
+		fi
+		if [ -f "$_rsl_marker" ] && [ ! -L "$_rsl_marker" ]; then
+			if ! read_reclaim_marker "$_rsl_marker"; then
+				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed reclaim marker from the private runtime cache, then retry.'
+			fi
+			if reclaim_marker_owner_is_live; then return 0; fi
+			diag 'repair lock has an abandoned reclaim marker'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Confirm that no repair is active, ask the user to approve removal of the abandoned .reclaim-claim file, then retry runtime repair.'
+		fi
+		diag 'could not claim the stale repair lock safely'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the private runtime cache writable and remove malformed reclaim debris, then retry.'
+	fi
+	if ! "$tool_rm" -f "$_rsl_record" 2>/dev/null; then
+		remove_owned_reclaim_marker "$_rsl_marker" || :
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The reclaim owner record could not be finalized. Make the private runtime cache writable, then retry.'
+	fi
+	# The stale judgment and rename are separate filesystem operations. Re-read
+	# the record after owning the in-directory claim so a replacement lock is
+	# never renamed based on the earlier judgment.
+	if ! read_lock_record; then
+		remove_owned_reclaim_marker "$_rsl_marker" || :
+		diag 'could not re-read the repair lock before reclamation'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	_rsl_current_identity=$(lock_record_identity)
+	if [ "$_rsl_current_identity" != "$_rsl_expected_identity" ]; then
+		if ! remove_owned_reclaim_marker "$_rsl_marker"; then
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The repair lock changed and its reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
+		fi
+		diag 'repair lock changed before stale reclamation; retrying acquisition'
+		return 0
+	fi
+	# Claim the stale lock by renaming its directory to a private nonce-suffixed
+	# name before removing anything. Two contenders that both judged the same
+	# record dead cannot both win: the loser's rename fails because the source no
+	# longer exists at the original path, so it never deletes a directory another
+	# contender (or a live writer that re-created the lock) now owns. Only the
+	# winning rename proceeds to remove the stale staging and the claimed dir.
+	_rsl_claim=$store_root/locks/reclaim-$nonce
+	if ! "$tool_mv" "$lock_dir" "$_rsl_claim" 2>/dev/null; then
+		if ! remove_owned_reclaim_marker "$_rsl_marker"; then
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The stale repair lock could not be claimed and its reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
+		fi
+		# The directory disappeared independently; retry acquisition.
+		return 0
+	fi
+	_rsl_cleanup_failed=0
+	case "$rec_staging" in
+	'' | *[!a-zA-Z0-9-]*) : ;;
+	*)
+		if ! "$tool_rm" -rf "$store_root/staging/$rec_staging" 2>/dev/null; then
+			diag 'could not remove staging left by the stale repair writer'
+			_rsl_cleanup_failed=1
+		fi
+		;;
+	esac
+	if ! "$tool_rm" -rf "$_rsl_claim" 2>/dev/null; then
+		diag 'could not remove the claimed stale repair lock'
+		_rsl_cleanup_failed=1
+	fi
+	add_side_effect 'reclaimed-stale-lock'
+	if [ "$_rsl_cleanup_failed" = 1 ]; then
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The stale repair lock was reclaimed, but cleanup failed. Make the private runtime cache writable, remove stale staging or reclaim debris, then retry.'
+	fi
+	diag 'reclaimed a stale repair lock left by a dead writer'
+}
+
+lock_acquired=0
+
+acquire_lock() {
+	lock_dir=$store_root/locks/bun-$RUNTIME_ASSET_EXECUTABLE_SHA256
+	nonce=$(make_nonce)
+	_al_attempts=0
+	while :; do
+		if "$tool_mkdir" "$lock_dir" 2>/dev/null; then
+			lock_acquired=1
+			_al_start=$(start_token "$$") || {
+				diag 'could not establish repair writer identity'
+				fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore process inspection for the current user, then retry runtime repair.'
+			}
+			# Publish the record atomically: a contender reading $lock_dir/record
+			# never sees a half-written record and so never classifies this live
+			# writer as dead from an empty pid field.
+			if ! {
+				printf 'host=%s\n' "$host_id"
+				printf 'pid=%s\n' "$$"
+				printf 'start=%s\n' "$_al_start"
+				printf 'staging=%s\n' "$nonce"
+			} >"$lock_dir/record.$nonce"; then
+				diag 'could not write the repair lock record'
+				fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+			fi
+			if ! "$tool_mv" -f "$lock_dir/record.$nonce" "$lock_dir/record" 2>/dev/null; then
+				diag 'could not publish the repair lock record'
+				fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+			fi
+			return 0
+		fi
+		# mkdir reports both EEXIST and real filesystem failures. Only enter the
+		# contention path when a lock actually exists; otherwise an unwritable lock
+		# root would masquerade indefinitely as LOCK_HELD.
+		if [ ! -e "$lock_dir" ] && [ ! -L "$lock_dir" ]; then
+			diag 'could not create the repair lock in the private runtime cache'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache lock directory writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
+		if [ -L "$lock_dir" ] || [ ! -d "$lock_dir" ]; then
+			diag 'repair lock path is not a plain directory'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed repair lock path from the private runtime cache, then retry.'
+		fi
+		_al_attempts=$((_al_attempts + 1))
+		if [ "$_al_attempts" -gt 3 ]; then
+			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply shortly.'
+		fi
+		if ! read_lock_record; then
+			diag 'could not read the existing repair lock record'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
+		_al_lock_identity=$(lock_record_identity)
+		if writer_is_live; then
+			diag 'repair lock is held by a live writer'
+			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply after it finishes.'
+		else
+			_al_writer_status=$?
+			if [ "$_al_writer_status" = 2 ]; then
+				diag "repair lock belongs to another host: $rec_host"
+				die 20 FOREIGN_LOCK_REQUIRES_APPROVAL "$(side_effects_json)" false 'Confirm that no other machine is repairing this private cache, ask the user to approve foreign-lock reclamation, then run runtime-exec repair --apply --reclaim-foreign-lock.'
+			fi
+		fi
+		reclaim_stale_lock "$_al_lock_identity"
+	done
+}
+
+release_lock() {
+	if [ "$lock_acquired" = 1 ]; then
+		if ! "$tool_rm" -rf "$lock_dir" 2>/dev/null; then
+			return 1
+		fi
+		lock_acquired=0
+	fi
+	return 0
+}
+
+# --- repair --apply (R11, R12) ------------------------------------------------
+
+fail_apply() {
+	if [ -n "${stage_dir-}" ]; then
+		"$tool_rm" -rf "$stage_dir" 2>/dev/null || :
+	fi
+	if ! release_lock; then
+		diag 'could not release the repair lock while handling a failed repair'
+	fi
+	die "$@"
+}
+
+validate_asset_url() {
+	case "$RUNTIME_ASSET_URL" in
+	https://*) ;;
+	file:///*)
+		if [ "$test_allow_file_urls" != 1 ]; then
+			diag 'runtime lock URL scheme is not allowed'
+			die 23 URL_REJECTED '[]' false 'Fix the runtime lock to use the official https release URL.'
+		fi
+		;;
+	*)
+		diag 'runtime lock URL scheme is not allowed'
+		die 23 URL_REJECTED '[]' false 'Fix the runtime lock to use the official https release URL.'
+		;;
+	esac
+	_vu_authority=${RUNTIME_ASSET_URL#*://}
+	_vu_authority=${_vu_authority%%/*}
+	case "$_vu_authority" in
+	*@*)
+		diag 'runtime lock URL carries credentials; refusing to use it'
+		die 23 URL_REJECTED '[]' false 'Fix the runtime lock to use a credential-free official https release URL.'
+		;;
+	esac
+}
+
+download_archive() {
+	archive_path=$stage_dir/$RUNTIME_ASSET_ARCHIVE_NAME
+	_da_status=0
+	_da_protocols='=https'
+	if [ "$test_allow_file_urls" = 1 ]; then
+		_da_protocols='=https,file'
+	fi
+	"$tool_curl" -q --fail --silent --show-error \
+		--location --max-redirs 3 \
+		--proto "$_da_protocols" --proto-redir '=https' \
+		--connect-timeout 10 --max-time 300 \
+		--max-filesize "$RUNTIME_ASSET_ARCHIVE_BYTES" \
+		--output "$archive_path" "$RUNTIME_ASSET_URL" </dev/null || _da_status=$?
+	if [ "$_da_status" = 63 ]; then
+		diag 'download exceeded the locked archive size'
+		fail_apply 23 ARCHIVE_SIZE_MISMATCH "$(side_effects_json)" false 'The download exceeded the locked archive size; do not install it. Refresh the runtime lock through review.'
+	fi
+	if [ "$_da_status" != 0 ]; then
+		diag "download failed with curl status $_da_status"
+		fail_apply 22 DOWNLOAD_FAILED "$(side_effects_json)" true 'Retry runtime-exec repair --apply when the network is available.'
+	fi
+}
+
+verify_archive() {
+	if [ "$(file_size "$archive_path")" != "$RUNTIME_ASSET_ARCHIVE_BYTES" ]; then
+		diag 'downloaded archive size mismatch'
+		fail_apply 23 ARCHIVE_SIZE_MISMATCH "$(side_effects_json)" false 'The downloaded archive size does not match the lock; do not install it. Refresh the runtime lock through review.'
+	fi
+	if [ "$(sha_file "$archive_path")" != "$RUNTIME_ASSET_ARCHIVE_SHA256" ]; then
+		diag 'downloaded archive sha256 mismatch'
+		fail_apply 23 ARCHIVE_HASH_MISMATCH "$(side_effects_json)" false 'The downloaded archive hash does not match the lock; do not install it. Refresh the runtime lock through review.'
+	fi
+}
+
+extract_member() {
+	_em_list=$("$tool_unzip" -Z1 "$archive_path" 2>/dev/null) || {
+		diag 'archive listing failed'
+		fail_apply 23 ARCHIVE_MEMBER_MISSING "$(side_effects_json)" false 'The archive cannot be listed; do not install it. Refresh the runtime lock through review.'
+	}
+	_em_count=0
+	while IFS= read -r _em_entry; do
+		if [ "$_em_entry" = "$RUNTIME_ASSET_EXECUTABLE_PATH" ]; then
+			_em_count=$((_em_count + 1))
+		fi
+	done <<EOF
+$_em_list
+EOF
+	if [ "$_em_count" = 0 ]; then
+		diag 'locked executable member missing from archive'
+		fail_apply 23 ARCHIVE_MEMBER_MISSING "$(side_effects_json)" false 'The locked executable is not present in the archive; do not install it. Refresh the runtime lock through review.'
+	fi
+	if [ "$_em_count" != 1 ]; then
+		diag 'archive contains ambiguous duplicate members for the locked executable'
+		fail_apply 23 ARCHIVE_MEMBER_AMBIGUOUS "$(side_effects_json)" false 'The archive contains duplicate entries for the locked executable; do not install it.'
+	fi
+	staged_path=$stage_dir/bun
+	_em_cap=$((RUNTIME_ASSET_EXECUTABLE_BYTES + 1))
+	"$tool_unzip" -p "$archive_path" "$RUNTIME_ASSET_EXECUTABLE_PATH" 2>/dev/null |
+		"$tool_head" -c "$_em_cap" >"$staged_path" || :
+}
+
+verify_staged() {
+	if [ "$(file_size "$staged_path")" != "$RUNTIME_ASSET_EXECUTABLE_BYTES" ]; then
+		diag 'staged executable size mismatch'
+		fail_apply 23 EXECUTABLE_SIZE_MISMATCH "$(side_effects_json)" false 'The extracted executable size does not match the lock; do not install it. Refresh the runtime lock through review.'
+	fi
+	if [ "$(sha_file "$staged_path")" != "$RUNTIME_ASSET_EXECUTABLE_SHA256" ]; then
+		diag 'staged executable sha256 mismatch'
+		fail_apply 23 EXECUTABLE_HASH_MISMATCH "$(side_effects_json)" false 'The extracted executable hash does not match the lock; do not install it. Refresh the runtime lock through review.'
+	fi
+	# Execute permission is granted only after byte and hash verification (R12).
+	if ! "$tool_chmod" 700 "$staged_path" 2>/dev/null; then
+		diag 'could not make the verified staged runtime executable'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	sanitize_bun_environment
+	if ! _vs_version=$("$staged_path" --config=/dev/null --version </dev/null 2>/dev/null); then
+		diag 'verified staged runtime bytes cannot execute from the cache'
+		fail_apply 21 RUNTIME_NOT_EXECUTABLE "$(side_effects_json)" false 'Point XDG_CACHE_HOME at a filesystem that permits execution, then retry.'
+	fi
+	if [ "$_vs_version" != "$RUNTIME_LOCK_VERSION" ]; then
+		diag "staged executable reported version '$_vs_version' instead of '$RUNTIME_LOCK_VERSION'"
+		fail_apply 23 EXECUTABLE_VERSION_MISMATCH "$(side_effects_json)" false 'The staged runtime does not report the locked version; do not install it. Refresh the runtime lock through review.'
+	fi
+}
+
+publish_blob() {
+	if ! "$tool_mkdir" -p "$blob_dir" 2>/dev/null; then
+		diag 'could not create the runtime blob directory'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	if ! path_is_safe "$blob_dir" 'runtime blob directory'; then
+		diag "unsafe blob directory: $unsafe_reason"
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Make the runtime cache private: chown it to the current user with mode 700, or point XDG_CACHE_HOME at a private directory.'
+	fi
+	# mv replaces a regular file or symlink, but treats an existing directory as
+	# a destination. Remove a verified-corrupt non-regular destination first so
+	# the digest path can be restored to exactly one executable file.
+	if { [ -e "$blob_path" ] || [ -L "$blob_path" ]; } && { [ -L "$blob_path" ] || [ ! -f "$blob_path" ]; }; then
+		if ! "$tool_rm" -rf "$blob_path" 2>/dev/null; then
+			diag 'could not remove the non-regular corrupt runtime destination'
+			fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
+	fi
+	# Same-filesystem atomic rename: a partial executable is never visible at
+	# the blob path, and a prior valid blob is replaced only by verified bytes.
+	if ! "$tool_mv" -f "$staged_path" "$blob_path" 2>/dev/null; then
+		diag 'could not publish the verified runtime blob'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	add_side_effect 'published-runtime'
+	assess_blob
+	if [ "$blob_status" != valid ]; then
+		diag "published runtime failed re-verification: $blob_reason"
+		# Remove the unverified bytes so a failed apply never leaves a broken
+		# executable at the trusted blob path, even transiently. A prior valid
+		# blob under a different digest directory is untouched.
+		"$tool_rm" -f "$blob_path" 2>/dev/null || :
+		fail_apply 23 EXECUTABLE_HASH_MISMATCH "$(side_effects_json)" false 'The published runtime failed re-verification; run runtime-exec repair --apply again.'
+	fi
+}
+
+do_apply() {
+	validate_asset_url
+	resolve_cache_root
+	# Refuse an unsafe root before creating anything through it, then re-check
+	# the components this apply just created.
+	verify_cache_root_safety
+	# Guard the store mkdir explicitly: a current-user-owned but non-writable
+	# cache (mode 500/555, or read-only media) passes the safety check, then this
+	# mkdir would fail under set -eu and terminate with a bare exit 1 and no JSON
+	# control object, violating the one-envelope contract (R19/AE12).
+	if ! "$tool_mkdir" -p "$store_root/bun" "$store_root/locks" "$store_root/staging" 2>/dev/null; then
+		diag 'could not create the runtime cache store directories'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	verify_cache_root_safety
+	assess_blob
+	if [ "$blob_status" = valid ]; then
+		emit_envelope true REPAIR_UNNEEDED "$(side_effects_json)" true 'The verified runtime is already installed. Run runtime-exec run <skill>.' "$(state_extra valid)"
+		exit 0
+	fi
+	before_state=$blob_status
+	if [ "$before_state" = corrupt ]; then
+		diag "existing runtime failed verification: $blob_reason"
+	fi
+	acquire_lock
+	# A concurrent apply may have published while this one waited for the lock;
+	# verify the winner instead of re-downloading (AE8).
+	assess_blob
+	if [ "$blob_status" = valid ]; then
+		if ! release_lock; then
+			diag 'could not release the repair lock after observing a concurrent repair'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'A verified runtime is installed, but repair cleanup failed. Run the skill now; make the runtime cache writable before a later repair.'
+		fi
+		emit_envelope true REPAIR_UNNEEDED "$(side_effects_json)" true 'A concurrent repair already published a verified runtime. Run runtime-exec run <skill>.' "$(state_extra valid)"
+		exit 0
+	fi
+	stage_dir=$store_root/staging/$nonce
+	if ! "$tool_mkdir" -p "$stage_dir" 2>/dev/null; then
+		diag 'could not create the private repair staging directory'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
+	download_archive
+	verify_archive
+	extract_member
+	verify_staged
+	publish_blob
+	_ap_cleanup_failed=0
+	if ! "$tool_rm" -rf "$stage_dir" 2>/dev/null; then
+		diag 'could not remove the private repair staging directory after publication'
+		_ap_cleanup_failed=1
+	fi
+	if ! release_lock; then
+		diag 'could not release the repair lock after publication'
+		_ap_cleanup_failed=1
+	fi
+	if [ "$_ap_cleanup_failed" = 1 ]; then
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'The verified runtime was installed, but repair cleanup failed. Run the skill now; make the runtime cache writable before a later repair.'
+	fi
+	_ap_extra=$(runtime_extra)
+	_ap_extra=$_ap_extra',"state":{"before":"'$before_state'","after":"valid"}'
+	emit_envelope true REPAIR_APPLIED "$(side_effects_json)" true "Verified Bun $RUNTIME_LOCK_VERSION is installed. Run runtime-exec run <skill>." "$_ap_extra"
+	exit 0
+}
+
+# --- commands -----------------------------------------------------------------
+
+cmd_repair() {
+	apply=0
+	reclaim_foreign_lock=0
+	if [ $# -gt 0 ]; then
+		if [ "$1" = "--apply" ] && [ $# -eq 1 ]; then
+			apply=1
+		elif [ "$1" = "--apply" ] && [ "${2-}" = "--reclaim-foreign-lock" ] && [ $# -eq 2 ]; then
+			apply=1
+			reclaim_foreign_lock=1
+		else
+			die 2 USAGE '[]' true 'Usage: runtime-exec repair [--apply [--reclaim-foreign-lock]].'
+		fi
+	fi
+	require_common_tools
+	if [ "$apply" = 1 ]; then
+		require_apply_tools
+	fi
+	detect_platform
+	load_projections
+	select_locked_asset
+	if [ "$apply" = 1 ]; then
+		do_apply
+	fi
+	# Preview: read-only and network-free.
+	resolve_cache_root
+	verify_cache_root_safety
+	assess_blob
+	case "$blob_status" in
+	valid)
+		emit_envelope true REPAIR_PREVIEW '[]' true "No repair needed; verified Bun $RUNTIME_LOCK_VERSION is installed. Run runtime-exec run <skill>." "$(state_extra valid)"
+		;;
+	missing)
+		emit_envelope true REPAIR_PREVIEW '[]' true "Ask the user to approve, then run runtime-exec repair --apply to download Bun $RUNTIME_LOCK_VERSION from the locked official release and install it into the private cache." "$(state_extra missing)"
+		;;
+	corrupt)
+		diag "existing runtime failed verification: $blob_reason"
+		emit_envelope true REPAIR_PREVIEW '[]' true "Ask the user to approve, then run runtime-exec repair --apply to replace the corrupt cached runtime with a verified Bun $RUNTIME_LOCK_VERSION." "$(state_extra corrupt)"
+		;;
+	esac
+	exit 0
+}
+
+cmd_run() {
+	if [ $# -lt 1 ]; then
+		die 2 USAGE '[]' true 'Usage: runtime-exec run <skill> [-- args...].'
+	fi
+	skill=$1
+	shift
+	if [ $# -gt 0 ]; then
+		if [ "$1" != "--" ]; then
+			die 2 USAGE '[]' true 'Separate skill arguments from the skill id with --.'
+		fi
+		shift
+	fi
+	case "$skill" in
+	'' | -* | *[!a-z0-9-]*)
+		die 23 SKILL_UNKNOWN '[]' false 'Use a skill id registered in the skill catalog.'
+		;;
+	esac
+	require_common_tools
+	detect_platform
+	load_projections
+	select_locked_asset
+	runtime_catalog_select_skill "$skill" || {
+		diag "skill is not registered in the catalog: $skill"
+		die 23 SKILL_UNKNOWN '[]' false 'Use a skill id registered in the skill catalog.'
+	}
+	if [ "$RUNTIME_SKILL_PROFILE" != "$RUNTIME_LOCK_PROFILE" ]; then
+		diag "skill profile $RUNTIME_SKILL_PROFILE does not match lock profile $RUNTIME_LOCK_PROFILE"
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the skill profile does not match the runtime lock.'
+	fi
+	runtime_inventory_select_bundle "$skill" || {
+		diag "skill has no bundle mapping in the inventory: $skill"
+		die 23 BUNDLE_UNMAPPED '[]' false 'Rebuild the plugin payload; this skill has no bundle inventory mapping.'
+	}
+	case "$RUNTIME_BUNDLE_PATH" in
+	runtime/*) ;;
+	*)
+		die 23 BUNDLE_MISMATCH '[]' false 'Rebuild the plugin payload; the bundle inventory mapping is malformed.'
+		;;
+	esac
+	case "$RUNTIME_BUNDLE_PATH" in
+	*..*)
+		die 23 BUNDLE_MISMATCH '[]' false 'Rebuild the plugin payload; the bundle inventory mapping is malformed.'
+		;;
+	esac
+	bundle_path=$plugin_root/$RUNTIME_BUNDLE_PATH
+	if [ -L "$bundle_path" ] || [ ! -f "$bundle_path" ]; then
+		diag 'skill bundle is missing from the payload'
+		die 23 BUNDLE_MISMATCH '[]' false 'Reinstall the plugin payload; the skill bundle is missing.'
+	fi
+	if [ "$(file_size "$bundle_path")" != "$RUNTIME_BUNDLE_BYTES" ] ||
+		[ "$(sha_file "$bundle_path")" != "$RUNTIME_BUNDLE_SHA256" ]; then
+		diag 'skill bundle does not match the recorded inventory identity'
+		die 23 BUNDLE_MISMATCH '[]' false 'Reinstall the plugin payload; the skill bundle does not match its recorded identity.'
+	fi
+	resolve_cache_root
+	verify_cache_root_safety
+	assess_blob
+	case "$blob_status" in
+	missing)
+		die 20 BUN_MISSING '[]' true "Preview with runtime-exec repair, then ask the user to approve before running runtime-exec repair --apply to install Bun $RUNTIME_LOCK_VERSION." "$(state_extra missing)"
+		;;
+	corrupt)
+		diag "cached runtime failed verification: $blob_reason"
+		die 20 REPAIR_REQUIRED '[]' true 'Ask the user to approve runtime-exec repair --apply to replace the corrupt cached runtime; run never repairs.' "$(state_extra corrupt)"
+		;;
+	esac
+	# Launch: restore the ordinary caller environment, suppress Bun ambient
+	# control surfaces (R20), and pass stdio/exit through unchanged (R19).
+	# The caller's cwd is preserved for the skill, but Bun auto-discovers
+	# bunfig.toml from that cwd and a top-level `preload` there would run
+	# caller-controlled code inside the verified runtime. Point --config at an
+	# /dev/null is the admitted immutable empty config on every supported Unix
+	# target. It avoids per-run temp state while preventing cwd bunfig discovery.
+	sanitize_bun_environment
+	_run_version=''
+	if ! _run_version=$("$blob_path" --config=/dev/null --version </dev/null 2>/dev/null); then
+		diag 'verified runtime bytes cannot execute from the cache'
+		die 21 RUNTIME_NOT_EXECUTABLE '[]' false 'Point XDG_CACHE_HOME at a filesystem that permits execution, then retry.'
+	fi
+	if [ "$_run_version" != "$RUNTIME_LOCK_VERSION" ]; then
+		diag 'verified runtime reported an unexpected version before launch'
+		die 23 EXECUTABLE_VERSION_MISMATCH '[]' false 'Run runtime-exec repair --apply after approval to replace the unusable cached runtime.'
+	fi
+	if [ "$caller_lc_all_set" = 1 ]; then
+		LC_ALL=$caller_lc_all
+		export LC_ALL
+	else
+		unset LC_ALL 2>/dev/null || :
+	fi
+	if [ "$caller_path_set" = 1 ]; then
+		PATH=$caller_path
+		export PATH
+	else
+		unset PATH 2>/dev/null || :
+	fi
+	# Restore the caller umask so the launched skill's own file writes are not
+	# forced to the tightened 077 custody mask.
+	umask "$caller_umask"
+	exec "$blob_path" --config=/dev/null --no-install --env-file=/dev/null "$bundle_path" "$@"
+}
+
+# --- dispatch -----------------------------------------------------------------
+
+if [ $# -lt 1 ]; then
+	print_help
+	exit 0
+fi
+command=$1
+shift
+case "$command" in
+help | -h | --help)
+	print_help
+	exit 0
+	;;
+run)
+	cmd_run "$@"
+	;;
+repair)
+	cmd_repair "$@"
+	;;
+*)
+	diag "unknown command: $command"
+	die 2 USAGE '[]' true 'Run runtime-exec help for the supported commands.'
+	;;
+esac

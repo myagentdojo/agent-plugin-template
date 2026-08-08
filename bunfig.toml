@@ -1,0 +1,7 @@
+# Dependency custody: pnpm-style isolated linking rejects phantom dependencies,
+# and lifecycle scripts never run because no dependency is trusted.
+# CI-facing installs stay frozen via `bun install --frozen-lockfile` in
+# scripts/build.ts; the lockfile is bun.lock, pinned with packageManager.
+[install]
+linker = "isolated"
+ignoreScripts = true

@@ -3,13 +3,13 @@
 Build one Git-distributed plugin for Claude Code and Codex.
 
 - Share skills and portable runtime behavior.
-- Keep native manifests, hooks, trust, and reload behavior separate.
+- Keep native manifests and reload behavior separate.
 - Author in Bun and TypeScript.
-- Execute offline through bundled QuickJS runtimes.
+- Execute dependency-closed bundles through one verified, plugin-managed Bun runtime.
 - Publish from GitHub Releases, not npm.
 - Develop through each harness's native plugin workflow.
 
-Consumers need Claude Code or Codex and Git access to the repository. They do not need Bun, Node.js, Python, npm, or a post-install download.
+Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or a setup command. The first use with a missing runtime requires one approved repair; warm use works offline.
 
 The operator verification recipes also use a POSIX shell, `jq`, `awk`, and `diff`.
 
@@ -170,7 +170,9 @@ diff -qr "$PREFLIGHT_ROOT/repository/plugin" "$INSTALLED_PATH"
 jq -e '.installed[] | select(.pluginId == "PLUGIN_NAME@PLUGIN_NAME" and .version == "X.Y.Z")' "$PREFLIGHT_ROOT/codex-plugins-after-add.json"
 ```
 
-Start an isolated inspection task with `codex -C "$PREFLIGHT_ROOT"`. Keep hooks skipped while they are untrusted. Open `/hooks`, compare the exact definitions and installed executable closure with the preflight checkout, then accept trust only for that definition. Plugin enablement and hook trust are separate states. Start a second fresh task after trust review and repeat the version and byte checks.
+Start an isolated task with `codex -C "$PREFLIGHT_ROOT"` and invoke one installed skill. A missing runtime returns `BUN_MISSING` without mutation. The agent previews the verified repair, asks for approval in plain language, runs `runtime/runtime-exec repair --apply` only after approval, and retries the skill. No lifecycle hook or manual setup command is involved.
+
+For a release qualification, keep three bounded task receipts private under `$XDG_STATE_HOME/agent-plugin-template/runtime-custody/` (defaulting `XDG_STATE_HOME` to `~/.local/state`): `claude-cli-<candidate-sha>-<target>.json`, `codex-cli-<candidate-sha>-<target>.json`, and `codex-desktop-<candidate-sha>-<target>.json`. Each receipt records the repository, candidate commit, plugin version, target, runtime-lock digest, bundle-inventory digest, payload digest, and the real `BUN_MISSING` → preview → approved repair → retry journey. The CLI receipts must come from fresh agent tasks; direct launcher execution from `prove:harness-install` is installed-payload mechanics evidence and explicitly does not claim agent workflow proof. Set `humanApprovalClaimed: true` only on receipts created from an actual interaction after the person approves; automated platform and fixture receipts must say `humanApprovalClaimed: false`. The reviewer who approves the protected `release` environment verifies these candidate-bound receipts. Store only their digests and pass/fail conclusions in release notes, never the private raw receipts.
 
 The replacement recipe below preserves the marketplace source, ref, and prior `enabled` state. Remove the pinned marketplace entry only after target and restoration preflights pass.
 
@@ -246,7 +248,7 @@ codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-restored.json"
 
 Verify the restored source, ref, version, cache bytes, and enabled state. Codex CLI currently has no documented plugin enable/disable subcommand; restore a differing enabled state in the Codex plugin settings and confirm it with `codex plugin list --json` before continuing.
 
-For the target install, start an isolated task with hooks skipped, review `/hooks`, restore the prior enabled state, then start a second fresh task. A version, hook command, launcher, runtime, or QuickJS executable change invalidates prior hook trust and requires another review.
+For the target install, start a fresh isolated task, confirm skill discovery, and exercise the missing-runtime repair/retry journey when the reviewed Bun identity changed. A new Bun version plus executable digest requires fresh approval; archive-only metadata changes do not change the approved runtime identity.
 
 `codex plugin marketplace upgrade PLUGIN_NAME` is the documented explicit CLI operation for refreshing the configured Git snapshot. A pinned immutable tag should resolve to the same bytes. Automatic Codex marketplace refresh is unspecified; never rely on it to move or restore a release.
 
@@ -290,26 +292,26 @@ Codex plugins are cached rather than loaded directly from the checkout. The comm
 
 After an edit, rerun the command and start a fresh task. This is reinstall-and-restart, not hot reload.
 
-Do not symlink or sync only `skills/` into harness-global directories. That bypasses the manifests, hooks, runtime assets, cache identity, and installation boundary being tested.
+Do not symlink or sync only `skills/` into harness-global directories. That bypasses the manifests, launchers, runtime custody, cache identity, and installation boundary being tested.
 
 ## Add plugin behavior
 
-Keep portable command logic under `runtime/src/`. Keep the QuickJS I/O adapter small. Add harness behavior through the native manifest or hook file for that Harness.
+Keep portable command logic under `runtime/src/`. Add dependency-bearing skills as isolated workspace members, then register them in the one logical skill catalog and regenerate the closed bundles and launchers.
 
 ```text
 plugin/
 ├── .claude-plugin/plugin.json
 ├── .codex-plugin/plugin.json
-├── skills/hello-world/SKILL.md
-├── hooks/
-│   ├── claude/hooks.json
-│   └── codex/hooks.json
-├── bin/hello-world
-├── QUICKJS-LICENSE
+├── skills/{hello-world,runtime-custody,skill-a,skill-b}/SKILL.md
+├── bin/{hello-world,skill-a,skill-b}
+├── THIRD-PARTY-NOTICES.md
 └── runtime/
+    ├── runtime-exec
+    ├── runtime-lock.sh
+    ├── skill-catalog.sh
+    ├── bundle-inventory.{json,sh}
     ├── hello-world.js
-    ├── quickjs-assets.json
-    └── qjs-{darwin,linux}-{arm64,x86_64}
+    └── skill-{a,b}-<digest>.js
 ```
 
 Both marketplace catalogs point at `./plugin`. Development staging, Git installation, packaging, and distribution proof all start from that subtree. Repository scripts, TypeScript source, Git metadata, and development state cannot enter the installed payload.
@@ -317,20 +319,20 @@ Both marketplace catalogs point at `./plugin`. Development staging, Git installa
 The portable process seam is:
 
 ```text
-arguments + complete stdin + invocation identity
+skill id + arguments + invocation identity
     -> stdout + stderr + exit code
 ```
 
 | Area | Shared | Claude Code | Codex |
 | --- | --- | --- | --- |
 | Skills | Portable Agent Skills content | `/PLUGIN:SKILL` invocation and Claude extensions | `$SKILL` invocation and Codex extensions |
-| Runtime | Generated JavaScript, launcher, and QuickJS assets | Executes the shared launcher | Executes the shared launcher |
+| Runtime | Closed bundles, generated launchers, and one Bun custody engine | Executes the shared launcher | Executes the shared launcher |
 | Manifest | Plugin identity only | Claude-native manifest | Codex-native manifest |
-| Hooks | Command implementation only | Claude-native declarations, matching, and handlers | Codex-native declarations, matching, and trust |
+| Lifecycle hooks | None | None | None |
 | Development refresh | Source and payload | Direct checkout plus `/reload-plugins` | Staged reinstall plus a fresh task |
 | Harness-only features | Nothing by default | Keep Claude-only components native | Keep Codex-only components native |
 
-Use [CONTEXT.md](CONTEXT.md) for canonical language. The architecture rationale lives in the ADRs for [one payload with native adapters](docs/adr/0001-one-payload-native-harness-adapters.md) and [Bun-authored QuickJS execution](docs/adr/0002-bun-authoring-quickjs-runtime.md).
+Use [CONTEXT.md](CONTEXT.md) for canonical language. The architecture rationale lives in the ADRs for [one payload with native adapters](docs/adr/0001-one-payload-native-harness-adapters.md), [shared runtime custody](docs/adr/0005-shared-runtime-custody.md), [one Bun runtime](docs/adr/0006-single-bun-runtime-tier.md), and [closed workspace bundles](docs/adr/0007-workspace-authoring-bundled-distribution.md).
 
 ## Pull requests and CI
 
@@ -338,7 +340,7 @@ Use a Conventional Commit PR title. The title becomes the normal PR's squash com
 
 ```text
 feat: add a portable command
-fix(claude): correct hook matching
+fix(runtime): correct custody routing
 docs: clarify private installation
 ```
 
@@ -355,7 +357,7 @@ bun run release:validate
 bun run prove:all
 ```
 
-Hosted CI runs QuickJS natively on Linux x64, Linux arm64, macOS arm64, and macOS x64. It then creates the deterministic archive and `*.checksums.json`. The checksums JSON contains `repository`, `sourceCommit`, `tag`, `plugin`, `version`, `archive`, `archiveBytes`, `archiveSha256`, and an `evidence` note. It is integrity evidence for the named archive bytes, not independent publisher or builder authenticity. Public `main` artifacts receive GitHub artifact attestation. User-owned private repositories retain the checksums JSON and skip the unsupported attestation job.
+Hosted CI builds one candidate, then on Linux x64, Linux arm64, macOS arm64, and macOS x64 acquires the locked Bun asset through `repair --apply` into isolated state, runs a packaged skill, and proves warm reuse with custody network denied. It then creates the deterministic archive and `*.checksums.json`. The checksums bind the source commit, archive, runtime lock, bundle inventory, and payload inventory. They are integrity evidence for the named bytes, not independent publisher or builder authenticity. Public `main` artifacts receive GitHub artifact attestation. User-owned private repositories retain the checksums JSON and skip the unsupported attestation job.
 
 ### Optional Codex review gate
 
@@ -484,11 +486,11 @@ Release machinery is based on [Release Please](https://github.com/googleapis/rel
 
 - `bun test`: initializer, metadata, CLI, release, development, and canary contracts.
 - `bun run generate:check`: generated manifests match `plugin.config.json`.
-- `bun run build`: regenerate portable JavaScript.
-- `bun run spike:quickjs`: compare Bun and QuickJS behavior on the current platform.
-- `bun run prove:distribution`: build twice, compare bytes, extract offline, verify interpreter digests, and run both harness command contracts.
+- `bun run build`: regenerate the Bun hello-world bundle, workspace bundles, notices, and inventory.
+- `bun run prove:runtime-custody`: exercise missing, repair, corruption, concurrency, hostile-environment, and pass-through behavior.
+- `bun run prove:runtime-platform -- --target <target>`: acquire the reviewed target asset, execute the packaged skill, and prove warm offline reuse.
+- `bun run prove:distribution`: build twice, compare package bytes, extract the payload, prove Bun-only closure, and verify cold read-only guidance.
 - `bun run prove:dx`: verify canonical marketplace paths and native development boundaries.
-- `bun run prove:quickjs-ci`: reproduce runtime, distribution, matrix, pinning, and attestation CI checks.
 - `bun run prove:all`: complete local gate.
 
 ## Public and private canaries
@@ -513,9 +515,13 @@ These canaries prove this repository's Git publishing transport and native Git-m
 ## Current boundaries
 
 - macOS arm64/x64 and Linux arm64/x64 only.
-- QuickJS NG `0.16.1` is checksum-pinned in the payload.
-- A future dependency on `Bun.*`, `node:*`, native addons, or unsupported Web APIs requires a fresh runtime decision and compatibility proof.
+- The locked x64 baseline assets support AVX-capable CPUs for this Bun 1.3.14
+  candidate. Older no-AVX x64 hosts are outside the support boundary; custody
+  executes `bun --version` before publication and refuses an unusable binary.
+- Bun is pinned by version and per-target archive/executable digests; users do not install or pin it themselves.
+- Publisher-reviewed bundles and dependencies execute with the user's normal Bun and OS capabilities. This is not a sandbox or an untrusted-plugin runtime.
+- The build rejects native addons, statically visible computed loaders and direct `eval`/`Function` use, undeclared assets, and runtime package installation. These are deterministic bundle-hygiene checks, not adversarial capability confinement; publisher review owns indirect or obfuscated code, and architecture-layer isolation owns untrusted code (ADR 0006).
 - Claude reloads a direct development plugin in the existing session. Codex needs a staged reinstall and fresh task.
-- Hook declarations stay physically separate. A shared default `hooks/hooks.json` previously caused cross-harness auto-discovery.
+- Runtime lifecycle hooks, prewarm, doctor, inventory, and prune commands are intentionally absent.
 - Managed, workspace-installed, or non-removable plugins require administrator replacement or rollback.
-- Vendor plugin specifications change. Recheck the linked official documentation when manifests, hooks, trust, or reload behavior changes.
+- Vendor plugin specifications change. Recheck the linked official documentation when manifests, discovery, installation, or reload behavior changes.

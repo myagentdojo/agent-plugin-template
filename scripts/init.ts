@@ -150,16 +150,6 @@ function releaseResetFiles(root: string, name: string): Array<{ path: string; co
 	const packageJson = parseResetJson(root, "package.json")
 	packageJson.version = initialVersion
 
-	const runtimePath = "plugin/runtime/hello-world.js"
-	const runtime = readResetFile(root, runtimePath)
-	const startMarker = "// x-release-please-start-version"
-	const endMarker = "// x-release-please-end"
-	const start = runtime.indexOf(startMarker)
-	const end = runtime.indexOf(endMarker, start + startMarker.length)
-	if (start === -1 || end === -1) fail(`${runtimePath} is missing release version markers`)
-	const versionBlock = `${startMarker}\nconst PLUGIN_VERSION = ${JSON.stringify(initialVersion)};\n${endMarker}`
-	const resetRuntime = `${runtime.slice(0, start)}${versionBlock}${runtime.slice(end + endMarker.length)}`
-
 	return [
 		{
 			path: ".github/release-please-config.json",
@@ -168,7 +158,6 @@ function releaseResetFiles(root: string, name: string): Array<{ path: string; co
 		{ path: "package.json", contents: `${JSON.stringify(packageJson, null, 2)}\n` },
 		{ path: ".github/.release-please-manifest.json", contents: "{}\n" },
 		{ path: "CHANGELOG.md", contents: "" },
-		{ path: runtimePath, contents: resetRuntime },
 	]
 }
 

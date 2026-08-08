@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "harness-native-plugin-prototype",
-      "description": "Prove native plugin distribution with a Bun-authored portable runtime",
+      "description": "Dependency-closed skills using a verified, plugin-managed Bun runtime",
       "author": {
         "name": "Prototype"
       },

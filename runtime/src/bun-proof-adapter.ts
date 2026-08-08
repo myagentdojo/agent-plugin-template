@@ -1,13 +1,7 @@
-import config from "../../plugin.config.json"
+import { executeCommand } from "./portable-command"
 
-Object.assign(globalThis, { PLUGIN_VERSION: config.version })
-
-const { executeCommand } = await import("./portable-command")
-
-const standardInput = await Bun.stdin.text()
 const result = executeCommand(
 	process.argv.slice(2),
-	standardInput,
 	process.env.HELLO_WORLD_RUN_ID ?? crypto.randomUUID(),
 )
 

@@ -16,12 +16,13 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import {
 	admitGitTransport,
 	assertReplacementAdmission,
-	codexHookTrustEvidence,
 	copyMarketplaceDistribution,
 	hostedMarketplaceSources,
 	nativeHarnessEnvironment,
 	proveHarnessInstall,
 	redactTemporaryEvidencePath,
+	resolveCleanSourceCommit,
+	runtimeClosureEvidence,
 } from "./prove-harness-install"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
@@ -33,6 +34,33 @@ const root = resolve(import.meta.dir, "..")
 let proof: ReturnType<typeof proveHarnessInstall>
 const claudeNativeTest = Bun.which("claude") ? test : test.skip
 const codexNativeTest = Bun.which("codex") ? test : test.skip
+
+test("source-bound native receipts reject dirty checkout bytes", () => {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "native-receipt-source-"))
+	try {
+		const environment = {
+			...process.env,
+			GIT_AUTHOR_NAME: "Receipt Test",
+			GIT_AUTHOR_EMAIL: "receipt@example.invalid",
+			GIT_COMMITTER_NAME: "Receipt Test",
+			GIT_COMMITTER_EMAIL: "receipt@example.invalid",
+		}
+		writeFileSync(join(fixtureRoot, "payload.txt"), "clean\n")
+		for (const command of [
+			["git", "init", "--quiet"],
+			["git", "add", "payload.txt"],
+			["git", "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "fixture"],
+		]) {
+			const result = Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment })
+			expect(result.exitCode).toBe(0)
+		}
+		expect(resolveCleanSourceCommit(fixtureRoot)).toMatch(/^[a-f0-9]{40}$/)
+		writeFileSync(join(fixtureRoot, "payload.txt"), "dirty\n")
+		expect(() => resolveCleanSourceCommit(fixtureRoot)).toThrow(/requires a clean source checkout/)
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+	}
+})
 
 beforeAll(() => {
 	proof = proveHarnessInstall(root)
@@ -83,6 +111,15 @@ test("release proof requires both native harness CLIs", () => {
 		"bun run scripts/prove-harness-install.ts",
 	)
 	expect(packageJson.scripts["prove:all"]).toContain("prove:harness-install -- --require-native")
+	expect(packageJson.scripts["prove:all"]).toContain("--fixture-acknowledged")
+})
+
+test("native runtime qualification requires explicit fixture acknowledgement", () => {
+	expect(() =>
+		proveHarnessInstall(root, {
+			qualifyRuntimeJourney: true,
+		}),
+	).toThrow("requires --fixture-acknowledged")
 })
 
 test("native harness commands receive no publication credentials", () => {
@@ -229,6 +266,10 @@ test("cleaned CLI proof reports that temporary evidence was removed", () => {
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		ok: true,
 		evidenceRetained: false,
+		codex: {
+			mode: "fixture-copy",
+			activation: null,
+		},
 	})
 }, 60_000)
 
@@ -382,36 +423,38 @@ codexNativeTest("Codex local refresh changes bytes (Codex CLI required; fallback
 	expect(proof.codex.localRefresh.failureRestored).toBe(true)
 })
 
-test("AE8: Codex plugin enablement and hook trust remain separate before interactive acceptance", () => {
-	expect(proof.codex.trust).toMatchObject({
+test("Codex activation evidence matches the proof mode", () => {
+	if (proof.codex.mode === "fixture-copy") {
+		expect(proof.codex.activation).toBeNull()
+		return
+	}
+	expect(proof.codex.activation).toMatchObject({
 		pluginEnabled: true,
-		hookDefinitionPresent: true,
-		hookTrusted: false,
-		preTrustExecution: "skipped",
-		separateFromEnablement: true,
+		lifecycleHookPresent: false,
+		executionEntry: "explicit skill launcher",
+		runtimeRepairOwner: "agent workflow with human approval",
 	})
 })
 
-test("AE10: version and executable changes invalidate the prior exact hook definition", () => {
-	const before = codexHookTrustEvidence(join(proof.preflight.checkoutRoot, "plugin"))
-	const after = codexHookTrustEvidence(join(proof.targetPreflight.checkoutRoot, "plugin"))
+test("AE10: a versioned release changes exact payload evidence without changing inventory", () => {
+	const before = runtimeClosureEvidence(join(proof.preflight.checkoutRoot, "plugin"))
+	const after = runtimeClosureEvidence(join(proof.targetPreflight.checkoutRoot, "plugin"))
 
 	expect(before.version).not.toBe(after.version)
-	expect(before.command).toContain(`--plugin-version ${before.version}`)
-	expect(after.command).toContain(`--plugin-version ${after.version}`)
-	expect(before.definitionHash).not.toBe(after.definitionHash)
-	expect(before.executableClosureHash).not.toBe(after.executableClosureHash)
-	expect(proof.trustDefinitionChanged).toBe(true)
+	expect(before.inventoryHash).toBe(after.inventoryHash)
+	expect(before.payloadHash).not.toBe(after.payloadHash)
+	expect(proof.payloadClosureChanged).toBe(true)
 })
 
 test.each([
 	"bin/hello-world",
+	"bin/skill-a",
+	"bin/skill-b",
 	"runtime/hello-world.js",
-	"runtime/qjs-darwin-arm64",
-	"runtime/qjs-darwin-x86_64",
-	"runtime/qjs-linux-aarch64",
-	"runtime/qjs-linux-x86_64",
-] as const)("AE10: changing only %s under a new version changes trust evidence", (changedPath) => {
+	"runtime/runtime-exec",
+	"runtime/runtime-lock.sh",
+	"runtime/skill-catalog.sh",
+] as const)("AE10: changing only %s under a new version changes payload evidence", (changedPath) => {
 	const variantRoot = join(proof.temporaryRoot, "closure-variants", changedPath.replaceAll("/", "-"))
 	cpSync(join(proof.preflight.checkoutRoot, "plugin"), join(variantRoot, "plugin"), {
 		recursive: true,
@@ -426,11 +469,10 @@ test.each([
 	const changedFile = join(variantRoot, "plugin", changedPath)
 	writeFileSync(changedFile, Buffer.concat([readFileSync(changedFile), Buffer.from("u6-change")]))
 
-	const before = codexHookTrustEvidence(join(proof.preflight.checkoutRoot, "plugin"))
-	const after = codexHookTrustEvidence(join(variantRoot, "plugin"))
-	expect(after.command).toContain(`--plugin-version ${config.version}`)
-	expect(after.definitionHash).not.toBe(before.definitionHash)
-	expect(after.executableClosureHash).not.toBe(before.executableClosureHash)
+	const before = runtimeClosureEvidence(join(proof.preflight.checkoutRoot, "plugin"))
+	const after = runtimeClosureEvidence(join(variantRoot, "plugin"))
+	expect(after.inventoryHash).toBe(before.inventoryHash)
+	expect(after.payloadHash).not.toBe(before.payloadHash)
 })
 
 test("payload inspection failure occurs before an active install can change", () => {
@@ -448,7 +490,7 @@ test("payload inspection failure occurs before an active install can change", ()
 })
 
 test.skip(
-	"interactive Codex /hooks acceptance proves exact-definition trust (requires a human interactive task)",
+	"Codex Desktop discovery and approved repair/retry smoke has a named manual receipt",
 	() => {},
 )
 
@@ -458,6 +500,6 @@ test.skip(
 )
 
 test.skip(
-	"hosted Git marketplace fresh task runs the selected hook (requires live model access)",
+	"hosted Git marketplace fresh task discovers and runs the selected skill (requires live model access)",
 	() => {},
 )

@@ -3,6 +3,8 @@ const generatedPayloadPaths = new Set([
 	".agents/plugins/marketplace.json",
 	".claude-plugin/marketplace.json",
 	"plugin.config.json",
+	"runtime/runtime.lock.json",
+	"runtime/skill-catalog.json",
 ])
 import {
 	RELEASE_PROJECTION_PATH_SET,
@@ -103,6 +105,9 @@ function isPayloadPath(path: string): boolean {
 	return (
 		path.startsWith("plugin/") ||
 		path.startsWith("runtime/src/") ||
+		path.startsWith("packages/") ||
+		path === "bun.lock" ||
+		path === "bunfig.toml" ||
 		generatedPayloadPaths.has(path)
 	)
 }

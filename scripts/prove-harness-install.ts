@@ -22,23 +22,26 @@ import {
 import {
 	provePostMutationRecovery,
 } from "./harness-install-recovery"
-import { copyPluginPayload, pluginPayloadInventory } from "./plugin-files"
+import { copyPluginPayload, payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
 	loadPluginConfig,
 	type PluginConfig,
 	writeGeneratedFiles,
 } from "./plugin-config"
+import { requireProofControlEnvelope } from "./proof-control-envelope"
+import { currentRuntimeTarget } from "./prove-runtime-platform"
 
 const help = `Prove tagged plugin installation in isolated Claude and Codex homes.
 
 Usage:
-  bun run prove:harness-install [--require-native | --allow-fixture-copy] [--json]
+  bun run prove:harness-install [--require-native --fixture-acknowledged | --allow-fixture-copy] [--json]
   bun run prove:harness-install --help
 
 Options:
   --json       Emit the proof report as JSON. This is also the default output.
   --require-native  Explicitly require both native CLIs (the default).
+  --fixture-acknowledged  Allow isolated repair mutation in native qualification. Never claims human approval.
   --allow-fixture-copy  Development-only byte proof when native CLIs are unavailable.
   -h, --help   Show this help.
 
@@ -214,14 +217,12 @@ export interface CodexProof {
 		enabledStateRestored: boolean
 		failureRestored: boolean
 	}
-	trust: {
+	activation: {
 		pluginEnabled: boolean
-		hookDefinitionPresent: boolean
-		hookTrusted: false
-		preTrustExecution: "skipped"
-		separateFromEnablement: true
-		interactiveAcceptance: string
-	}
+		lifecycleHookPresent: false
+		executionEntry: "explicit skill launcher"
+		runtimeRepairOwner: "agent workflow with human approval"
+	} | null
 }
 
 interface HarnessInstallProof {
@@ -234,8 +235,12 @@ interface HarnessInstallProof {
 	restorationPreflight: TaggedCheckout
 	claude: ClaudeProof
 	codex: CodexProof
+	runtimeJourneys?: {
+		claude: NativeRuntimeJourney
+		codex: NativeRuntimeJourney
+	}
 	versionAgreement: true
-	trustDefinitionChanged: true
+	payloadClosureChanged: true
 	skips: HarnessSkip[]
 	nextAction: string
 }
@@ -243,6 +248,27 @@ interface HarnessInstallProof {
 export interface HarnessInstallProofOptions {
 	/** Require both real harness CLIs; fixture copies cannot qualify CI or release. */
 	requireNative?: boolean
+	/** Run missing, preview, repair, retry, and corrupt-recovery journeys from installed payloads. */
+	qualifyRuntimeJourney?: boolean
+	/** Explicit CI/test acknowledgement for isolated repair mutation; never a human-approval claim. */
+	fixtureAcknowledged?: boolean
+}
+
+interface NativeRuntimeJourney {
+	kind: "installed-payload-mechanics"
+	client: "claude-cli" | "codex-cli"
+	target: string
+	repository: string
+	sourceCommit: string
+	version: string
+	runtimeLockSha256: string
+	payloadHash: string
+	bundleInventorySha256: string
+	approvalPrompt: string
+	fixtureAcknowledged: true
+	humanApprovalClaimed: false
+	agentWorkflowProved: false
+	journey: string[]
 }
 
 interface NativeHarnessExecutables {
@@ -465,14 +491,6 @@ function createFixtureRelease(sourceRoot: string, temporaryRoot: string): Fixtur
 		`${JSON.stringify(targetConfig, null, 2)}\n`,
 	)
 	writeGeneratedFiles(repositoryRoot, targetConfig)
-	const runtimePath = join(repositoryRoot, "plugin", "runtime", "hello-world.js")
-	writeFileSync(
-		runtimePath,
-		readFileSync(runtimePath, "utf8").replace(
-			`const PLUGIN_VERSION = "${config.version}";`,
-			`const PLUGIN_VERSION = "${targetConfig.version}";`,
-		),
-	)
 	const targetRef = `v${targetConfig.version}`
 	snapshotFixture(repositoryRoot, targetRef, `release ${targetRef}`)
 
@@ -1067,57 +1085,203 @@ export function assertReplacementAdmission(
 }
 
 /**
- * Bind Codex trust review to the version-bearing hook command and executable closure bytes.
+ * Bind native-install review to the exact versioned plugin payload bytes.
  *
  * @param pluginRoot - Installed plugin payload root
- * @returns Exact definition and executable-closure hashes used for review comparison
- * @throws {Error} When the hook definition omits the installed manifest version
+ * @returns Exact inventory and payload hashes used for review comparison
  *
  * @example
  * ```typescript
- * const evidence = codexHookTrustEvidence(installedPath)
+ * const evidence = runtimeClosureEvidence(installedPath)
  * ```
  */
-export function codexHookTrustEvidence(pluginRoot: string): {
+export function runtimeClosureEvidence(pluginRoot: string): {
 	version: string
-	command: string
-	definitionHash: string
-	executableClosureHash: string
+	inventoryHash: string
+	payloadHash: string
 } {
 	const manifest = JSON.parse(
 		readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 	)
-	const hooks = JSON.parse(readFileSync(join(pluginRoot, "hooks", "codex", "hooks.json"), "utf8"))
-	const commandDefinition = hooks.hooks.SessionStart[0].hooks[0].command as string
-	if (!commandDefinition.includes(`--plugin-version ${manifest.version}`)) {
-		throw new Error("Codex hook definition does not carry the installed plugin version")
-	}
-	const closure = [
-		"bin/hello-world",
-		"runtime/hello-world.js",
-		...readdirSync(join(pluginRoot, "runtime"))
-			.filter((entry) => entry.startsWith("qjs-"))
-			.map((entry) => `runtime/${entry}`),
-	].sort()
-	const closureHash = createHash("sha256")
-	for (const relativePath of closure) {
-		closureHash.update(relativePath)
-		closureHash.update("\0")
-		closureHash.update(readFileSync(join(pluginRoot, relativePath)))
-	}
+	const inventory = regularFiles(pluginRoot)
 	return {
 		version: manifest.version,
-		command: commandDefinition,
-		definitionHash: createHash("sha256").update(commandDefinition).digest("hex"),
-		executableClosureHash: closureHash.digest("hex"),
+		inventoryHash: createHash("sha256").update(inventory.join("\0")).digest("hex"),
+		payloadHash: payloadInventorySha256(pluginRoot, inventory),
 	}
+}
+
+function nativeRuntimeTarget(): string {
+	const target = currentRuntimeTarget()
+	if (!target) {
+		throw new Error(`native runtime qualification does not support ${process.platform}-${process.arch}`)
+	}
+	return target
+}
+
+function runInstalledRuntime(
+	pluginRoot: string,
+	cacheRoot: string,
+	commandArguments: string[],
+): ReturnType<typeof Bun.spawnSync> {
+	return Bun.spawnSync({
+		cmd: commandArguments,
+		cwd: pluginRoot,
+		env: {
+			HOME: cacheRoot,
+			XDG_CACHE_HOME: cacheRoot,
+			PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+		},
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+		timeout: 180_000,
+	})
+}
+
+function proveNativeRuntimeJourney(
+	client: NativeRuntimeJourney["client"],
+	pluginRoot: string,
+	temporaryRoot: string,
+	corruptRecovery: boolean,
+	identity: Pick<NativeRuntimeJourney, "repository" | "sourceCommit" | "runtimeLockSha256">,
+): NativeRuntimeJourney {
+	const target = nativeRuntimeTarget()
+	const cacheRoot = join(temporaryRoot, "runtime-journeys", client)
+	mkdirSync(cacheRoot, { recursive: true, mode: 0o700 })
+	const launcher = join(pluginRoot, "bin", client === "claude-cli" ? "skill-a" : "skill-b")
+	const engine = join(pluginRoot, "runtime", "runtime-exec")
+	const missing = requireProofControlEnvelope(
+		`${client} cold run`,
+		runInstalledRuntime(pluginRoot, cacheRoot, [launcher]),
+		20,
+		"BUN_MISSING",
+	)
+	if (missing.sideEffects.length !== 0) throw new Error(`${client} cold run mutated custody state`)
+	const preview = requireProofControlEnvelope(
+		`${client} repair preview`,
+		runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair"]),
+		0,
+		"REPAIR_PREVIEW",
+	)
+	if (!preview.nextAction.includes("Ask the user to approve") || preview.sideEffects.length !== 0) {
+		throw new Error(`${client} repair preview did not expose the plain-language approval boundary`)
+	}
+	const applied = requireProofControlEnvelope(
+		`${client} acknowledged repair`,
+		runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair", "--apply"]),
+		0,
+		"REPAIR_APPLIED",
+	)
+	const executableSha256 = applied.runtime?.executableSha256
+	if (typeof executableSha256 !== "string") throw new Error(`${client} repair omitted runtime identity`)
+	const retry = runInstalledRuntime(pluginRoot, cacheRoot, [launcher])
+	if (retry.exitCode !== 0) throw new Error(`${client} agent retry failed: ${retry.stderr}`)
+	JSON.parse(retry.stdout.toString())
+
+	const journey = [
+		"BUN_MISSING",
+		"REPAIR_PREVIEW",
+		"FIXTURE_ACKNOWLEDGED",
+		"REPAIR_APPLIED",
+		"launcher-retry",
+	]
+	if (corruptRecovery) {
+		const runtimePath = join(cacheRoot, "agent-plugin-runtime", "bun", executableSha256, "bun")
+		writeFileSync(runtimePath, "corrupt runtime fixture\n")
+		requireProofControlEnvelope(
+			`${client} corrupt run`,
+			runInstalledRuntime(pluginRoot, cacheRoot, [launcher]),
+			20,
+			"REPAIR_REQUIRED",
+		)
+		const corruptPreview = requireProofControlEnvelope(
+			`${client} corrupt repair preview`,
+			runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair"]),
+			0,
+			"REPAIR_PREVIEW",
+		)
+		if (!corruptPreview.nextAction.includes("Ask the user to approve")) {
+			throw new Error(`${client} corrupt recovery omitted the approval boundary`)
+		}
+		requireProofControlEnvelope(
+			`${client} corrupt repair`,
+			runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair", "--apply"]),
+			0,
+			"REPAIR_APPLIED",
+		)
+		const recovered = runInstalledRuntime(pluginRoot, cacheRoot, [launcher])
+		if (recovered.exitCode !== 0) throw new Error(`${client} corrupt recovery retry failed`)
+		JSON.parse(recovered.stdout.toString())
+		journey.push(
+			"REPAIR_REQUIRED",
+			"REPAIR_PREVIEW",
+			"FIXTURE_ACKNOWLEDGED",
+			"REPAIR_APPLIED",
+			"launcher-retry",
+		)
+	}
+
+	const closure = runtimeClosureEvidence(pluginRoot)
+	return {
+		kind: "installed-payload-mechanics",
+		client,
+		target,
+		...identity,
+		version: closure.version,
+		payloadHash: closure.payloadHash,
+		bundleInventorySha256: createHash("sha256")
+			.update(readFileSync(join(pluginRoot, "runtime", "bundle-inventory.json")))
+			.digest("hex"),
+		approvalPrompt: preview.nextAction,
+		fixtureAcknowledged: true,
+		humanApprovalClaimed: false,
+		agentWorkflowProved: false,
+		journey,
+	}
+}
+
+/** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
+export function resolveCleanSourceCommit(repositoryRoot: string): string {
+	const sourceStatus = Bun.spawnSync({
+		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+		cwd: repositoryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (sourceStatus.exitCode !== 0) {
+		throw new Error("native receipt could not verify source checkout cleanliness")
+	}
+	if (sourceStatus.stdout.toString().trim() !== "") {
+		throw new Error(
+			"native runtime qualification requires a clean source checkout so sourceCommit matches the installed payload bytes",
+		)
+	}
+	const sourceCommitResult = Bun.spawnSync({
+		cmd: ["git", "rev-parse", "HEAD"],
+		cwd: repositoryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (sourceCommitResult.exitCode !== 0) {
+		throw new Error("native receipt could not resolve source commit")
+	}
+	const sourceCommit = sourceCommitResult.stdout.toString().trim()
+	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) {
+		throw new Error("native receipt source commit is invalid")
+	}
+	return sourceCommit
 }
 
 function runHarnessInstallProof(
 	repositoryRoot: string,
 	temporaryRoot: string,
 	executables: NativeHarnessExecutables,
+	qualifyRuntimeJourney: boolean,
 ): HarnessInstallProof {
+	const sourceCommit = qualifyRuntimeJourney
+		? resolveCleanSourceCommit(repositoryRoot)
+		: undefined
 	const fixture = createFixtureRelease(repositoryRoot, temporaryRoot)
 	admitGitTransport({
 		source: fixture.repositoryRoot,
@@ -1131,10 +1295,17 @@ function runHarnessInstallProof(
 		removable: true,
 	})
 	const pluginConfig = loadPluginConfig(repositoryRoot)
+	const nativeIdentity = {
+		repository: pluginConfig.repository,
+		sourceCommit: sourceCommit ?? fixture.base.resolvedSha,
+		runtimeLockSha256: createHash("sha256")
+			.update(readFileSync(join(repositoryRoot, "runtime", "runtime.lock.json")))
+			.digest("hex"),
+	}
 	const skips: HarnessSkip[] = [
 		{
-			case: "Codex interactive /hooks trust acceptance",
-			reason: "Trust acceptance requires a human interactive task; proof records enabled plus untrusted pre-task state instead.",
+			case: "Codex Desktop discovery and approved repair/retry smoke",
+			reason: "A named manual release receipt in private XDG state owns the Desktop interaction.",
 		},
 		{
 			case: "Private SSH/HTTPS marketplace fetch and background refresh",
@@ -1170,17 +1341,35 @@ function runHarnessInstallProof(
 			reason: "Codex CLI unavailable; isolated direct-copy cache evidence remains byte-complete.",
 		})
 	}
-	const trustBase = codexHookTrustEvidence(join(fixture.base.checkoutRoot, "plugin"))
-	const trustTarget = codexHookTrustEvidence(join(fixture.target.checkoutRoot, "plugin"))
+	const trustBase = runtimeClosureEvidence(join(fixture.base.checkoutRoot, "plugin"))
+	const trustTarget = runtimeClosureEvidence(join(fixture.target.checkoutRoot, "plugin"))
 	if (
-		trustBase.definitionHash === trustTarget.definitionHash ||
-		trustBase.executableClosureHash === trustTarget.executableClosureHash
+		trustBase.inventoryHash !== trustTarget.inventoryHash ||
+		trustBase.payloadHash === trustTarget.payloadHash
 	) {
-		throw new Error("Codex release change did not invalidate exact-definition trust evidence")
+		throw new Error("release change did not preserve inventory while changing exact payload bytes")
 	}
 	const versionAgreement =
 		claude.version === fixture.base.manifestVersion && codex.version === fixture.base.manifestVersion
 	if (!versionAgreement) throw new Error("Claude and Codex installed versions do not agree with the tag")
+	const runtimeJourneys = qualifyRuntimeJourney
+		? {
+				claude: proveNativeRuntimeJourney(
+					"claude-cli",
+					claude.activeCachePath,
+					temporaryRoot,
+					false,
+					nativeIdentity,
+				),
+				codex: proveNativeRuntimeJourney(
+					"codex-cli",
+					codex.installedPath,
+					temporaryRoot,
+					true,
+					nativeIdentity,
+				),
+			}
+		: undefined
 	return {
 		ok: true,
 		runId: randomUUID(),
@@ -1191,10 +1380,11 @@ function runHarnessInstallProof(
 		restorationPreflight: fixture.base,
 		claude,
 		codex,
+		runtimeJourneys,
 		versionAgreement,
-		trustDefinitionChanged: true,
+		payloadClosureChanged: true,
 		skips,
-		nextAction: "Review the JSON evidence; run hosted and interactive qualifications only when their paths changed.",
+		nextAction: "Review the installed-payload mechanics evidence. Before release, capture candidate-bound Claude task, Codex task, and Codex Desktop human-approval receipts; this fixture does not claim agent workflow proof.",
 	}
 }
 
@@ -1223,11 +1413,22 @@ export function proveHarnessInstall(
 		const missing = [!executables.claude && "claude", !executables.codex && "codex"].filter(Boolean)
 		throw new Error(`native harness CLIs are required; missing: ${missing.join(", ")}`)
 	}
+	if (options.qualifyRuntimeJourney && !options.fixtureAcknowledged) {
+		throw new Error("native runtime qualification requires --fixture-acknowledged before repair --apply")
+	}
+	if (options.qualifyRuntimeJourney && (!executables.claude || !executables.codex)) {
+		throw new Error("native runtime qualification requires both native harness CLIs")
+	}
 	const repositoryRoot = resolve(sourceRoot)
 	pluginPayloadInventory(repositoryRoot)
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "harness-install-proof-"))
 	try {
-		return runHarnessInstallProof(repositoryRoot, temporaryRoot, executables)
+		return runHarnessInstallProof(
+			repositoryRoot,
+			temporaryRoot,
+			executables,
+			options.qualifyRuntimeJourney === true,
+		)
 	} catch (error) {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 		throw error
@@ -1241,7 +1442,12 @@ if (import.meta.main) {
 		process.exit(0)
 	}
 	for (const argument of arguments_) {
-		if (argument !== "--json" && argument !== "--require-native" && argument !== "--allow-fixture-copy") {
+		if (
+			argument !== "--json" &&
+			argument !== "--require-native" &&
+			argument !== "--fixture-acknowledged" &&
+			argument !== "--allow-fixture-copy"
+		) {
 			console.error(`Error: unknown option: ${argument}`)
 			console.error("Run `bun run prove:harness-install -- --help` for usage.")
 			process.exit(2)
@@ -1252,9 +1458,16 @@ if (import.meta.main) {
 		console.error("Run `bun run prove:harness-install -- --help` for usage.")
 		process.exit(2)
 	}
+	if (arguments_.includes("--fixture-acknowledged") && arguments_.includes("--allow-fixture-copy")) {
+		console.error("Error: --fixture-acknowledged cannot be combined with --allow-fixture-copy")
+		process.exit(2)
+	}
 	try {
+		const nativeQualification = !arguments_.includes("--allow-fixture-copy")
 		const proof = proveHarnessInstall(resolve(import.meta.dir, ".."), {
-			requireNative: !arguments_.includes("--allow-fixture-copy"),
+			requireNative: nativeQualification,
+			qualifyRuntimeJourney: nativeQualification,
+			fixtureAcknowledged: arguments_.includes("--fixture-acknowledged"),
 		})
 		const temporaryRoot = proof.temporaryRoot
 		const cleanedProof = { ...proof, evidenceRetained: false }

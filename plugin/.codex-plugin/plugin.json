@@ -1,7 +1,7 @@
 {
   "name": "harness-native-plugin-prototype",
   "version": "0.1.1",
-  "description": "Prove native plugin distribution with a Bun-authored portable runtime",
+  "description": "Dependency-closed skills using a verified, plugin-managed Bun runtime",
   "author": {
     "name": "Prototype"
   },
@@ -9,19 +9,20 @@
   "license": "MIT",
   "keywords": [
     "agent-plugin",
-    "bun",
-    "quickjs"
+    "bun"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/codex/hooks.json",
   "interface": {
     "displayName": "Harness Plugin Prototype",
     "shortDescription": "Run a portable plugin skill",
-    "longDescription": "A portability proof with shared skills and runtime code plus native Claude Code and Codex manifests and hooks.",
+    "longDescription": "Dependency-closed skills for Claude Code and Codex using one verified, plugin-managed Bun runtime.",
     "developerName": "Prototype",
     "category": "Developer Tools",
     "capabilities": [
-      "Read"
+      "Execute verified Bun code",
+      "Download Bun after approval",
+      "Write private runtime cache",
+      "Use network during repair"
     ],
     "defaultPrompt": [
       "Run the hello-world distribution proof."

@@ -18,6 +18,10 @@ describe("release impact", () => {
 		["chore: refresh runtime assets", "plugin/runtime/quickjs-assets.json"],
 		["refactor: reshape the manifest", "plugin/.codex-plugin/plugin.json"],
 		["chore: refresh the marketplace", ".agents/plugins/marketplace.json"],
+		["chore: tweak the skill source", "packages/skill-a/src/main.ts"],
+		["chore: update the skill manifest", "packages/skill-b/package.json"],
+		["chore: refresh the lockfile", "bun.lock"],
+		["chore: tune the install config", "bunfig.toml"],
 	] as const
 
 	for (const [title, path] of nonReleasablePayloadChanges) {
@@ -79,14 +83,33 @@ describe("release impact", () => {
 		})
 	})
 
+	test("treats runtime lock and catalog bumps as payload impact under fix title", () => {
+		const result = classifyReleaseImpact({
+			title: "fix: bump the pinned runtime lock",
+			changedFiles: [
+				{ path: "runtime/runtime.lock.json" },
+				{ path: "runtime/skill-catalog.json" },
+			],
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: true,
+			isReleasePleaseProjection: false,
+			titleIsReleasable: true,
+			ok: true,
+			changedPayloadPaths: [
+				"runtime/runtime.lock.json",
+				"runtime/skill-catalog.json",
+			],
+		})
+	})
+
 	test("exempts the exact Release Please version and changelog projection", () => {
 		const projection = [
 			"plugin.config.json",
 			".claude-plugin/marketplace.json",
 			"plugin/.claude-plugin/plugin.json",
 			"plugin/.codex-plugin/plugin.json",
-			"plugin/runtime/hello-world.js",
-			"plugin/hooks/codex/hooks.json",
 			".github/.release-please-manifest.json",
 			"CHANGELOG.md",
 		].map((path) => ({ path, versionOnly: true }))
@@ -116,8 +139,6 @@ describe("release impact", () => {
 			".claude-plugin/marketplace.json",
 			"plugin/.claude-plugin/plugin.json",
 			"plugin/.codex-plugin/plugin.json",
-			"plugin/runtime/hello-world.js",
-			"plugin/hooks/codex/hooks.json",
 			".github/.release-please-manifest.json",
 			"CHANGELOG.md",
 		].map((path) => ({ path, versionOnly: true }))
@@ -228,19 +249,19 @@ describe("release impact", () => {
 		})
 	})
 
-	test("recognizes generated hook and runtime version markers", () => {
+	test("generated runtime bundles are not release-version projections", () => {
 		expect(
 			isReleasePleaseVersionOnlyChange(
 				"plugin/hooks/codex/hooks.json",
-				'{"command":"hello --plugin-version 1.2.2 # x-release-please-version"}',
-				'{"command":"hello --plugin-version 1.2.3 # x-release-please-version"}',
+				'{"command":"old"}',
+				'{"command":"new"}',
 			),
-		).toBe(true)
+		).toBe(false)
 		expect(
 			isReleasePleaseVersionOnlyChange(
 				"plugin/runtime/hello-world.js",
-				'const PLUGIN_VERSION = "1.2.2";\nrunOld()',
-				'const PLUGIN_VERSION = "1.2.3";\nrunNew()',
+				"runOld()",
+				"runNew()",
 			),
 		).toBe(false)
 	})

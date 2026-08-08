@@ -1,0 +1,9 @@
+#!/bin/sh
+# Generated from runtime/skill-catalog.json. Edit the source, then run bun run generate.
+set -eu
+case "$0" in
+*/*) launcher_dir=${0%/*} ;;
+*) launcher_dir=. ;;
+esac
+plugin_root=$(CDPATH='' cd -- "$launcher_dir/.." && pwd -P)
+exec "$plugin_root/runtime/runtime-exec" run skill-b -- "$@"

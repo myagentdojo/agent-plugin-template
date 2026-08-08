@@ -3,6 +3,10 @@
   "version": "0.1.1",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "test": "bun test",
     "init": "bun run scripts/init.ts",
@@ -19,9 +23,8 @@
     "prove:distribution": "bun run scripts/prove-distribution.ts",
     "prove:harness-install": "bun run scripts/prove-harness-install.ts",
     "prove:dx": "bun run scripts/prove-dx.ts",
-    "prove:quickjs-ci": "bun run scripts/prove-quickjs-ci.ts",
-    "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:quickjs-ci && bun run prove:harness-install -- --require-native && bun run prove:dx",
-    "spike:quickjs": "bun run scripts/quickjs-spike.ts",
-    "spike:quickjs:ci": "bun run scripts/quickjs-spike.ts --ci"
+    "prove:runtime-custody": "bun run scripts/prove-runtime-custody.ts",
+    "prove:runtime-platform": "bun run scripts/prove-runtime-platform.ts",
+    "prove:all": "bun test --path-ignore-patterns=scripts/runtime-custody-exec.test.ts && bun run generate:check && bun run release:validate && bun run prove:runtime-custody && bun run prove:harness-install -- --require-native --fixture-acknowledged && bun run prove:distribution && bun run prove:dx"
   }
 }

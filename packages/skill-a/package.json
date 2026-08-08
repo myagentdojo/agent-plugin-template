@@ -1,0 +1,11 @@
+{
+  "name": "skill-a",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "dependencies": {
+    "camelcase": "8.0.0",
+    "ms": "2.1.3"
+  }
+}

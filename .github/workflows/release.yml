@@ -325,10 +325,44 @@ jobs:
           manifest-file: .github/.release-please-manifest.json
           release-as: ${{ steps.bootstrap-version.outputs.release_as }}
 
+  candidate:
+    name: Build release candidate once
+    if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
+    needs: resolve
+    permissions:
+      actions: read
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Package the resolved release candidate
+        env:
+          SOURCE_COMMIT: ${{ needs.resolve.outputs.candidate_sha }}
+        run: bun run package
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-platform-candidate-${{ github.run_id }}
+          overwrite: true
+          path: |
+            dist/*.tar.gz
+            dist/*.checksums.json
+          if-no-files-found: error
+
   compatibility:
     name: Release compatibility (${{ matrix.target }})
     if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
-    needs: resolve
+    needs:
+      - resolve
+      - candidate
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -349,14 +383,34 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
-      - run: bun run spike:quickjs:ci
+      - name: Download the single packaged candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: release-platform-candidate-${{ github.run_id }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/platform-candidate"
+      - name: Prove packaged runtime custody on this target
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.tar.gz' -print -quit)
+          checksums=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.checksums.json' -print -quit)
+          [[ -n "$archive" && -n "$checksums" ]]
+          bun run prove:runtime-platform -- \
+            --archive "$archive" \
+            --checksums "$checksums" \
+            --target "${{ matrix.target }}" \
+            --fixture-acknowledged
 
   package:
     name: Prove release candidate
     if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
     needs:
       - resolve
+      - candidate
       - compatibility
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -367,14 +421,29 @@ jobs:
           bun-version: 1.3.14
       - name: Install pinned native marketplace CLIs
         run: bun add --global "@anthropic-ai/claude-code@2.1.222" "@openai/codex@0.146.1"
+      - name: Download the platform-proven release candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: release-platform-candidate-${{ github.run_id }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/platform-candidate"
       - name: Validate and prove release payload
         env:
           SOURCE_COMMIT: ${{ needs.resolve.outputs.candidate_sha }}
         run: |
           bun run prove:all
-          bun run prove:distribution
+      - name: Compare the rebuilt package with the platform-proven candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_archive=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.tar.gz' -print -quit)
+          candidate_checksums=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.checksums.json' -print -quit)
+          rebuilt_archive=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
+          rebuilt_checksums=$(find dist -maxdepth 1 -name '*.checksums.json' -print -quit)
+          [[ -n "$candidate_archive" && -n "$candidate_checksums" && -n "$rebuilt_archive" && -n "$rebuilt_checksums" ]]
+          cmp --silent "$candidate_archive" "$rebuilt_archive"
+          cmp --silent "$candidate_checksums" "$rebuilt_checksums"
       - name: Reject generated release-surface drift
-        run: git diff --exit-code -- plugin/runtime/hello-world.js plugin/hooks/codex/hooks.json
+        run: git diff --exit-code -- plugin/
       - name: Bind checksum metadata to candidate
         env:
           CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
@@ -382,7 +451,7 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          checksums=$(find dist -maxdepth 1 -name '*.checksums.json' -print -quit)
+          checksums=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.checksums.json' -print -quit)
           [[ -n "$checksums" ]]
           checksums_repository=$(jq -er .repository "$checksums")
           checksums_repository_identity=$(bun -e 'import { canonicalGitHubRepositoryIdentity } from "./scripts/release-validate.ts"; process.stdout.write(canonicalGitHubRepositoryIdentity(process.argv.at(-1) ?? ""))' "$checksums_repository")
@@ -402,8 +471,8 @@ jobs:
           name: release-candidate-${{ github.run_id }}
           overwrite: true
           path: |
-            dist/*.tar.gz
-            dist/*.checksums.json
+            ${{ runner.temp }}/platform-candidate/*.tar.gz
+            ${{ runner.temp }}/platform-candidate/*.checksums.json
           if-no-files-found: error
 
   release:
