@@ -209,6 +209,11 @@ test("validateBundleText rejects runtime code generation", () => {
 	for (const code of [
 		`const load = new Function("target", "return im" + "port(target)");`,
 		`const load = Function("return 1");`,
+		`const load = Function.call(null, "target", "return im" + "port(target)");`,
+		`const load = Function.apply(null, ["target", "return im" + "port(target)"]);`,
+		`const load = Function.bind(null, "target")("return im" + "port(target)");`,
+		`const Factory = Function;const load = Factory("return 1");`,
+		`const load = (0, Function)("return 1");`,
 		`const load = eval("target => im" + "port(target)");`,
 	]) {
 		expect(() => validateBundleText("skill-a", code)).toThrow(/runtime code generation/)
@@ -233,8 +238,12 @@ test("validateBundleText rejects a member-access runtime require", () => {
 		`const m = globalThis.require(name);`,
 		`const fs = globalThis.require("node:fs");`,
 		`const fs = import.meta.require("node:fs");`,
+		`const fs = globalThis["require"]("node:fs");`,
+		`const fs = import.meta["require"]("node:fs");`,
+		`const key = "require";const fs = globalThis[key]("node:fs");`,
+		`const key = ["require"];const fs = globalThis[key[0]]("node:fs");`,
 	]) {
-		expect(() => validateBundleText("skill-a", code)).toThrow(/ambient runtime module loader/)
+		expect(() => validateBundleText("skill-a", code)).toThrow(/ambient runtime/)
 	}
 })
 

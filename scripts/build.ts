@@ -344,12 +344,25 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  */
 export function validateBundleText(skillId: string, code: string): void {
 	const executable = executableCodeMask(code)
-	const codeGeneration = /\b(?:eval|Function)\s*\(/g
+	const codeGeneration = /\b(?:eval|Function)\b/g
 	for (const match of executable.matchAll(codeGeneration)) {
+		if (isPropertyLabel(executable, match.index, match[0].length)) continue
+		if (match[0] === "Function") {
+			const before = executable.slice(0, match.index)
+			const after = executable.slice(match.index + match[0].length)
+			if (/\binstanceof\s*$/.test(before)) continue
+			if (
+				/^\s*\.\s*prototype\b(?:\s*\.\s*(?:call|apply|bind|name|length))?\s*(?:[;,)\]}]|$)/.test(
+					after,
+				)
+			) {
+				continue
+			}
+		}
 		throw new BundleValidationError(
 			skillId,
 			"dynamic-code-generation",
-			"bundle retains runtime code generation; eval and Function are not allowed",
+			"bundle retains runtime code generation or an escaping reference; eval and callable Function are not allowed",
 		)
 	}
 	if (/\b(?:createRequire|getBuiltinModule)\b/.test(executable)) {
@@ -369,6 +382,29 @@ export function validateBundleText(skillId: string, code: string): void {
 			"runtime-loader",
 			"bundle retains a destructured runtime module-loader escape",
 		)
+	}
+	for (const match of executable.matchAll(/\b(?:import\s*\.\s*meta|globalThis)\b/g)) {
+		let cursor = match.index + match[0].length
+		while (/\s/.test(executable[cursor] ?? "")) cursor++
+		if (executable.slice(cursor, cursor + 2) === "?.") {
+			cursor += 2
+			while (/\s/.test(executable[cursor] ?? "")) cursor++
+		}
+		if (executable[cursor] !== "[") continue
+		let depth = 0
+		do {
+			if (executable[cursor] === "[") depth++
+			if (executable[cursor] === "]") depth--
+			cursor++
+		} while (cursor < executable.length && depth > 0)
+		while (/\s/.test(executable[cursor] ?? "")) cursor++
+		if (depth === 0 && executable[cursor] === "(") {
+			throw new BundleValidationError(
+				skillId,
+				"runtime-loader",
+				`bundle retains a computed ambient runtime call near "${code.slice(match.index, match.index + 48)}"`,
+			)
+		}
 	}
 	// Every dynamic-load call site must be a single immediately-closed string
 	// literal: any other argument shape (concatenation, identifier, member
