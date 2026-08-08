@@ -700,9 +700,9 @@ verify_staged() {
 		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
 	fi
 	sanitize_bun_environment
-	_vs_version=''
 	if ! _vs_version=$("$staged_path" --config=/dev/null --version </dev/null 2>/dev/null); then
-		_vs_version=''
+		diag 'verified staged runtime bytes cannot execute from the cache'
+		fail_apply 21 RUNTIME_NOT_EXECUTABLE "$(side_effects_json)" false 'Point XDG_CACHE_HOME at a filesystem that permits execution, then retry.'
 	fi
 	if [ "$_vs_version" != "$RUNTIME_LOCK_VERSION" ]; then
 		diag "staged executable reported version '$_vs_version' instead of '$RUNTIME_LOCK_VERSION'"

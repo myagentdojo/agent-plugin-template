@@ -1134,6 +1134,27 @@ test("a wrong --version report is rejected before publication with exit 23", () 
 	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
 })
 
+test("verified staged bytes that cannot execute report the cache filesystem failure", () => {
+	const unlaunchable = new TextEncoder().encode("#!/missing-runtime-interpreter\n")
+	const fixture = makeFixture({
+		zipEntries: [{ name: "bun-fixture/bun", data: unlaunchable }],
+		lock: {
+			executableBytes: unlaunchable.length,
+			executableSha256: sha256Hex(unlaunchable),
+		},
+	})
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(21)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("RUNTIME_NOT_EXECUTABLE")
+	expect(envelope.retrySafe).toBe(false)
+	expect(String(envelope.nextAction)).toContain("XDG_CACHE_HOME")
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
 // --- R13 negatives: unsafe cache roots ----------------------------------------
 
 test("a world-writable cache root is rejected for run and repair with exit 20", () => {
