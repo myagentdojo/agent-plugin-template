@@ -391,24 +391,11 @@ export function validateBundleText(skillId: string, code: string): void {
 			while (/\s/.test(executable[cursor] ?? "")) cursor++
 		}
 		if (executable[cursor] !== "[") continue
-		let depth = 0
-		do {
-			if (executable[cursor] === "[") depth++
-			if (executable[cursor] === "]") depth--
-			cursor++
-		} while (cursor < executable.length && depth > 0)
-		while (/\s/.test(executable[cursor] ?? "")) cursor++
-		if (executable.slice(cursor, cursor + 2) === "?.") {
-			cursor += 2
-			while (/\s/.test(executable[cursor] ?? "")) cursor++
-		}
-		if (depth === 0 && executable[cursor] === "(") {
-			throw new BundleValidationError(
-				skillId,
-				"runtime-loader",
-				`bundle retains a computed ambient runtime call near "${code.slice(match.index, match.index + 48)}"`,
-			)
-		}
+		throw new BundleValidationError(
+			skillId,
+			"runtime-loader",
+			`bundle retains a computed ambient runtime reference near "${code.slice(match.index, match.index + 48)}"`,
+		)
 	}
 	// Every dynamic-load call site must be a single immediately-closed string
 	// literal: any other argument shape (concatenation, identifier, member

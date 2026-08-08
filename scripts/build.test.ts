@@ -244,9 +244,15 @@ test("validateBundleText rejects a member-access runtime require", () => {
 		`const key = ["require"];const fs = globalThis[key[0]]("node:fs");`,
 		`const key = "require";const fs = import.meta[key]?.("node:fs");`,
 		`const key = "require";const fs = globalThis?.[key]?.("node:fs");`,
+		`const key = process.env.KEY;const load = import.meta[key];load(process.env.TARGET);`,
+		`const key = process.env.KEY;const load = globalThis[key];load(process.env.TARGET);`,
 	]) {
 		expect(() => validateBundleText("skill-a", code)).toThrow(/ambient runtime/)
 	}
+})
+
+test("validateBundleText allows ordinary ambient dot references", () => {
+	validateBundleText("skill-a", `globalThis.console.log(import.meta.url);`)
 })
 
 test("validateBundleText rejects a concatenated dynamic import that begins with a string literal", () => {
