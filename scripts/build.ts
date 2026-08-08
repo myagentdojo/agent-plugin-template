@@ -398,6 +398,10 @@ export function validateBundleText(skillId: string, code: string): void {
 			cursor++
 		} while (cursor < executable.length && depth > 0)
 		while (/\s/.test(executable[cursor] ?? "")) cursor++
+		if (executable.slice(cursor, cursor + 2) === "?.") {
+			cursor += 2
+			while (/\s/.test(executable[cursor] ?? "")) cursor++
+		}
 		if (depth === 0 && executable[cursor] === "(") {
 			throw new BundleValidationError(
 				skillId,

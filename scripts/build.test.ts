@@ -242,6 +242,8 @@ test("validateBundleText rejects a member-access runtime require", () => {
 		`const fs = import.meta["require"]("node:fs");`,
 		`const key = "require";const fs = globalThis[key]("node:fs");`,
 		`const key = ["require"];const fs = globalThis[key[0]]("node:fs");`,
+		`const key = "require";const fs = import.meta[key]?.("node:fs");`,
+		`const key = "require";const fs = globalThis?.[key]?.("node:fs");`,
 	]) {
 		expect(() => validateBundleText("skill-a", code)).toThrow(/ambient runtime/)
 	}
