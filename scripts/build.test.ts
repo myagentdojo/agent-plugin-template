@@ -169,6 +169,12 @@ test("validateBundleText keeps division after expression parentheses executable"
 	).toThrow(/computed dynamic import/)
 })
 
+test("validateBundleText does not treat control-keyword member names as conditions", () => {
+	expect(() =>
+		validateBundleText("skill-a", `const ratio = obj.if(ok) / import(target) / y;`),
+	).toThrow(/computed dynamic import/)
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,

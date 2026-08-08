@@ -548,6 +548,13 @@ read_reclaim_marker() {
 	[ -n "$mr_host" ] && [ -n "$mr_start" ]
 }
 
+reclaim_marker_identity() {
+	_rmi_line=$("$tool_ls" -idn "$1" 2>/dev/null) || _rmi_line=''
+	set -- $_rmi_line
+	printf 'inode=%s\nhost=%s\npid=%s\nstart=%s\nnonce=%s\n' \
+		"${1-}" "$mr_host" "$mr_pid" "$mr_start" "$mr_nonce"
+}
+
 reclaim_marker_owner_is_live() {
 	if [ "$mr_host" != "$host_id" ]; then
 		if [ "$reclaim_foreign_lock" = 1 ]; then return 1; fi
@@ -625,10 +632,14 @@ reclaim_stale_lock() {
 			return 0
 		fi
 		if [ -f "$_rsl_marker" ] && [ ! -L "$_rsl_marker" ]; then
-			if ! reclaim_marker_is_older_than_grace "$_rsl_marker"; then return 0; fi
 			if ! read_reclaim_marker "$_rsl_marker"; then
 				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed reclaim marker from the private runtime cache, then retry.'
 			fi
+			_rsl_marker_identity=$(reclaim_marker_identity "$_rsl_marker")
+			if ! reclaim_marker_is_older_than_grace "$_rsl_marker"; then return 0; fi
+			if ! read_reclaim_marker "$_rsl_marker"; then return 0; fi
+			_rsl_current_marker_identity=$(reclaim_marker_identity "$_rsl_marker")
+			if [ "$_rsl_current_marker_identity" != "$_rsl_marker_identity" ]; then return 0; fi
 			if reclaim_marker_owner_is_live; then return 0; fi
 			if ! "$tool_rm" -f "$_rsl_marker" 2>/dev/null; then
 				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'An abandoned reclaim marker could not be removed. Make the private runtime cache writable, then retry.'

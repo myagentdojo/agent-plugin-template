@@ -261,8 +261,11 @@ function executableCodeMask(code: string): string {
 				while (identifierPart(code[index] ?? "")) index++
 				copy(start, index)
 				const identifier = code.slice(start, index)
+				let before = start - 1
+				while (before >= 0 && /\s/.test(code[before])) before--
 				if (!(pendingControlCondition && identifier === "await")) {
-					pendingControlCondition = controlConditionKeywords.has(identifier)
+					pendingControlCondition =
+						code[before] !== "." && controlConditionKeywords.has(identifier)
 				}
 				regexAllowed = regexPrefixKeywords.has(identifier)
 				continue
