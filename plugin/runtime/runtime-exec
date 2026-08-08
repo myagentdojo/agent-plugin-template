@@ -585,9 +585,12 @@ acquire_lock() {
 
 release_lock() {
 	if [ "$lock_acquired" = 1 ]; then
-		"$tool_rm" -rf "$lock_dir"
+		if ! "$tool_rm" -rf "$lock_dir" 2>/dev/null; then
+			return 1
+		fi
 		lock_acquired=0
 	fi
+	return 0
 }
 
 # --- repair --apply (R11, R12) ------------------------------------------------
@@ -596,7 +599,9 @@ fail_apply() {
 	if [ -n "${stage_dir-}" ]; then
 		"$tool_rm" -rf "$stage_dir" 2>/dev/null || :
 	fi
-	release_lock
+	if ! release_lock; then
+		diag 'could not release the repair lock while handling a failed repair'
+	fi
 	die "$@"
 }
 
@@ -766,7 +771,10 @@ do_apply() {
 	# verify the winner instead of re-downloading (AE8).
 	assess_blob
 	if [ "$blob_status" = valid ]; then
-		release_lock
+		if ! release_lock; then
+			diag 'could not release the repair lock after observing a concurrent repair'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'A verified runtime is installed, but repair cleanup failed. Run the skill now; make the runtime cache writable before a later repair.'
+		fi
 		emit_envelope true REPAIR_UNNEEDED "$(side_effects_json)" true 'A concurrent repair already published a verified runtime. Run runtime-exec run <skill>.' "$(state_extra valid)"
 		exit 0
 	fi
@@ -780,8 +788,18 @@ do_apply() {
 	extract_member
 	verify_staged
 	publish_blob
-	"$tool_rm" -rf "$stage_dir"
-	release_lock
+	_ap_cleanup_failed=0
+	if ! "$tool_rm" -rf "$stage_dir" 2>/dev/null; then
+		diag 'could not remove the private repair staging directory after publication'
+		_ap_cleanup_failed=1
+	fi
+	if ! release_lock; then
+		diag 'could not release the repair lock after publication'
+		_ap_cleanup_failed=1
+	fi
+	if [ "$_ap_cleanup_failed" = 1 ]; then
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'The verified runtime was installed, but repair cleanup failed. Run the skill now; make the runtime cache writable before a later repair.'
+	fi
 	_ap_extra=$(runtime_extra)
 	_ap_extra=$_ap_extra',"state":{"before":"'$before_state'","after":"valid"}'
 	emit_envelope true REPAIR_APPLIED "$(side_effects_json)" true "Verified Bun $RUNTIME_LOCK_VERSION is installed. Run runtime-exec run <skill>." "$_ap_extra"

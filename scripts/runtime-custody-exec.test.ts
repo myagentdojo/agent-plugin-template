@@ -832,6 +832,52 @@ test("a staged chmod failure emits one envelope and releases apply state", () =>
 	expect(existsSync(fixture.blobPath)).toBe(false)
 })
 
+test("a post-publication staging cleanup failure still emits one envelope and releases the lock", () => {
+	const realRm = Bun.which("rm")
+	if (!realRm) throw new Error("rm is required by the test fixture")
+	const toolDir = makeToolDir({
+		rm: `#!/bin/sh
+last=''
+for arg in "$@"; do last=$arg; done
+case "$last" in */staging/*) exit 1 ;; esac
+exec ${realRm} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual(["published-runtime"])
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toHaveLength(1)
+})
+
+test("a post-publication lock cleanup failure still emits one envelope after clearing staging", () => {
+	const realRm = Bun.which("rm")
+	if (!realRm) throw new Error("rm is required by the test fixture")
+	const toolDir = makeToolDir({
+		rm: `#!/bin/sh
+last=''
+for arg in "$@"; do last=$arg; done
+case "$last" in */locks/bun-*) exit 1 ;; esac
+exec ${realRm} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual(["published-runtime"])
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toHaveLength(1)
+})
+
 // --- run stays custody-read-only, including on a read-only cache --------------
 
 test("run does not write into the custody store and launches from a read-only cache", () => {
