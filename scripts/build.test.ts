@@ -17,6 +17,7 @@ import {
 	bundleWorkspaceSkill,
 	collectModuleSpecifiers,
 	DependencyAdmissionError,
+	renderBundleInventoryProjection,
 	renderThirdPartyNotices,
 	validateBundleClosure,
 	validateBundleText,
@@ -524,6 +525,16 @@ function closureFixture(): string {
 	const noticesContents = "# Third-Party Notices\n"
 	writeFileSync(join(fixtureRoot, "plugin", "THIRD-PARTY-NOTICES.md"), noticesContents)
 	writeFileSync(
+		join(fixtureRoot, "plugin", "runtime", "bundle-inventory.sh"),
+		renderBundleInventoryProjection({
+			"skill-a": {
+				path: `runtime/${fileName}`,
+				bytes: Buffer.byteLength(bundleContents),
+				sha256,
+			},
+		}),
+	)
+	writeFileSync(
 		join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json"),
 		`${JSON.stringify(
 			{
@@ -656,6 +667,21 @@ test("packaging admission fails on a stale bundle before any archive is produced
 	} finally {
 		writeFileSync(bundlePath, original)
 	}
+})
+
+test("bundle closure validation fails on a stale inventory shell projection", () => {
+	const fixtureRoot = closureFixture()
+	writeFileSync(
+		join(fixtureRoot, "plugin", "runtime", "bundle-inventory.sh"),
+		"#!/bin/sh\nruntime_inventory_select_bundle() { return 1; }\n",
+	)
+	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/stale bundle inventory projection/)
+})
+
+test("bundle closure validation fails on a missing inventory shell projection", () => {
+	const fixtureRoot = closureFixture()
+	rmSync(join(fixtureRoot, "plugin", "runtime", "bundle-inventory.sh"))
+	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/bundle-inventory\.sh is missing/)
 })
 
 test("bundle closure validation fails on stale notices before packaging", () => {

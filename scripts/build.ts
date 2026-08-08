@@ -517,6 +517,49 @@ export function renderThirdPartyNotices(dependencies: AdmittedDependency[]): str
 	return `# Third-Party Notices\n\nGenerated from bun.lock. Edit workspace dependencies, run bun install, then bun run build.\n\n${sections.join("\n")}`
 }
 
+/**
+ * Render the deterministic shell projection of the bundle inventory.
+ *
+ * The custody engine (plugin/runtime/runtime-exec) sources this projection to
+ * resolve a skill's digest-named bundle without parsing JSON in shell. It is
+ * owned by the same build that writes bundle-inventory.json.
+ *
+ * @param bundles - Materialized bundle records keyed by skill id
+ * @returns POSIX shell projection defining runtime_inventory_select_bundle
+ *
+ * @example
+ * ```ts
+ * renderBundleInventoryProjection(closure.bundles)
+ * ```
+ */
+export function renderBundleInventoryProjection(bundles: Record<string, BundleRecord>): string {
+	const quote = (value: string): string => {
+		if (value.includes("'")) {
+			throw new Error("bundle inventory projection values must not contain single quotes")
+		}
+		return `'${value}'`
+	}
+	const cases = Object.keys(bundles)
+		.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+		.map((skillId) => {
+			const record = bundles[skillId]
+			return `	${skillId})
+		RUNTIME_BUNDLE_PATH=${quote(record.path)}
+		RUNTIME_BUNDLE_BYTES=${quote(String(record.bytes))}
+		RUNTIME_BUNDLE_SHA256=${quote(record.sha256)}
+		;;`
+		})
+	return `#!/bin/sh
+# Generated from bundle-inventory.json by scripts/build.ts. Edit workspace sources, then run bun run build.
+runtime_inventory_select_bundle() {
+	case "$1" in
+${cases.join("\n")}
+	*) return 1 ;;
+	esac
+}
+`
+}
+
 function serializeInventory(result: BundleClosureResult): string {
 	return `${JSON.stringify(
 		{ schemaVersion: 1, bundles: result.bundles, notices: result.notices },
@@ -589,6 +632,10 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 	}
 	writeFileSync(join(root, "plugin", "THIRD-PARTY-NOTICES.md"), noticesText)
 	writeFileSync(join(runtimeDirectory, "bundle-inventory.json"), serializeInventory(result))
+	writeFileSync(
+		join(runtimeDirectory, "bundle-inventory.sh"),
+		renderBundleInventoryProjection(bundles),
+	)
 	return result
 }
 
@@ -669,6 +716,13 @@ export function validateBundleClosure(root: string): void {
 		if (managedBundlePattern.test(entry) && !activePaths.has(entry)) {
 			throw new Error(`bundle closure: orphaned bundle ${entry}; run bun run build`)
 		}
+	}
+	const projectionPath = join(runtimeDirectory, "bundle-inventory.sh")
+	if (!existsSync(projectionPath)) {
+		throw new Error("bundle closure: bundle-inventory.sh is missing; run bun run build")
+	}
+	if (readFileSync(projectionPath, "utf8") !== renderBundleInventoryProjection(inventory.bundles)) {
+		throw new Error("bundle closure: stale bundle inventory projection; run bun run build")
 	}
 	if (inventory.notices.path !== "THIRD-PARTY-NOTICES.md") {
 		throw new Error(
