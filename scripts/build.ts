@@ -158,6 +158,7 @@ function executableCodeMask(code: string): string {
 		"void",
 		"yield",
 	])
+	const controlConditionKeywords = new Set(["for", "if", "switch", "while", "with"])
 
 	const skipQuoted = (quote: string): void => {
 		masked[index] = quote
@@ -220,6 +221,8 @@ function executableCodeMask(code: string): string {
 	const scanCode = (stopAtTemplateBrace: boolean): void => {
 		let braceDepth = 0
 		let regexAllowed = true
+		let pendingControlCondition = false
+		const controlConditionParens: boolean[] = []
 		while (index < code.length) {
 			const character = code[index]
 			if (/\s/.test(character)) {
@@ -257,7 +260,11 @@ function executableCodeMask(code: string): string {
 				const start = index++
 				while (identifierPart(code[index] ?? "")) index++
 				copy(start, index)
-				regexAllowed = regexPrefixKeywords.has(code.slice(start, index))
+				const identifier = code.slice(start, index)
+				if (!(pendingControlCondition && identifier === "await")) {
+					pendingControlCondition = controlConditionKeywords.has(identifier)
+				}
+				regexAllowed = regexPrefixKeywords.has(identifier)
 				continue
 			}
 			if (/[0-9]/.test(character)) {
@@ -286,7 +293,21 @@ function executableCodeMask(code: string): string {
 				regexAllowed = false
 				continue
 			}
+			if (character === "(") {
+				masked[index++] = character
+				controlConditionParens.push(pendingControlCondition)
+				pendingControlCondition = false
+				regexAllowed = true
+				continue
+			}
+			if (character === ")") {
+				masked[index++] = character
+				pendingControlCondition = false
+				regexAllowed = controlConditionParens.pop() ?? false
+				continue
+			}
 			masked[index++] = character
+			pendingControlCondition = false
 			regexAllowed = !/[)\]]/.test(character)
 		}
 	}

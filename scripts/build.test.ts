@@ -159,6 +159,16 @@ test("validateBundleText keeps division after a contextual of identifier executa
 	).toThrow(/computed dynamic import/)
 })
 
+test("validateBundleText masks regex literals after control-flow conditions", () => {
+	validateBundleText("skill-a", `if (ok) /require|Function|eval/.test(value);`)
+})
+
+test("validateBundleText keeps division after expression parentheses executable", () => {
+	expect(() =>
+		validateBundleText("skill-a", `const ratio = (value) / import(target) / y;`),
+	).toThrow(/computed dynamic import/)
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,

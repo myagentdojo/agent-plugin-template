@@ -519,6 +519,11 @@ lock_is_older_than_grace() {
 	[ -n "$_lig_hit" ]
 }
 
+reclaim_marker_is_older_than_grace() {
+	_rmig_hit=$("$tool_find" "$1" -prune -mmin "+$RECORDLESS_LOCK_GRACE_MINS" 2>/dev/null) || return 1
+	[ -n "$_rmig_hit" ]
+}
+
 writer_is_live() {
 	# A writer that cannot be proven dead is treated as live (never reclaim a
 	# live writer).
@@ -565,6 +570,13 @@ reclaim_stale_lock() {
 			return 0
 		fi
 		if [ -d "$_rsl_marker" ] && [ ! -L "$_rsl_marker" ]; then
+			if reclaim_marker_is_older_than_grace "$_rsl_marker"; then
+				if ! "$tool_rm" -rf "$_rsl_marker" 2>/dev/null; then
+					die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'An abandoned reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
+				fi
+				add_side_effect 'cleared-stale-reclaim-marker'
+				diag 'cleared an abandoned stale-lock reclaim marker'
+			fi
 			return 0
 		fi
 		diag 'could not claim the stale repair lock safely'

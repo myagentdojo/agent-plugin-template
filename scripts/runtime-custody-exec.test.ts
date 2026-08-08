@@ -786,6 +786,44 @@ test("AE8: a provably dead writer's lock is reclaimed with only its staging remo
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 })
 
+test("an abandoned stale-lock reclaim marker is recovered after a bounded grace period", () => {
+	const fixture = makeFixture()
+	const lockDir = writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+	const marker = join(lockDir, ".reclaim-claim")
+	mkdirSync(marker)
+	const old = new Date(Date.now() - 2 * 60 * 1000)
+	utimesSync(marker, old, old)
+
+	const applied = applyRepair(fixture)
+	expect(applied.code).toBe("REPAIR_APPLIED")
+	expect(applied.sideEffects).toEqual([
+		"cleared-stale-reclaim-marker",
+		"reclaimed-stale-lock",
+		"published-runtime",
+	])
+	expect(existsSync(marker)).toBe(false)
+})
+
+test("a fresh stale-lock reclaim marker remains owned by its contender", () => {
+	const fixture = makeFixture()
+	const lockDir = writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+	const marker = join(lockDir, ".reclaim-claim")
+	mkdirSync(marker)
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(22)
+	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
+	expect(existsSync(marker)).toBe(true)
+})
+
 test("concurrent stale-lock reclaimers cannot claim a replacement lock", async () => {
 	const realMv = Bun.which("mv")
 	if (!realMv) throw new Error("mv is required by the test fixture")
