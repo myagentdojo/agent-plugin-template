@@ -702,7 +702,10 @@ verify_staged() {
 }
 
 publish_blob() {
-	"$tool_mkdir" -p "$blob_dir"
+	if ! "$tool_mkdir" -p "$blob_dir" 2>/dev/null; then
+		diag 'could not create the runtime blob directory'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
 	if ! path_is_safe "$blob_dir" 'runtime blob directory'; then
 		diag "unsafe blob directory: $unsafe_reason"
 		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" false 'Make the runtime cache private: chown it to the current user with mode 700, or point XDG_CACHE_HOME at a private directory.'

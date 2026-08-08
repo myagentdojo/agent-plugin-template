@@ -246,6 +246,47 @@ function createClosedResolutionPlugin(
 	return {
 		name: "closed-dependency-resolution",
 		setup(builder) {
+			builder.onResolve({ filter: /^(?:\.{1,2}\/|\/)/ }, (args) => {
+				let realResolved: string
+				try {
+					realResolved = realpathSync(
+						Bun.resolveSync(args.path, args.resolveDir || dirname(args.importer)),
+					)
+				} catch {
+					return undefined
+				}
+				if (args.path.endsWith(".node") || realResolved.endsWith(".node")) {
+					violations.push(
+						new BundleValidationError(
+							skillId,
+							"native-addon",
+							`native addon resolved to ${realResolved}`,
+						),
+					)
+					return { path: args.path, external: true }
+				}
+				if (!isInsideDirectory(realResolved, realRoot)) {
+					violations.push(
+						new BundleValidationError(
+							skillId,
+							"parent-resolution",
+							`module resolved outside the repository: ${realResolved}`,
+						),
+					)
+					return { path: args.path, external: true }
+				}
+				if (!allowedModuleRoots.some((root) => isInsideDirectory(realResolved, root))) {
+					violations.push(
+						new BundleValidationError(
+							skillId,
+							"unadmitted-import",
+							`module is outside the workspace production dependency graph: ${relative(realRoot, realResolved)}`,
+						),
+					)
+					return { path: args.path, external: true }
+				}
+				return undefined
+			})
 			// Validation only: Bun's own condition-aware resolver performs the real
 			// resolution so require and import conditions stay correct. This probe is
 			// used only to turn a missing bare import into our typed error; containment

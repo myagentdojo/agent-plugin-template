@@ -704,6 +704,18 @@ test("a relative import escaping the repository fails with a precise parent-reso
 	)
 })
 
+test("a non-JavaScript asset outside the production graph is rejected", async () => {
+	const fixture = fixtureWorkspace(
+		`import text from "../../../outside.txt";console.log(text);`,
+	)
+	writeFileSync(join(fixture.fixtureRoot, "outside.txt"), "build-host content\n")
+	await expectBundleRejection(
+		fixture,
+		"unadmitted-import",
+		/module is outside the workspace production dependency graph/,
+	)
+})
+
 test("a workspace without an existing main entry fails with a precise missing-entry error", async () => {
 	const fixture = fixtureWorkspace(`console.log("unused");`, {
 		name: "fixture-skill",

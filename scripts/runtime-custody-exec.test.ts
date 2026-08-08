@@ -1130,6 +1130,24 @@ test("an unwritable staging root fails with one envelope and releases its lock",
 	}
 })
 
+test("an unwritable blob root fails with one envelope and releases apply state", () => {
+	const fixture = makeFixture()
+	const blobRoot = join(fixture.storeRoot, "bun")
+	mkdirSync(blobRoot, { recursive: true, mode: 0o700 })
+	mkdirSync(join(fixture.storeRoot, "locks"), { mode: 0o700 })
+	mkdirSync(join(fixture.storeRoot, "staging"), { mode: 0o700 })
+	chmodSync(blobRoot, 0o500)
+	try {
+		const apply = runEngine(fixture, ["repair", "--apply"])
+		expect(apply.exitCode).toBe(20)
+		expect(readEnvelope(apply).code).toBe("CACHE_ROOT_UNSAFE")
+		expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+		expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+	} finally {
+		chmodSync(blobRoot, 0o700)
+	}
+})
+
 test("a symlinked store root is rejected with exit 20", () => {
 	const fixture = makeFixture()
 	const realStore = join(fixture.root, "elsewhere")
