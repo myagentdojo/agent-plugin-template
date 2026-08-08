@@ -237,6 +237,7 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 	for (const code of [
 		`const { ["require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
 		`const { url, ["require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
+		`const keys = ["require"];const { [keys[0]]: load } = import.meta;load(process.env.TARGET_MODULE);`,
 		`const { ["requ\\u0069re"]: load } = globalThis;load(process.env.TARGET_MODULE);`,
 		`const { ["__require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
 		`const { ["__require"]: load } = globalThis;load(process.env.TARGET_MODULE);`,

@@ -442,7 +442,7 @@ export function validateBundleText(skillId: string, code: string): void {
 		)
 	}
 	if (
-		/\{[^{}]*\[[^\]]+\]\s*:[^{}]*\}\s*=\s*(?:import\.meta|globalThis)\b/.test(executable)
+		/\{[^{}]*\[[^{}]*\}\s*=\s*(?:import\.meta|globalThis)\b/.test(executable)
 	) {
 		throw new BundleValidationError(
 			skillId,
