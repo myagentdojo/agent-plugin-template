@@ -7,6 +7,8 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -535,7 +537,6 @@ test("AE4: repair preview states a plain action, approved apply installs, retrie
 		executableSha256: fixture.lock.executableSha256,
 	})
 	expect(existsSync(fixture.blobPath)).toBe(true)
-	const { statSync } = require("node:fs") as typeof import("node:fs")
 	expect(statSync(fixture.blobDir).mode & 0o777).toBe(0o700)
 	expect(statSync(fixture.blobPath).mode & 0o777).toBe(0o700)
 	// staging and locks are cleaned up after publication
@@ -919,7 +920,6 @@ test("a symlinked store root is rejected with exit 20", () => {
 	const fixture = makeFixture()
 	const realStore = join(fixture.root, "elsewhere")
 	mkdirSync(realStore)
-	const { symlinkSync } = require("node:fs") as typeof import("node:fs")
 	symlinkSync(realStore, fixture.storeRoot)
 	const run = runEngine(fixture, ["run", "skill-a"])
 	expect(run.exitCode).toBe(20)
@@ -961,7 +961,6 @@ test("the real runtime lock projection pins only official https release URLs", (
 })
 
 test("the real payload ships an executable engine and a matching inventory projection", () => {
-	const { statSync } = require("node:fs") as typeof import("node:fs")
 	expect(statSync(engineSourcePath).mode & 0o111).not.toBe(0)
 	const projection = readFileSync(join(root, "plugin", "runtime", "bundle-inventory.sh"), "utf8")
 	const inventory = JSON.parse(

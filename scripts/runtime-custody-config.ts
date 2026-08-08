@@ -48,11 +48,13 @@ const supportedPlatforms = [
 const lowercaseSha256 = /^[a-f0-9]{64}$/
 const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 
-function compareCodeUnits(left: string, right: string): number {
+/** Deterministic code-unit comparator shared by shell-projection renderers. */
+export function compareCodeUnits(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0
 }
 
-function shellQuote(value: string): string {
+/** Single-quote a projection value, rejecting values that cannot be quoted safely. */
+export function shellQuote(value: string): string {
 	if (value.includes("'")) throw new Error("runtime projection values must not contain single quotes")
 	return `'${value}'`
 }

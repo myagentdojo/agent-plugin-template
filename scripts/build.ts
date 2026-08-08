@@ -13,7 +13,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 
 import { loadPluginConfig } from "./plugin-config"
-import { loadSkillCatalog } from "./runtime-custody-config"
+import { compareCodeUnits, loadSkillCatalog, shellQuote } from "./runtime-custody-config"
 
 const nodeBuiltins = new Set(builtinModules)
 const managedBundlePattern = /^([a-z0-9]+(?:-[a-z0-9]+)*)-[a-f0-9]{16}\.js$/
@@ -533,20 +533,14 @@ export function renderThirdPartyNotices(dependencies: AdmittedDependency[]): str
  * ```
  */
 export function renderBundleInventoryProjection(bundles: Record<string, BundleRecord>): string {
-	const quote = (value: string): string => {
-		if (value.includes("'")) {
-			throw new Error("bundle inventory projection values must not contain single quotes")
-		}
-		return `'${value}'`
-	}
 	const cases = Object.keys(bundles)
-		.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+		.sort(compareCodeUnits)
 		.map((skillId) => {
 			const record = bundles[skillId]
 			return `	${skillId})
-		RUNTIME_BUNDLE_PATH=${quote(record.path)}
-		RUNTIME_BUNDLE_BYTES=${quote(String(record.bytes))}
-		RUNTIME_BUNDLE_SHA256=${quote(record.sha256)}
+		RUNTIME_BUNDLE_PATH=${shellQuote(record.path)}
+		RUNTIME_BUNDLE_BYTES=${shellQuote(String(record.bytes))}
+		RUNTIME_BUNDLE_SHA256=${shellQuote(record.sha256)}
 		;;`
 		})
 	return `#!/bin/sh
