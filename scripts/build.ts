@@ -18,6 +18,7 @@ import { compareCodeUnits, pluginPayloadInventory } from "./plugin-files"
 import { checkRuntimeCustodyFiles, loadSkillCatalog, shellQuote } from "./runtime-custody-config"
 
 const nodeBuiltins = new Set(builtinModules)
+const admittedBunBuiltins = new Set(["bun", "bun:sqlite"])
 const managedBundlePattern = /^([a-z0-9]+(?:-[a-z0-9]+)*)-[a-f0-9]{16}\.js$/
 const permissiveLicenses = new Set([
 	"MIT",
@@ -325,9 +326,8 @@ export function collectModuleSpecifiers(code: string): string[] {
 }
 
 function allowedRuntimeSpecifier(specifier: string): boolean {
-	return (
-		specifier.startsWith("node:") || specifier.startsWith("bun:") || nodeBuiltins.has(specifier)
-	)
+	if (specifier.startsWith("node:")) return nodeBuiltins.has(specifier.slice("node:".length))
+	return nodeBuiltins.has(specifier) || admittedBunBuiltins.has(specifier)
 }
 
 /**
@@ -402,7 +402,7 @@ export function validateBundleText(skillId: string, code: string): void {
 			throw new BundleValidationError(
 				skillId,
 				"bare-specifier",
-				`bundle retains the bare specifier "${specifier}"; only node: and bun: built-ins may remain`,
+				`bundle retains the bare specifier "${specifier}"; only known Node built-ins and admitted Bun runtime modules may remain`,
 			)
 		}
 	}

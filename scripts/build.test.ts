@@ -129,6 +129,11 @@ test("validateBundleText allows node and bun built-ins only", () => {
 	expect(() => validateBundleText("skill-a", `const x = require("left-pad");`)).toThrow(
 		/bare specifier "left-pad"/,
 	)
+	for (const specifier of ["node:definitely-not-real", "bun:definitely-not-real"]) {
+		expect(() => validateBundleText("skill-a", `import value from "${specifier}";`)).toThrow(
+			new RegExp(`bare specifier "${specifier}"`),
+		)
+	}
 })
 
 test("validateBundleText rejects a computed dynamic import", () => {
