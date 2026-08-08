@@ -307,6 +307,20 @@ function executableCodeMask(code: string): string {
 			if (character === "{") {
 				let before = index - 1
 				while (before >= 0 && /\s/.test(masked[before])) before--
+				let isLabeledBlock = false
+				if (
+					masked[before] === ":" &&
+					(statementBlockBraces.length === 0 || statementBlockBraces.at(-1) === true)
+				) {
+					let labelEnd = before - 1
+					while (labelEnd >= 0 && /\s/.test(masked[labelEnd])) labelEnd--
+					let labelStart = labelEnd
+					while (labelStart >= 0 && identifierPart(masked[labelStart])) labelStart--
+					let boundary = labelStart
+					while (boundary >= 0 && /\s/.test(masked[boundary])) boundary--
+					isLabeledBlock =
+						labelStart < labelEnd && (boundary < 0 || /[;{}]/.test(masked[boundary]))
+				}
 				masked[index++] = character
 				braceDepth++
 				const isDeclarationBlock =
@@ -315,9 +329,10 @@ function executableCodeMask(code: string): string {
 				const isStandaloneBlock = before < 0 || /[;{}]/.test(masked[before])
 				statementBlockBraces.push(
 					pendingControlBlock ||
-						pendingDirectStatementBlock ||
+					pendingDirectStatementBlock ||
 						isDeclarationBlock ||
-						isStandaloneBlock,
+						isStandaloneBlock ||
+						isLabeledBlock,
 				)
 				pendingControlBlock = false
 				pendingDirectStatementBlock = false

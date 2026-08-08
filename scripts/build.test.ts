@@ -207,6 +207,16 @@ test("validateBundleText masks regex literals after other statement blocks", () 
 	).toThrow(/computed dynamic import/)
 })
 
+test("validateBundleText distinguishes labeled blocks from object properties", () => {
+	validateBundleText("skill-a", `label: {} /require/.test(value)`)
+	expect(() =>
+		validateBundleText(
+			"skill-a",
+			`const value = { nested: {} / import(target) / y };`,
+		),
+	).toThrow(/computed dynamic import/)
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,
