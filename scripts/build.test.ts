@@ -377,6 +377,27 @@ test("a workspace without an existing main entry fails with a precise missing-en
 	await expectBundleRejection(fixture, "missing-entry", /does not declare an existing "main" entry/)
 })
 
+test("a main entry escaping the workspace fails with a precise entry-escape error", async () => {
+	// Bun.build never routes the entrypoint through the closed-resolution plugin,
+	// so a "main" pointing outside the workspace would be bundled as a valid
+	// skill without the containment check. Assert it is rejected.
+	const parentRoot = temporaryDirectory("entry-escape-")
+	writeFileSync(join(parentRoot, "outside.js"), `console.log("escaped entry");\n`)
+	const fixtureRoot = join(parentRoot, "repo")
+	const workspaceDirectory = join(fixtureRoot, "packages", "fixture-skill")
+	mkdirSync(workspaceDirectory, { recursive: true })
+	writeFileSync(
+		join(workspaceDirectory, "package.json"),
+		`${JSON.stringify({ name: "fixture-skill", type: "module", main: "../../../outside.js" })}\n`,
+	)
+
+	await expectBundleRejection(
+		{ fixtureRoot, workspace: "packages/fixture-skill", staging: join(fixtureRoot, "staging") },
+		"entry-escape",
+		/resolves outside the workspace/,
+	)
+})
+
 test("an unparseable entry fails with a precise bundler-failure error", async () => {
 	const fixture = fixtureWorkspace(`export const broken = {`)
 	await expectBundleRejection(fixture, "bundler-failure", /./)

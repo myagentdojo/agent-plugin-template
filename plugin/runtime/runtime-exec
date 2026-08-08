@@ -37,6 +37,9 @@ if [ "${LC_ALL+x}" = x ]; then
 	caller_lc_all_set=1
 	caller_lc_all=$LC_ALL
 fi
+# Capture the caller umask so the launched skill inherits its own file-mode
+# policy; custody-owned writes still use the tightened 077 set just below.
+caller_umask=$(umask)
 
 # --- custody sanitation (R10) ------------------------------------------------
 # Fixed absolute tool locations, C locale, default field splitting, and
@@ -166,7 +169,7 @@ resolve_sha_tool() {
 }
 
 require_common_tools() {
-	for _t in uname ls id wc rm; do
+	for _t in uname ls id wc rm mkdir; do
 		need_tool "$_t"
 	done
 	resolve_sha_tool
@@ -428,16 +431,20 @@ read_lock_record() {
 	done <"$lock_dir/record"
 }
 
-RECORDLESS_LOCK_GRACE_SECS=30
+# Recordless grace in whole minutes. find -mmin only accepts an integer on BSD
+# (macOS): a fractional argument like +0.5 exits "illegal trailing character",
+# which silently defeats reclaim and strands every future repair in LOCK_HELD.
+# One minute is a portable integer that comfortably exceeds the sub-second
+# window between mkdir and the atomic record publish.
+RECORDLESS_LOCK_GRACE_MINS=1
 
 lock_is_older_than_grace() {
 	# True (exit 0) when the lock directory is older than the recordless grace
-	# window. Uses find -mmin with a fractional minute so we avoid BSD/GNU stat
-	# mtime format differences; returns non-zero (unknown -> caller keeps the
-	# conservative live default) when age cannot be established.
-	_lig_min=$(awk "BEGIN{printf \"%.6f\", $RECORDLESS_LOCK_GRACE_SECS/60}" 2>/dev/null) || return 1
-	[ -n "$_lig_min" ] || return 1
-	_lig_hit=$("$tool_find" "$lock_dir" -prune -mmin "+$_lig_min" 2>/dev/null) || return 1
+	# window. Uses find -mmin with an integer minute to avoid BSD/GNU stat mtime
+	# format differences and the BSD fractional-argument rejection; returns
+	# non-zero (unknown -> caller keeps the conservative live default) when age
+	# cannot be established.
+	_lig_hit=$("$tool_find" "$lock_dir" -prune -mmin "+$RECORDLESS_LOCK_GRACE_MINS" 2>/dev/null) || return 1
 	[ -n "$_lig_hit" ]
 }
 
@@ -466,12 +473,22 @@ writer_is_live() {
 }
 
 reclaim_stale_lock() {
-	# Remove only this lock's private staging, then the lock itself.
+	# Claim the stale lock by renaming its directory to a private nonce-suffixed
+	# name before removing anything. Two contenders that both judged the same
+	# record dead cannot both win: the loser's rename fails because the source no
+	# longer exists at the original path, so it never deletes a directory another
+	# contender (or a live writer that re-created the lock) now owns. Only the
+	# winning rename proceeds to remove the stale staging and the claimed dir.
+	_rsl_claim=$store_root/locks/reclaim-$nonce
+	if ! "$tool_mv" "$lock_dir" "$_rsl_claim" 2>/dev/null; then
+		# Someone else already claimed or re-created the lock; retry acquisition.
+		return 0
+	fi
 	case "$rec_staging" in
 	'' | *[!a-zA-Z0-9-]*) : ;;
 	*) "$tool_rm" -rf "$store_root/staging/$rec_staging" ;;
 	esac
-	"$tool_rm" -rf "$lock_dir"
+	"$tool_rm" -rf "$_rsl_claim"
 	add_side_effect 'reclaimed-stale-lock'
 	diag 'reclaimed a stale repair lock left by a dead writer'
 }
@@ -651,7 +668,14 @@ do_apply() {
 	# Refuse an unsafe root before creating anything through it, then re-check
 	# the components this apply just created.
 	verify_cache_root_safety
-	"$tool_mkdir" -p "$store_root/bun" "$store_root/locks" "$store_root/staging"
+	# Guard the store mkdir explicitly: a current-user-owned but non-writable
+	# cache (mode 500/555, or read-only media) passes the safety check, then this
+	# mkdir would fail under set -eu and terminate with a bare exit 1 and no JSON
+	# control object, violating the one-envelope contract (R19/AE12).
+	if ! "$tool_mkdir" -p "$store_root/bun" "$store_root/locks" "$store_root/staging" 2>/dev/null; then
+		diag 'could not create the runtime cache store directories'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
 	verify_cache_root_safety
 	assess_blob
 	if [ "$blob_status" = valid ]; then
@@ -716,11 +740,11 @@ cmd_repair() {
 		emit_envelope true REPAIR_PREVIEW '[]' true "No repair needed; verified Bun $RUNTIME_LOCK_VERSION is installed. Run runtime-exec run <skill>." "$(state_extra valid)"
 		;;
 	missing)
-		emit_envelope true REPAIR_PREVIEW '[]' true "Approve and run runtime-exec repair --apply to download Bun $RUNTIME_LOCK_VERSION from the locked official release and install it into the private cache." "$(state_extra missing)"
+		emit_envelope true REPAIR_PREVIEW '[]' true "Ask the user to approve, then run runtime-exec repair --apply to download Bun $RUNTIME_LOCK_VERSION from the locked official release and install it into the private cache." "$(state_extra missing)"
 		;;
 	corrupt)
 		diag "existing runtime failed verification: $blob_reason"
-		emit_envelope true REPAIR_PREVIEW '[]' true "Approve and run runtime-exec repair --apply to replace the corrupt cached runtime with a verified Bun $RUNTIME_LOCK_VERSION." "$(state_extra corrupt)"
+		emit_envelope true REPAIR_PREVIEW '[]' true "Ask the user to approve, then run runtime-exec repair --apply to replace the corrupt cached runtime with a verified Bun $RUNTIME_LOCK_VERSION." "$(state_extra corrupt)"
 		;;
 	esac
 	exit 0
@@ -785,11 +809,11 @@ cmd_run() {
 	assess_blob
 	case "$blob_status" in
 	missing)
-		die 20 BUN_MISSING '[]' true "Preview with runtime-exec repair, then approve runtime-exec repair --apply to install Bun $RUNTIME_LOCK_VERSION." "$(state_extra missing)"
+		die 20 BUN_MISSING '[]' true "Preview with runtime-exec repair, then ask the user to approve before running runtime-exec repair --apply to install Bun $RUNTIME_LOCK_VERSION." "$(state_extra missing)"
 		;;
 	corrupt)
 		diag "cached runtime failed verification: $blob_reason"
-		die 20 REPAIR_REQUIRED '[]' true 'Approve runtime-exec repair --apply to replace the corrupt cached runtime; run never repairs.' "$(state_extra corrupt)"
+		die 20 REPAIR_REQUIRED '[]' true 'Ask the user to approve runtime-exec repair --apply to replace the corrupt cached runtime; run never repairs.' "$(state_extra corrupt)"
 		;;
 	esac
 	# Launch: restore the ordinary caller environment, suppress Bun ambient
@@ -797,19 +821,33 @@ cmd_run() {
 	# The caller's cwd is preserved for the skill, but Bun auto-discovers
 	# bunfig.toml from that cwd and a top-level `preload` there would run
 	# caller-controlled code inside the verified runtime. Point --config at an
-	# owner-only empty config so no ambient bunfig is loaded. This transient
-	# file is not the custody cache, so run stays custody-read-only.
-	# An owner-only empty config in the private store neutralizes cwd bunfig
-	# discovery. It lives beside the verified blob, is created only during the
-	# app phase after the launch decision, and never changes custody state, so
-	# run remains custody-read-only for the runtime blob itself.
-	empty_bunfig=$store_root/empty-bunfig.toml
-	if [ ! -f "$empty_bunfig" ] || [ -L "$empty_bunfig" ]; then
-		"$tool_rm" -f "$empty_bunfig" 2>/dev/null || :
-		(umask 077; : >"$empty_bunfig") 2>/dev/null || {
-			diag 'could not stage the empty runtime config'
-			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Ensure the runtime cache directory is writable by the current user, then retry.'
-		}
+	# owner-only empty config so no ambient bunfig is loaded.
+	#
+	# The empty config is staged in a fresh per-process temp directory, never in
+	# the custody store: run must not mutate custody state, and a read-only
+	# custody cache holding a valid blob must still launch. The temp dir is
+	# removed after exec fails to start; a successful exec replaces this process,
+	# so the OS reclaims the temp dir with the caller's normal TMPDIR hygiene.
+	launch_tmp_base=${TMPDIR:-/tmp}
+	case "$launch_tmp_base" in
+	/*) ;;
+	*) launch_tmp_base=/tmp ;;
+	esac
+	# $$ is unique among live processes; the dir is per-launch and short-lived, so
+	# it needs no cryptographic nonce (and run does not resolve the dd tool that
+	# make_nonce uses). mkdir with a fresh name also fails closed if a stale dir
+	# with this exact name somehow already exists.
+	launch_tmp=$launch_tmp_base/runtime-exec-run.$$
+	"$tool_rm" -rf "$launch_tmp" 2>/dev/null || :
+	if ! (umask 077; "$tool_mkdir" "$launch_tmp") 2>/dev/null; then
+		diag 'could not stage the transient runtime config directory'
+		die 20 CACHE_ROOT_UNSAFE '[]' true 'Ensure TMPDIR (or /tmp) is writable by the current user, then retry.'
+	fi
+	empty_bunfig=$launch_tmp/empty-bunfig.toml
+	if ! (umask 077; : >"$empty_bunfig") 2>/dev/null; then
+		"$tool_rm" -rf "$launch_tmp" 2>/dev/null || :
+		diag 'could not stage the empty runtime config'
+		die 20 CACHE_ROOT_UNSAFE '[]' true 'Ensure TMPDIR (or /tmp) is writable by the current user, then retry.'
 	fi
 	unset BUN_OPTIONS NODE_OPTIONS NODE_PATH BUN_INSTALL BUN_INSTALL_CACHE_DIR BUN_CONFIG_FILE 2>/dev/null || :
 	DO_NOT_TRACK=1
@@ -828,6 +866,9 @@ cmd_run() {
 	else
 		unset PATH 2>/dev/null || :
 	fi
+	# Restore the caller umask so the launched skill's own file writes are not
+	# forced to the tightened 077 custody mask.
+	umask "$caller_umask"
 	exec "$blob_path" --config="$empty_bunfig" --no-install --env-file=/dev/null "$bundle_path" "$@"
 }
 

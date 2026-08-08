@@ -9,6 +9,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -173,6 +174,7 @@ if [ "\${1-}" = "exit7" ]; then
 fi
 printf 'skill=${skillId}\\n'
 printf 'args=%s\\n' "$*"
+printf 'umask=%s\\n' "$(umask)"
 printf 'cwd=%s\\n' "$PWD"
 printf 'BUN_OPTIONS=%s\\n' "\${BUN_OPTIONS-unset}"
 printf 'NODE_OPTIONS=%s\\n' "\${NODE_OPTIONS-unset}"
@@ -714,6 +716,92 @@ test("AE8: a live writer's lock is never reclaimed", async () => {
 		sleeper.kill()
 		await sleeper.exited
 	}
+})
+
+test("AE8: a fresh recordless lock is treated as live and repair returns retry-later", () => {
+	const fixture = makeFixture()
+	// A writer between mkdir and its atomic record publish leaves a recordless
+	// lock. Within the grace window it must be treated as live: retry is safe,
+	// nothing is reclaimed or published.
+	const lockDir = join(fixture.storeRoot, "locks", `bun-${fixture.lock.executableSha256}`)
+	mkdirSync(lockDir, { recursive: true })
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(22)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("LOCK_HELD")
+	expect(envelope.retrySafe).toBe(true)
+	expect(existsSync(fixture.blobPath)).toBe(false)
+	expect(existsSync(lockDir)).toBe(true)
+})
+
+test("AE8: a recordless lock older than the grace window is reclaimed (integer -mmin, BSD-safe)", () => {
+	const fixture = makeFixture()
+	// A writer that died before publishing its record leaves a recordless lock
+	// forever unless the grace window reclaims it. This is the exact path the
+	// fractional -mmin argument silently broke on macOS/BSD find; backdate the
+	// lock past the grace window and assert reclaim + publish.
+	const lockDir = join(fixture.storeRoot, "locks", `bun-${fixture.lock.executableSha256}`)
+	mkdirSync(lockDir, { recursive: true })
+	const aged = new Date(Date.now() - 5 * 60 * 1000)
+	utimesSync(lockDir, aged, aged)
+
+	const applied = applyRepair(fixture)
+	expect(applied.code).toBe("REPAIR_APPLIED")
+	expect(applied.sideEffects).toEqual(["reclaimed-stale-lock", "published-runtime"])
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+})
+
+// --- run stays custody-read-only, including on a read-only cache --------------
+
+test("run does not write into the custody store and launches from a read-only cache", () => {
+	const fixture = makeFixture()
+	applyRepair(fixture)
+	// Snapshot the store, then make the whole store tree read-only. A valid blob
+	// must still launch: run must not create any file under the store (the empty
+	// bunfig is staged in a per-launch temp dir, not the custody cache).
+	const before = readdirSync(fixture.storeRoot).sort()
+	const readOnlyPaths = [
+		fixture.storeRoot,
+		join(fixture.storeRoot, "bun"),
+		fixture.blobDir,
+		join(fixture.storeRoot, "locks"),
+		join(fixture.storeRoot, "staging"),
+	]
+	try {
+		for (const path of readOnlyPaths) chmodSync(path, 0o500)
+		const run = runEngine(fixture, ["run", "skill-a", "--", "alpha"])
+		expect(run.exitCode).toBe(0)
+		expect(run.stderr.toString()).toBe("")
+		expect(bundleReport(run).skill).toBe("skill-a")
+	} finally {
+		for (const path of readOnlyPaths) chmodSync(path, 0o700)
+	}
+	// no new custody-store state was created by run
+	expect(readdirSync(fixture.storeRoot).sort()).toEqual(before)
+	expect(existsSync(join(fixture.storeRoot, "empty-bunfig.toml"))).toBe(false)
+})
+
+test("run restores the caller umask for the launched skill", () => {
+	const fixture = makeFixture()
+	applyRepair(fixture)
+	// Custody tightens umask to 077 for its own writes; the launched skill must
+	// see the caller umask, not the custody one. The caller umask is whatever the
+	// engine was invoked under (inherited from this test process); a sibling
+	// shell launched the same way reports it. The launched skill must match that
+	// and must not be the custody 0077.
+	const callerUmask = Bun.spawnSync({
+		cmd: ["/bin/sh", "-c", "umask"],
+		env: { ...fixture.env },
+		stdout: "pipe",
+	})
+		.stdout.toString()
+		.trim()
+	const run = runEngine(fixture, ["run", "skill-a", "--", "alpha"])
+	expect(run.exitCode).toBe(0)
+	expect(bundleReport(run).umask).toBe(callerUmask)
+	expect(bundleReport(run).umask).not.toBe("0077")
 })
 
 // --- AE9: hostile caller environment cannot alter custody ---------------------

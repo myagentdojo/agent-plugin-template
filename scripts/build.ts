@@ -30,6 +30,7 @@ const lifecycleScripts = ["preinstall", "install", "postinstall"] as const
 /** Precise reason one skill bundle was rejected before materialization. */
 export type BundleValidationCode =
 	| "missing-entry"
+	| "entry-escape"
 	| "unresolved-import"
 	| "parent-resolution"
 	| "native-addon"
@@ -129,7 +130,7 @@ export function collectModuleSpecifiers(code: string): string[] {
 	for (const pattern of patterns) {
 		for (const match of code.matchAll(pattern)) specifiers.add(match[2])
 	}
-	return [...specifiers].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+	return [...specifiers].sort(compareCodeUnits)
 }
 
 function allowedRuntimeSpecifier(specifier: string): boolean {
@@ -219,6 +220,20 @@ export async function bundleWorkspaceSkill(
 			skillId,
 			"missing-entry",
 			`workspace ${workspace} does not declare an existing "main" entry`,
+		)
+	}
+	// The closed-resolution plugin below bounds every *imported* module to the
+	// repository, but Bun.build never routes the entrypoint through onResolve, so
+	// a "main" of "../../../x.js" or a symlinked entry would escape that boundary
+	// and be packaged as a valid skill. Resolve symlinks and require the real
+	// entry to stay inside the workspace before bundling.
+	const realEntryPoint = realpathSync(entryPoint)
+	const realWorkspaceRoot = realpathSync(workspaceRoot)
+	if (!isInsideDirectory(realEntryPoint, realWorkspaceRoot)) {
+		throw new BundleValidationError(
+			skillId,
+			"entry-escape",
+			`workspace ${workspace} "main" resolves outside the workspace: ${realEntryPoint}`,
 		)
 	}
 
@@ -441,7 +456,7 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 
 	const admitted: AdmittedDependency[] = []
 	for (const { name, version } of npmDependencies.sort((left, right) =>
-		left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+		compareCodeUnits(left.name, right.name),
 	)) {
 		const packageDirectory = dependencyStoreDirectory(root, name, version)
 		const manifest = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"))
@@ -581,7 +596,7 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 	const catalog = loadSkillCatalog(root)
 	const workspaceSkills = Object.entries(catalog.skills)
 		.filter(([, skill]) => skill.workspace !== undefined)
-		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+		.sort(([left], [right]) => compareCodeUnits(left, right))
 
 	const dependencies = admitDependencyClosure(root)
 	const noticesText = renderThirdPartyNotices(dependencies)
