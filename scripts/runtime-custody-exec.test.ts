@@ -395,6 +395,7 @@ const engineToolNames = [
 	"mkdir",
 	"rm",
 	"mv",
+	"ln",
 	"chmod",
 	"dd",
 	"head",
@@ -794,7 +795,10 @@ test("an abandoned stale-lock reclaim marker is recovered after a bounded grace 
 		staging: "stalenonce",
 	})
 	const marker = join(lockDir, ".reclaim-claim")
-	mkdirSync(marker)
+	writeFileSync(
+		marker,
+		`host=${hostId()}\npid=999999\nstart=Thu Jan 1 00:00:00 1970\nnonce=dead-claimant\n`,
+	)
 	const old = new Date(Date.now() - 2 * 60 * 1000)
 	utimesSync(marker, old, old)
 
@@ -816,7 +820,31 @@ test("a fresh stale-lock reclaim marker remains owned by its contender", () => {
 		staging: "stalenonce",
 	})
 	const marker = join(lockDir, ".reclaim-claim")
-	mkdirSync(marker)
+	writeFileSync(
+		marker,
+		`host=${hostId()}\npid=999999\nstart=Thu Jan 1 00:00:00 1970\nnonce=dead-claimant\n`,
+	)
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(22)
+	expect(readEnvelope(apply).code).toBe("LOCK_HELD")
+	expect(existsSync(marker)).toBe(true)
+})
+
+test("a live reclaim claimant remains protected after the grace period", () => {
+	const fixture = makeFixture()
+	const lockDir = writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+	const marker = join(lockDir, ".reclaim-claim")
+	writeFileSync(
+		marker,
+		`host=${hostId()}\npid=${process.pid}\nstart=${startToken(process.pid)}\nnonce=paused-live-claimant\n`,
+	)
+	const old = new Date(Date.now() - 2 * 60 * 1000)
+	utimesSync(marker, old, old)
 
 	const apply = runEngine(fixture, ["repair", "--apply"])
 	expect(apply.exitCode).toBe(22)

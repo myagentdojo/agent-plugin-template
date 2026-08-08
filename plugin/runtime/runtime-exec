@@ -185,7 +185,7 @@ require_common_tools() {
 }
 
 require_apply_tools() {
-	for _t in mkdir rm mv chmod dd head curl unzip ps find awk; do
+	for _t in mkdir rm mv ln chmod dd head curl unzip ps find awk; do
 		need_tool "$_t"
 	done
 }
@@ -524,6 +524,48 @@ reclaim_marker_is_older_than_grace() {
 	[ -n "$_rmig_hit" ]
 }
 
+read_reclaim_marker() {
+	mr_host=''
+	mr_pid=''
+	mr_start=''
+	mr_nonce=''
+	if [ -L "$1" ] || [ ! -f "$1" ]; then return 1; fi
+	if ! "$tool_wc" -c <"$1" >/dev/null 2>&1; then return 1; fi
+	if ! {
+		while IFS= read -r _rm_line || [ -n "$_rm_line" ]; do
+			case "$_rm_line" in
+			host=*) mr_host=${_rm_line#host=} ;;
+			pid=*) mr_pid=${_rm_line#pid=} ;;
+			start=*) mr_start=${_rm_line#start=} ;;
+			nonce=*) mr_nonce=${_rm_line#nonce=} ;;
+			esac
+		done
+	} <"$1"; then
+		return 1
+	fi
+	case "$mr_pid" in '' | *[!0-9]*) return 1 ;; esac
+	case "$mr_nonce" in '' | *[!A-Za-z0-9_.:-]*) return 1 ;; esac
+	[ -n "$mr_host" ] && [ -n "$mr_start" ]
+}
+
+reclaim_marker_owner_is_live() {
+	if [ "$mr_host" != "$host_id" ]; then
+		if [ "$reclaim_foreign_lock" = 1 ]; then return 1; fi
+		return 0
+	fi
+	if ! kill -0 "$mr_pid" 2>/dev/null; then return 1; fi
+	_rm_owner_start=$(start_token "$mr_pid") || return 0
+	[ "$_rm_owner_start" = "$mr_start" ]
+}
+
+remove_owned_reclaim_marker() {
+	if ! read_reclaim_marker "$1"; then return 1; fi
+	if [ "$mr_host" != "$host_id" ] || [ "$mr_pid" != "$$" ] || [ "$mr_start" != "$_rsl_start" ] || [ "$mr_nonce" != "$nonce" ]; then
+		return 1
+	fi
+	"$tool_rm" -f "$1" 2>/dev/null
+}
+
 writer_is_live() {
 	# A writer that cannot be proven dead is treated as live (never reclaim a
 	# live writer).
@@ -560,39 +602,59 @@ reclaim_stale_lock() {
 		diag 'repair lock path is not a plain directory'
 		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed repair lock path from the private runtime cache, then retry.'
 	fi
-	# Atomically claim this exact directory before the final identity check. The
-	# fixed marker means only one current-version contender can reach rename; if
-	# the directory was replaced first, the marker lands in the replacement and
-	# the identity check below removes it without moving that live lock.
+	# Atomically claim this exact directory before the final identity check. A
+	# hard-linked, fully written owner record means contenders never observe a
+	# half-published claimant identity. A fixed marker admits only one reclaimer.
 	_rsl_marker=$lock_dir/.reclaim-claim
-	if ! "$tool_mkdir" "$_rsl_marker" 2>/dev/null; then
+	_rsl_record=$lock_dir/.reclaim-record-$nonce
+	_rsl_start=$(start_token "$$") || {
+		diag 'could not establish reclaim claimant identity'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore process inspection for the current user, then retry runtime repair.'
+	}
+	if ! {
+		printf 'host=%s\n' "$host_id"
+		printf 'pid=%s\n' "$$"
+		printf 'start=%s\n' "$_rsl_start"
+		printf 'nonce=%s\n' "$nonce"
+	} >"$_rsl_record"; then
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the private runtime cache writable, then retry.'
+	fi
+	if ! "$tool_ln" "$_rsl_record" "$_rsl_marker" 2>/dev/null; then
+		"$tool_rm" -f "$_rsl_record" 2>/dev/null || :
 		if [ ! -e "$lock_dir" ] && [ ! -L "$lock_dir" ]; then
 			return 0
 		fi
-		if [ -d "$_rsl_marker" ] && [ ! -L "$_rsl_marker" ]; then
-			if reclaim_marker_is_older_than_grace "$_rsl_marker"; then
-				if ! "$tool_rm" -rf "$_rsl_marker" 2>/dev/null; then
-					die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'An abandoned reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
-				fi
-				add_side_effect 'cleared-stale-reclaim-marker'
-				diag 'cleared an abandoned stale-lock reclaim marker'
+		if [ -f "$_rsl_marker" ] && [ ! -L "$_rsl_marker" ]; then
+			if ! reclaim_marker_is_older_than_grace "$_rsl_marker"; then return 0; fi
+			if ! read_reclaim_marker "$_rsl_marker"; then
+				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Remove the malformed reclaim marker from the private runtime cache, then retry.'
 			fi
+			if reclaim_marker_owner_is_live; then return 0; fi
+			if ! "$tool_rm" -f "$_rsl_marker" 2>/dev/null; then
+				die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'An abandoned reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
+			fi
+			add_side_effect 'cleared-stale-reclaim-marker'
+			diag 'cleared an abandoned stale-lock reclaim marker'
 			return 0
 		fi
 		diag 'could not claim the stale repair lock safely'
 		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the private runtime cache writable and remove malformed reclaim debris, then retry.'
 	fi
+	if ! "$tool_rm" -f "$_rsl_record" 2>/dev/null; then
+		remove_owned_reclaim_marker "$_rsl_marker" || :
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The reclaim owner record could not be finalized. Make the private runtime cache writable, then retry.'
+	fi
 	# The stale judgment and rename are separate filesystem operations. Re-read
 	# the record after owning the in-directory claim so a replacement lock is
 	# never renamed based on the earlier judgment.
 	if ! read_lock_record; then
-		"$tool_rm" -rf "$_rsl_marker" 2>/dev/null || :
+		remove_owned_reclaim_marker "$_rsl_marker" || :
 		diag 'could not re-read the repair lock before reclamation'
 		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
 	fi
 	_rsl_current_identity=$(lock_record_identity)
 	if [ "$_rsl_current_identity" != "$_rsl_expected_identity" ]; then
-		if ! "$tool_rm" -rf "$_rsl_marker" 2>/dev/null; then
+		if ! remove_owned_reclaim_marker "$_rsl_marker"; then
 			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The repair lock changed and its reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
 		fi
 		diag 'repair lock changed before stale reclamation; retrying acquisition'
@@ -606,7 +668,7 @@ reclaim_stale_lock() {
 	# winning rename proceeds to remove the stale staging and the claimed dir.
 	_rsl_claim=$store_root/locks/reclaim-$nonce
 	if ! "$tool_mv" "$lock_dir" "$_rsl_claim" 2>/dev/null; then
-		if ! "$tool_rm" -rf "$_rsl_marker" 2>/dev/null; then
+		if ! remove_owned_reclaim_marker "$_rsl_marker"; then
 			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The stale repair lock could not be claimed and its reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
 		fi
 		# The directory disappeared independently; retry acquisition.
