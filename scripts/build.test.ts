@@ -292,6 +292,14 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 			/computed-key destructured ambient runtime escape/,
 		)
 	}
+	for (const specifier of ["module", "node:module"]) {
+		expect(() =>
+			validateBundleText(
+				"skill-a",
+				`import * as moduleNamespace from "${specifier}";const key = process.env.KEY;moduleNamespace[key](import.meta.url);`,
+			),
+		).toThrow(/runtime escape built-in/)
+	}
 })
 
 test("validateBundleText allows ordinary methods named require", () => {
@@ -316,17 +324,29 @@ test("validateBundleText rejects runtime code generation", () => {
 	}
 })
 
-test("validateBundleText rejects constructor-based runtime code generation", () => {
-	expect(() =>
-		validateBundleText("skill-a", `(() => {}).constructor("p", "return import(p)")`),
-	).toThrow(/runtime code generation/)
+test("validateBundleText rejects direct and aliased constructor-based runtime code generation", () => {
+	for (const code of [
+		`(() => {}).constructor("p", "return import(p)")`,
+		`const C = (() => {}).constructor;const load = C("p", "return import(p)");load(target)`,
+	]) {
+		expect(() => validateBundleText("skill-a", code)).toThrow(/runtime code generation/)
+	}
 })
 
 test("validateBundleText allows non-invoked Function references", () => {
 	validateBundleText(
 		"skill-a",
-		`const call = Function.prototype.call;const constructor = function () {}.prototype.constructor;const isFunction = value instanceof Function;console.log(call, constructor, isFunction);`,
+		`const call = Function.prototype.call;const isFunction = value instanceof Function;console.log(call, isFunction);`,
 	)
+})
+
+test("validateBundleText rejects node:vm runtime code generation", () => {
+	expect(() =>
+		validateBundleText(
+			"skill-a",
+			`import vm from "node:vm";vm.runInThisContext("p => import(p)")`,
+		),
+	).toThrow(/runtime escape built-in/)
 })
 
 test("validateBundleText rejects a concatenated require that begins with a string literal", () => {
@@ -1246,9 +1266,29 @@ test("a computed dynamic import fails with a precise build error", async () => {
 
 test("runtime code generation fails before bundle materialization", async () => {
 	const fixture = fixtureWorkspace(
-		`const load = new Function("target", "return im" + "port(target)");console.log(load);`,
+		`const C = (() => {}).constructor;const load = C("target", "return im" + "port(target)");console.log(load);`,
 	)
 	await expectBundleRejection(fixture, "dynamic-code-generation", /runtime code generation/)
+})
+
+test("runtime escape built-ins fail before bundle materialization", async () => {
+	const fixtures = [
+		[
+			fixtureWorkspace(
+				`import vm from "node:vm";console.log(vm.runInThisContext("p => import(p)"));`,
+			),
+			"dynamic-code-generation",
+		],
+		[
+			fixtureWorkspace(
+				`import * as M from "node:module";const key = process.env.KEY;console.log(M[key](import.meta.url));`,
+			),
+			"runtime-loader",
+		],
+	] as const
+	for (const [fixture, code] of fixtures) {
+		await expectBundleRejection(fixture, code, /runtime escape built-in/)
+	}
 })
 
 test("an indirect runtime require fails before bundle materialization", async () => {

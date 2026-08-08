@@ -19,6 +19,7 @@ import { checkRuntimeCustodyFiles, loadSkillCatalog, shellQuote } from "./runtim
 
 const nodeBuiltins = new Set(builtinModules)
 const admittedBunBuiltins = new Set(["bun", "bun:sqlite"])
+const runtimeEscapeBuiltins = new Set(["module", "node:module", "vm", "node:vm"])
 const managedBundlePattern = /^([a-z0-9]+(?:-[a-z0-9]+)*)-[a-f0-9]{16}\.js$/
 const permissiveLicenses = new Set([
 	"MIT",
@@ -456,7 +457,7 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  */
 export function validateBundleText(skillId: string, code: string): void {
 	const executable = executableCodeMask(code)
-	const codeGeneration = /\b(?:eval|Function)\b|\.\s*constructor\s*\(/g
+	const codeGeneration = /\b(?:eval|Function)\b|\.\s*constructor\b/g
 	for (const match of executable.matchAll(codeGeneration)) {
 		if (isPropertyLabel(executable, match.index, match[0].length)) continue
 		if (match[0] === "Function") {
@@ -554,6 +555,13 @@ export function validateBundleText(skillId: string, code: string): void {
 	}
 	for (const specifier of collectModuleSpecifiers(code)) {
 		if (specifier.startsWith("./") || specifier.startsWith("../")) continue
+		if (runtimeEscapeBuiltins.has(specifier)) {
+			throw new BundleValidationError(
+				skillId,
+				specifier.endsWith("vm") ? "dynamic-code-generation" : "runtime-loader",
+				`bundle retains the runtime escape built-in "${specifier}"; node:vm and node:module are not admitted`,
+			)
+		}
 		if (!allowedRuntimeSpecifier(specifier)) {
 			throw new BundleValidationError(
 				skillId,
