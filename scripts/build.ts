@@ -422,13 +422,13 @@ export function validateBundleText(skillId: string, code: string): void {
 			"bundle retains a destructured runtime module-loader escape",
 		)
 	}
-	for (const match of code.matchAll(/\{\s*\[\s*(["'])require\1\s*\]\s*:[^{}]*\}\s*=\s*(?:import\.meta|globalThis)\b/g)) {
-		const structural = executable.slice(match.index, match.index + match[0].length)
-		if (!/\{\s*\[\s*(["'])\s*\1\s*\]\s*:[^{}]*\}\s*=\s*(?:import\.meta|globalThis)\b/.test(structural)) continue
+	if (
+		/\{[^{}]*\[[^\]]+\]\s*:[^{}]*\}\s*=\s*(?:import\.meta|globalThis)\b/.test(executable)
+	) {
 		throw new BundleValidationError(
 			skillId,
 			"runtime-loader",
-			"bundle retains a computed-key destructured runtime module-loader escape",
+			"bundle retains a computed-key destructured ambient runtime escape",
 		)
 	}
 	for (const match of executable.matchAll(/\b(?:import\s*\.\s*meta|globalThis)\b/g)) {

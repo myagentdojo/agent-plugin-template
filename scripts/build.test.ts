@@ -234,12 +234,16 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 			`const { require: load } = import.meta;load(process.env.TARGET_MODULE);`,
 		),
 	).toThrow(/destructured runtime module-loader escape/)
-	expect(() =>
-		validateBundleText(
-			"skill-a",
-			`const { ["require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
-		),
-	).toThrow(/computed-key destructured runtime module-loader escape/)
+	for (const code of [
+		`const { ["require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
+		`const { ["requ\\u0069re"]: load } = globalThis;load(process.env.TARGET_MODULE);`,
+		`const { ["__require"]: load } = import.meta;load(process.env.TARGET_MODULE);`,
+		`const { ["__require"]: load } = globalThis;load(process.env.TARGET_MODULE);`,
+	]) {
+		expect(() => validateBundleText("skill-a", code)).toThrow(
+			/computed-key destructured ambient runtime escape/,
+		)
+	}
 })
 
 test("validateBundleText allows ordinary methods named require", () => {
