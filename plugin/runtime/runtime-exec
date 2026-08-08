@@ -470,14 +470,25 @@ read_lock_record() {
 	rec_start=''
 	rec_staging=''
 	if [ ! -f "$lock_dir/record" ]; then return 0; fi
-	while IFS= read -r _lr_line || [ -n "$_lr_line" ]; do
-		case "$_lr_line" in
-		host=*) rec_host=${_lr_line#host=} ;;
-		pid=*) rec_pid=${_lr_line#pid=} ;;
-		start=*) rec_start=${_lr_line#start=} ;;
-		staging=*) rec_staging=${_lr_line#staging=} ;;
-		esac
-	done <"$lock_dir/record"
+	# Probe the complete record through a resolved host tool first. This turns
+	# permission and filesystem read failures into an ordinary return value
+	# instead of allowing a redirection error to escape under set -e.
+	if ! "$tool_wc" -c <"$lock_dir/record" >/dev/null 2>&1; then
+		return 1
+	fi
+	if ! {
+		while IFS= read -r _lr_line || [ -n "$_lr_line" ]; do
+			case "$_lr_line" in
+			host=*) rec_host=${_lr_line#host=} ;;
+			pid=*) rec_pid=${_lr_line#pid=} ;;
+			start=*) rec_start=${_lr_line#start=} ;;
+			staging=*) rec_staging=${_lr_line#staging=} ;;
+			esac
+		done
+	} <"$lock_dir/record"; then
+		return 1
+	fi
+	return 0
 }
 
 # Recordless grace in whole minutes. find -mmin only accepts an integer on BSD
@@ -574,7 +585,10 @@ acquire_lock() {
 		if [ "$_al_attempts" -gt 3 ]; then
 			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply shortly.'
 		fi
-		read_lock_record
+		if ! read_lock_record; then
+			diag 'could not read the existing repair lock record'
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
+		fi
 		if writer_is_live; then
 			diag 'repair lock is held by a live writer'
 			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply after it finishes.'

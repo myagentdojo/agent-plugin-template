@@ -762,6 +762,27 @@ test("AE8: a live writer's lock is never reclaimed", async () => {
 	}
 })
 
+test("an unreadable existing lock record emits one envelope without reclaiming it", () => {
+	const toolDir = makeToolDir({
+		wc: "#!/bin/sh\nexit 1\n",
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	const lockDir = writeLockRecord(fixture, {
+		pid: process.pid,
+		start: startToken(process.pid),
+		staging: "livenonce",
+	})
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	const envelope = readEnvelope(apply)
+	expect(envelope.code).toBe("CACHE_ROOT_UNSAFE")
+	expect(envelope.sideEffects).toEqual([])
+	expect(envelope.retrySafe).toBe(true)
+	expect(String(envelope.nextAction)).toContain("owner-readable")
+	expect(existsSync(lockDir)).toBe(true)
+	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
 test("AE8: a fresh recordless lock is treated as live and repair returns retry-later", () => {
 	const fixture = makeFixture()
 	// A writer between mkdir and its atomic record publish leaves a recordless
