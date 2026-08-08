@@ -555,13 +555,19 @@ acquire_lock() {
 			# Publish the record atomically: a contender reading $lock_dir/record
 			# never sees a half-written record and so never classifies this live
 			# writer as dead from an empty pid field.
-			{
+			if ! {
 				printf 'host=%s\n' "$host_id"
 				printf 'pid=%s\n' "$$"
 				printf 'start=%s\n' "$_al_start"
 				printf 'staging=%s\n' "$nonce"
-			} >"$lock_dir/record.$nonce"
-			"$tool_mv" -f "$lock_dir/record.$nonce" "$lock_dir/record"
+			} >"$lock_dir/record.$nonce"; then
+				diag 'could not write the repair lock record'
+				fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+			fi
+			if ! "$tool_mv" -f "$lock_dir/record.$nonce" "$lock_dir/record" 2>/dev/null; then
+				diag 'could not publish the repair lock record'
+				fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+			fi
 			return 0
 		fi
 		_al_attempts=$((_al_attempts + 1))

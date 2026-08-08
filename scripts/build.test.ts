@@ -419,6 +419,70 @@ test("dependency admission accepts a peer selected in the same workspace graph",
 	])
 })
 
+test("workspace peer imports resolve through the admitted graph and validate the selected version", async () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: {
+			name: "runtime-peer",
+			version: "18.2.0",
+			license: "MIT",
+			type: "module",
+			main: "index.js",
+		},
+		files: { "index.js": `export default "workspace-peer-proof";\n` },
+	})
+	const workspaceDirectory = join(fixtureRoot, "packages", "fixture-skill")
+	mkdirSync(join(workspaceDirectory, "src"), { recursive: true })
+	writeFileSync(
+		join(workspaceDirectory, "package.json"),
+		`${JSON.stringify({
+			name: "fixture-skill",
+			private: true,
+			type: "module",
+			main: "src/main.js",
+			peerDependencies: { "runtime-peer": "^18.0.0" },
+		})}\n`,
+	)
+	writeFileSync(
+		join(workspaceDirectory, "src", "main.js"),
+		`import peer from "runtime-peer";console.log(peer);`,
+	)
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.workspaces["packages/fixture-skill"].dependencies = {}
+	lock.workspaces["packages/fixture-skill"].peerDependencies = {
+		"runtime-peer": "^18.0.0",
+	}
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	const peerDirectory = join(
+		fixtureRoot,
+		"node_modules",
+		".bun",
+		"runtime-peer@18.2.0",
+		"node_modules",
+		"runtime-peer",
+	)
+	symlinkSync(peerDirectory, join(fixtureRoot, "node_modules", "runtime-peer"), "dir")
+
+	const artifact = await bundleWorkspaceSkill(
+		fixtureRoot,
+		"fixture-skill",
+		"packages/fixture-skill",
+		join(fixtureRoot, "staging"),
+	)
+	expect(new TextDecoder().decode(artifact.contents)).toContain("workspace-peer-proof")
+
+	lock.workspaces["packages/fixture-skill"].peerDependencies["runtime-peer"] = "^19.0.0"
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	await expect(
+		bundleWorkspaceSkill(
+			fixtureRoot,
+			"fixture-skill",
+			"packages/fixture-skill",
+			join(fixtureRoot, "invalid-peer-staging"),
+		),
+	).rejects.toMatchObject({ code: "lock-invalid" })
+})
+
 test("dependency admission rejects a root manifest declaring trustedDependencies", () => {
 	const fixtureRoot = temporaryDirectory("trusted-dependencies-")
 	writeFileSync(

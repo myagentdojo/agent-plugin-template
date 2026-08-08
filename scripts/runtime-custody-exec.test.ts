@@ -797,6 +797,27 @@ test("AE8: a recordless lock older than the grace window is reclaimed (integer -
 	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
 })
 
+test("a lock-record publication failure emits one envelope and releases the lock", () => {
+	const realMv = Bun.which("mv")
+	if (!realMv) throw new Error("mv is required by the test fixture")
+	const toolDir = makeToolDir({
+		mv: `#!/bin/sh
+last=''
+for arg in "$@"; do last=$arg; done
+case "$last" in */record) exit 1 ;; esac
+exec ${realMv} "$@"
+`,
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(20)
+	expect(readEnvelope(apply).code).toBe("CACHE_ROOT_UNSAFE")
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
+	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
 // --- run stays custody-read-only, including on a read-only cache --------------
 
 test("run does not write into the custody store and launches from a read-only cache", () => {

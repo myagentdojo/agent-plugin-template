@@ -495,6 +495,8 @@ export async function bundleWorkspaceSkill(
 interface FrozenLockWorkspace {
 	name?: string
 	dependencies?: Record<string, string>
+	peerDependencies?: Record<string, string>
+	peerDependenciesMeta?: Record<string, { optional?: boolean }>
 }
 
 interface FrozenLockPackageMetadata {
@@ -584,9 +586,21 @@ function resolveLockDependency(
 		return direct
 	}
 	if (direct?.name === name && direct.reference === requested) return direct
+	if (
+		direct?.name === name &&
+		!direct.reference.startsWith("workspace:") &&
+		Bun.semver.satisfies(direct.reference, requested)
+	) {
+		return direct
+	}
 	const candidates = [...packages.values()].filter((entry) => entry.name === name)
 	const exact = candidates.filter((entry) => entry.reference === requested)
 	if (exact.length === 1) return exact[0]
+	const satisfying = candidates.filter(
+		(entry) =>
+			!entry.reference.startsWith("workspace:") && Bun.semver.satisfies(entry.reference, requested),
+	)
+	if (satisfying.length === 1) return satisfying[0]
 	throw new DependencyAdmissionError(
 		"lock-invalid",
 		`bun.lock cannot resolve ${name}@${requested} to one package entry`,
@@ -596,6 +610,17 @@ function resolveLockDependency(
 interface ResolvedWorkspaceDependencyGraph {
 	workspacePaths: Set<string>
 	packages: Map<string, ParsedLockPackage>
+}
+
+function requiredWorkspaceDependencies(
+	workspace: FrozenLockWorkspace,
+): Array<[string, string]> {
+	return [
+		...Object.entries(workspace.dependencies ?? {}),
+		...Object.entries(workspace.peerDependencies ?? {}).filter(
+			([name]) => workspace.peerDependenciesMeta?.[name]?.optional !== true,
+		),
+	]
 }
 
 function resolveWorkspaceDependencyGraph(
@@ -616,7 +641,7 @@ function resolveWorkspaceDependencyGraph(
 		name: string
 		requested: string
 		parent?: ParsedLockPackage
-	}> = Object.entries(workspace.dependencies ?? {}).map(([name, requested]) => ({
+	}> = requiredWorkspaceDependencies(workspace).map(([name, requested]) => ({
 		name,
 		requested,
 	}))
@@ -645,7 +670,7 @@ function resolveWorkspaceDependencyGraph(
 				)
 			}
 			pending.push(
-				...Object.entries(dependencyWorkspace.dependencies ?? {}).map(([name, requested]) => ({
+				...requiredWorkspaceDependencies(dependencyWorkspace).map(([name, requested]) => ({
 					name,
 					requested,
 				})),
