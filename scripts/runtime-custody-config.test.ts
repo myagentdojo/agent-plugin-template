@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -52,6 +60,44 @@ test("renders one custody launcher for every catalog skill", () => {
 	for (const launcher of files.filter((file) => file.path.startsWith("plugin/bin/"))) {
 		expect(launcher.contents).toContain('exec "$plugin_root/runtime/runtime-exec" run')
 	}
+})
+
+test("generated launchers resolve the plugin without trusting PATH", () => {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "custody-launcher-"))
+	temporaryRoots.push(fixtureRoot)
+	const pluginRoot = join(fixtureRoot, "plugin")
+	const binDirectory = join(pluginRoot, "bin")
+	const runtimeDirectory = join(pluginRoot, "runtime")
+	const hostileBin = join(fixtureRoot, "hostile-bin")
+	mkdirSync(binDirectory, { recursive: true })
+	mkdirSync(runtimeDirectory, { recursive: true })
+	mkdirSync(hostileBin)
+
+	const launcher = renderRuntimeCustodyFiles(root).find(
+		(file) => file.path === "plugin/bin/skill-a",
+	)
+	if (!launcher) throw new Error("skill-a launcher was not rendered")
+	const launcherPath = join(binDirectory, "skill-a")
+	writeFileSync(launcherPath, launcher.contents)
+	chmodSync(launcherPath, 0o755)
+
+	const enginePath = join(runtimeDirectory, "runtime-exec")
+	writeFileSync(enginePath, '#!/bin/sh\nprintf "%s\\n" "$*"\n')
+	chmodSync(enginePath, 0o755)
+	const sentinelPath = join(fixtureRoot, "dirname-ran")
+	const hostileDirname = join(hostileBin, "dirname")
+	writeFileSync(hostileDirname, `#!/bin/sh\n: >'${sentinelPath}'\nexit 99\n`)
+	chmodSync(hostileDirname, 0o755)
+
+	const result = Bun.spawnSync({
+		cmd: [launcherPath],
+		env: { PATH: hostileBin },
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	expect(result.exitCode).toBe(0)
+	expect(result.stdout.toString().trim()).toBe("run skill-a --")
+	expect(existsSync(sentinelPath)).toBe(false)
 })
 
 test("rejects a runtime lock schema version other than 1", () => {

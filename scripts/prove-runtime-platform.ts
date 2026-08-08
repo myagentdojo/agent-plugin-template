@@ -11,6 +11,9 @@ import {
 import { tmpdir } from "node:os"
 import { basename, join, resolve } from "node:path"
 
+import { compareCodeUnits } from "./plugin-files"
+import { SUPPORTED_RUNTIME_PLATFORMS } from "./runtime-custody-config"
+
 interface PlatformProofOptions {
 	archive: string
 	checksums: string
@@ -27,8 +30,6 @@ interface ControlEnvelope {
 	nextAction: string
 	runtime?: { version?: string; executableSha256?: string }
 }
-
-const supportedTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]
 
 export function currentRuntimeTarget(
 	platform = process.platform,
@@ -62,7 +63,9 @@ export function parsePlatformProofOptions(arguments_: string[]): PlatformProofOp
 		throw new Error("--fixture-acknowledged is required before repair --apply")
 	}
 	const target = optionValue(arguments_, "--target")
-	if (!supportedTargets.includes(target)) throw new Error(`unsupported target: ${target}`)
+	if (!(SUPPORTED_RUNTIME_PLATFORMS as readonly string[]).includes(target)) {
+		throw new Error(`unsupported target: ${target}`)
+	}
 	return {
 		archive: resolve(optionValue(arguments_, "--archive")),
 		checksums: resolve(optionValue(arguments_, "--checksums")),
@@ -79,7 +82,7 @@ function regularFiles(root: string): string[] {
 	const files: string[] = []
 	function walk(directory: string, prefix: string): void {
 		for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
-			a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+			compareCodeUnits(a.name, b.name),
 		)) {
 			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
 			if (entry.isDirectory()) walk(join(directory, entry.name), relativePath)

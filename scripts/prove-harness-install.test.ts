@@ -21,6 +21,7 @@ import {
 	nativeHarnessEnvironment,
 	proveHarnessInstall,
 	redactTemporaryEvidencePath,
+	resolveCleanSourceCommit,
 	runtimeClosureEvidence,
 } from "./prove-harness-install"
 import {
@@ -33,6 +34,33 @@ const root = resolve(import.meta.dir, "..")
 let proof: ReturnType<typeof proveHarnessInstall>
 const claudeNativeTest = Bun.which("claude") ? test : test.skip
 const codexNativeTest = Bun.which("codex") ? test : test.skip
+
+test("source-bound native receipts reject dirty checkout bytes", () => {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "native-receipt-source-"))
+	try {
+		const environment = {
+			...process.env,
+			GIT_AUTHOR_NAME: "Receipt Test",
+			GIT_AUTHOR_EMAIL: "receipt@example.invalid",
+			GIT_COMMITTER_NAME: "Receipt Test",
+			GIT_COMMITTER_EMAIL: "receipt@example.invalid",
+		}
+		writeFileSync(join(fixtureRoot, "payload.txt"), "clean\n")
+		for (const command of [
+			["git", "init", "--quiet"],
+			["git", "add", "payload.txt"],
+			["git", "commit", "--quiet", "-m", "fixture"],
+		]) {
+			const result = Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment })
+			expect(result.exitCode).toBe(0)
+		}
+		expect(resolveCleanSourceCommit(fixtureRoot)).toMatch(/^[a-f0-9]{40}$/)
+		writeFileSync(join(fixtureRoot, "payload.txt"), "dirty\n")
+		expect(() => resolveCleanSourceCommit(fixtureRoot)).toThrow(/requires a clean source checkout/)
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+	}
+})
 
 beforeAll(() => {
 	proof = proveHarnessInstall(root)

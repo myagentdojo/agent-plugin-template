@@ -29,6 +29,7 @@ import {
 	type PluginConfig,
 	writeGeneratedFiles,
 } from "./plugin-config"
+import { currentRuntimeTarget } from "./prove-runtime-platform"
 
 const help = `Prove tagged plugin installation in isolated Claude and Codex homes.
 
@@ -262,6 +263,7 @@ interface RuntimeControlEnvelope {
 }
 
 interface NativeRuntimeJourney {
+	kind: "installed-payload-mechanics"
 	client: "claude-cli" | "codex-cli"
 	target: string
 	repository: string
@@ -273,6 +275,7 @@ interface NativeRuntimeJourney {
 	approvalPrompt: string
 	fixtureAcknowledged: true
 	humanApprovalClaimed: false
+	agentWorkflowProved: false
 	journey: string[]
 }
 
@@ -1123,13 +1126,11 @@ export function runtimeClosureEvidence(pluginRoot: string): {
 }
 
 function nativeRuntimeTarget(): string {
-	if (
-		(process.platform !== "darwin" && process.platform !== "linux") ||
-		(process.arch !== "arm64" && process.arch !== "x64")
-	) {
+	const target = currentRuntimeTarget()
+	if (!target) {
 		throw new Error(`native runtime qualification does not support ${process.platform}-${process.arch}`)
 	}
-	return `${process.platform}-${process.arch}`
+	return target
 }
 
 function runInstalledRuntime(
@@ -1209,7 +1210,13 @@ function proveNativeRuntimeJourney(
 	if (retry.exitCode !== 0) throw new Error(`${client} agent retry failed: ${retry.stderr}`)
 	JSON.parse(retry.stdout.toString())
 
-	const journey = ["BUN_MISSING", "REPAIR_PREVIEW", "APPROVAL_FIXTURE", "REPAIR_APPLIED", "agent-retry"]
+	const journey = [
+		"BUN_MISSING",
+		"REPAIR_PREVIEW",
+		"FIXTURE_ACKNOWLEDGED",
+		"REPAIR_APPLIED",
+		"launcher-retry",
+	]
 	if (corruptRecovery) {
 		const runtimePath = join(cacheRoot, "agent-plugin-runtime", "bun", executableSha256, "bun")
 		writeFileSync(runtimePath, "corrupt runtime fixture\n")
@@ -1237,11 +1244,18 @@ function proveNativeRuntimeJourney(
 		const recovered = runInstalledRuntime(pluginRoot, cacheRoot, [launcher])
 		if (recovered.exitCode !== 0) throw new Error(`${client} corrupt recovery retry failed`)
 		JSON.parse(recovered.stdout.toString())
-		journey.push("REPAIR_REQUIRED", "REPAIR_PREVIEW", "APPROVAL_FIXTURE", "REPAIR_APPLIED", "agent-retry")
+		journey.push(
+			"REPAIR_REQUIRED",
+			"REPAIR_PREVIEW",
+			"FIXTURE_ACKNOWLEDGED",
+			"REPAIR_APPLIED",
+			"launcher-retry",
+		)
 	}
 
 	const closure = runtimeClosureEvidence(pluginRoot)
 	return {
+		kind: "installed-payload-mechanics",
 		client,
 		target: nativeRuntimeTarget(),
 		...identity,
@@ -1253,8 +1267,41 @@ function proveNativeRuntimeJourney(
 		approvalPrompt: preview.nextAction,
 		fixtureAcknowledged: true,
 		humanApprovalClaimed: false,
+		agentWorkflowProved: false,
 		journey,
 	}
+}
+
+/** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
+export function resolveCleanSourceCommit(repositoryRoot: string): string {
+	const sourceStatus = Bun.spawnSync({
+		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+		cwd: repositoryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (sourceStatus.exitCode !== 0) {
+		throw new Error("native receipt could not verify source checkout cleanliness")
+	}
+	if (sourceStatus.stdout.toString().trim() !== "") {
+		throw new Error(
+			"native runtime qualification requires a clean source checkout so sourceCommit matches the installed payload bytes",
+		)
+	}
+	const sourceCommitResult = Bun.spawnSync({
+		cmd: ["git", "rev-parse", "HEAD"],
+		cwd: repositoryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (sourceCommitResult.exitCode !== 0) {
+		throw new Error("native receipt could not resolve source commit")
+	}
+	const sourceCommit = sourceCommitResult.stdout.toString().trim()
+	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) {
+		throw new Error("native receipt source commit is invalid")
+	}
+	return sourceCommit
 }
 
 function runHarnessInstallProof(
@@ -1263,6 +1310,9 @@ function runHarnessInstallProof(
 	executables: NativeHarnessExecutables,
 	qualifyRuntimeJourney: boolean,
 ): HarnessInstallProof {
+	const sourceCommit = qualifyRuntimeJourney
+		? resolveCleanSourceCommit(repositoryRoot)
+		: undefined
 	const fixture = createFixtureRelease(repositoryRoot, temporaryRoot)
 	admitGitTransport({
 		source: fixture.repositoryRoot,
@@ -1276,18 +1326,9 @@ function runHarnessInstallProof(
 		removable: true,
 	})
 	const pluginConfig = loadPluginConfig(repositoryRoot)
-	const sourceCommitResult = Bun.spawnSync({
-		cmd: ["git", "rev-parse", "HEAD"],
-		cwd: repositoryRoot,
-		stdout: "pipe",
-		stderr: "pipe",
-	})
-	if (sourceCommitResult.exitCode !== 0) throw new Error("native receipt could not resolve source commit")
-	const sourceCommit = sourceCommitResult.stdout.toString().trim()
-	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error("native receipt source commit is invalid")
 	const nativeIdentity = {
 		repository: pluginConfig.repository,
-		sourceCommit,
+		sourceCommit: sourceCommit ?? fixture.base.resolvedSha,
 		runtimeLockSha256: createHash("sha256")
 			.update(readFileSync(join(repositoryRoot, "runtime", "runtime.lock.json")))
 			.digest("hex"),
@@ -1374,7 +1415,7 @@ function runHarnessInstallProof(
 		versionAgreement,
 		payloadClosureChanged: true,
 		skips,
-		nextAction: "Review the JSON evidence; run hosted and interactive qualifications only when their paths changed.",
+		nextAction: "Review the installed-payload mechanics evidence. Before release, capture candidate-bound Claude task, Codex task, and Codex Desktop human-approval receipts; this fixture does not claim agent workflow proof.",
 	}
 }
 

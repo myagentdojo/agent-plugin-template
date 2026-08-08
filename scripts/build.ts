@@ -14,10 +14,9 @@ import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 
 import { loadPluginConfig } from "./plugin-config"
-import { pluginPayloadInventory } from "./plugin-files"
+import { compareCodeUnits, pluginPayloadInventory } from "./plugin-files"
 import {
 	checkRuntimeCustodyFiles,
-	compareCodeUnits,
 	loadSkillCatalog,
 	shellQuote,
 } from "./runtime-custody-config"
@@ -43,6 +42,7 @@ export type BundleValidationCode =
 	| "native-addon"
 	| "computed-dynamic-import"
 	| "computed-require"
+	| "runtime-loader"
 	| "bare-specifier"
 	| "unexpected-output"
 	| "bundler-failure"
@@ -159,6 +159,13 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  * ```
  */
 export function validateBundleText(skillId: string, code: string): void {
+	if (/\b(?:createRequire|getBuiltinModule)\b/.test(code)) {
+		throw new BundleValidationError(
+			skillId,
+			"runtime-loader",
+			"bundle retains a runtime module-loader escape; createRequire and getBuiltinModule are not allowed",
+		)
+	}
 	// Every dynamic-load call site must be a single immediately-closed string
 	// literal: any other argument shape (concatenation, identifier, member
 	// expression, template) is a runtime-computed load the closure cannot prove.
@@ -197,55 +204,12 @@ function isInsideDirectory(path: string, directory: string): boolean {
 	return path === directory || path.startsWith(`${directory}/`)
 }
 
-/**
- * Bundle one workspace skill into a single validated ESM artifact in private staging.
- *
- * @param repositoryRoot - Repository root that bounds every dependency resolution
- * @param skillId - Catalog skill identity
- * @param workspace - Repository-relative workspace package path
- * @param stagingDirectory - Private staging directory outside the payload
- * @returns Digest-named artifact bytes ready for materialization
- * @throws {BundleValidationError} On any dependency, output, or bundle-text escape
- *
- * @example
- * ```ts
- * const artifact = await bundleWorkspaceSkill(root, "skill-a", "packages/skill-a", staging)
- * ```
- */
-export async function bundleWorkspaceSkill(
-	repositoryRoot: string,
+function createClosedResolutionPlugin(
+	realRoot: string,
 	skillId: string,
-	workspace: string,
-	stagingDirectory: string,
-): Promise<BundleArtifact> {
-	const realRoot = realpathSync(repositoryRoot)
-	const workspaceRoot = join(realRoot, workspace)
-	const workspaceManifest = JSON.parse(readFileSync(join(workspaceRoot, "package.json"), "utf8"))
-	const entryPoint = join(workspaceRoot, String(workspaceManifest.main ?? ""))
-	if (!workspaceManifest.main || !existsSync(entryPoint)) {
-		throw new BundleValidationError(
-			skillId,
-			"missing-entry",
-			`workspace ${workspace} does not declare an existing "main" entry`,
-		)
-	}
-	// The closed-resolution plugin below bounds every *imported* module to the
-	// repository, but Bun.build never routes the entrypoint through onResolve, so
-	// a "main" of "../../../x.js" or a symlinked entry would escape that boundary
-	// and be packaged as a valid skill. Resolve symlinks and require the real
-	// entry to stay inside the workspace before bundling.
-	const realEntryPoint = realpathSync(entryPoint)
-	const realWorkspaceRoot = realpathSync(workspaceRoot)
-	if (!isInsideDirectory(realEntryPoint, realWorkspaceRoot)) {
-		throw new BundleValidationError(
-			skillId,
-			"entry-escape",
-			`workspace ${workspace} "main" resolves outside the workspace: ${realEntryPoint}`,
-		)
-	}
-
-	const violations: BundleValidationError[] = []
-	const closedResolution: import("bun").BunPlugin = {
+	violations: BundleValidationError[],
+): import("bun").BunPlugin {
+	return {
 		name: "closed-dependency-resolution",
 		setup(builder) {
 			builder.onResolve({ filter: /\.node$/ }, (args) => {
@@ -322,6 +286,57 @@ export async function bundleWorkspaceSkill(
 			})
 		},
 	}
+}
+
+/**
+ * Bundle one workspace skill into a single validated ESM artifact in private staging.
+ *
+ * @param repositoryRoot - Repository root that bounds every dependency resolution
+ * @param skillId - Catalog skill identity
+ * @param workspace - Repository-relative workspace package path
+ * @param stagingDirectory - Private staging directory outside the payload
+ * @returns Digest-named artifact bytes ready for materialization
+ * @throws {BundleValidationError} On any dependency, output, or bundle-text escape
+ *
+ * @example
+ * ```ts
+ * const artifact = await bundleWorkspaceSkill(root, "skill-a", "packages/skill-a", staging)
+ * ```
+ */
+export async function bundleWorkspaceSkill(
+	repositoryRoot: string,
+	skillId: string,
+	workspace: string,
+	stagingDirectory: string,
+): Promise<BundleArtifact> {
+	const realRoot = realpathSync(repositoryRoot)
+	const workspaceRoot = join(realRoot, workspace)
+	const workspaceManifest = JSON.parse(readFileSync(join(workspaceRoot, "package.json"), "utf8"))
+	const entryPoint = join(workspaceRoot, String(workspaceManifest.main ?? ""))
+	if (!workspaceManifest.main || !existsSync(entryPoint)) {
+		throw new BundleValidationError(
+			skillId,
+			"missing-entry",
+			`workspace ${workspace} does not declare an existing "main" entry`,
+		)
+	}
+	// The closed-resolution plugin below bounds every *imported* module to the
+	// repository, but Bun.build never routes the entrypoint through onResolve, so
+	// a "main" of "../../../x.js" or a symlinked entry would escape that boundary
+	// and be packaged as a valid skill. Resolve symlinks and require the real
+	// entry to stay inside the workspace before bundling.
+	const realEntryPoint = realpathSync(entryPoint)
+	const realWorkspaceRoot = realpathSync(workspaceRoot)
+	if (!isInsideDirectory(realEntryPoint, realWorkspaceRoot)) {
+		throw new BundleValidationError(
+			skillId,
+			"entry-escape",
+			`workspace ${workspace} "main" resolves outside the workspace: ${realEntryPoint}`,
+		)
+	}
+
+	const violations: BundleValidationError[] = []
+	const closedResolution = createClosedResolutionPlugin(realRoot, skillId, violations)
 
 	const outputDirectory = join(stagingDirectory, skillId)
 	mkdirSync(outputDirectory, { recursive: true })
@@ -611,6 +626,10 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 	const stagingDirectory = mkdtempSync(join(tmpdir(), "skill-bundle-staging-"))
 	const artifacts: BundleArtifact[] = []
 	try {
+		const helloWorld = catalog.skills["hello-world"]
+		if (helloWorld?.workspace === undefined && helloWorld?.entry === "runtime/hello-world.js") {
+			artifacts.push(await buildHelloWorldRuntime(root, stagingDirectory))
+		}
 		for (const [skillId, skill] of workspaceSkills) {
 			artifacts.push(
 				await bundleWorkspaceSkill(root, skillId, skill.workspace as string, stagingDirectory),
@@ -620,21 +639,14 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 		rmSync(stagingDirectory, { recursive: true, force: true })
 	}
 
-	// The complete candidate closure is validated; only now touch checked-in output.
-	const runtimeDirectory = join(root, "plugin", "runtime")
-	mkdirSync(runtimeDirectory, { recursive: true })
-	const activeFileNames = new Set(artifacts.map((artifact) => artifact.fileName))
-	for (const entry of readdirSync(runtimeDirectory)) {
-		if (managedBundlePattern.test(entry) && !activeFileNames.has(entry)) {
-			rmSync(join(runtimeDirectory, entry))
-		}
-	}
+	const artifactsBySkill = new Map(artifacts.map((artifact) => [artifact.skillId, artifact]))
 	const bundles: Record<string, BundleRecord> = {}
 	for (const [skillId, skill] of Object.entries(catalog.skills).sort(([left], [right]) =>
 		compareCodeUnits(left, right),
 	)) {
 		if (skill.workspace !== undefined) continue
-		const bundle = readFileSync(join(root, "plugin", skill.entry))
+		const generatedArtifact = artifactsBySkill.get(skillId)
+		const bundle = generatedArtifact?.contents ?? readFileSync(join(root, "plugin", skill.entry))
 		bundles[skillId] = {
 			path: skill.entry,
 			bytes: bundle.byteLength,
@@ -642,11 +654,12 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 		}
 	}
 	for (const artifact of artifacts) {
-		writeFileSync(join(runtimeDirectory, artifact.fileName), artifact.contents)
-		bundles[artifact.skillId] = {
-			path: `runtime/${artifact.fileName}`,
-			bytes: artifact.bytes,
-			sha256: artifact.sha256,
+		if (catalog.skills[artifact.skillId]?.workspace !== undefined) {
+			bundles[artifact.skillId] = {
+				path: `runtime/${artifact.fileName}`,
+				bytes: artifact.bytes,
+				sha256: artifact.sha256,
+			}
 		}
 	}
 	const result: BundleClosureResult = {
@@ -656,6 +669,20 @@ export async function buildWorkspaceBundles(root: string): Promise<BundleClosure
 			bytes: Buffer.byteLength(noticesText),
 			sha256: sha256Hex(noticesText),
 		},
+	}
+
+	// The complete candidate closure now exists in memory and private staging.
+	// Only this materialization phase touches checked-in package input (R7).
+	const runtimeDirectory = join(root, "plugin", "runtime")
+	mkdirSync(runtimeDirectory, { recursive: true })
+	const activeFileNames = new Set(artifacts.map((artifact) => artifact.fileName))
+	for (const entry of readdirSync(runtimeDirectory)) {
+		if (managedBundlePattern.test(entry) && !activeFileNames.has(entry)) {
+			rmSync(join(runtimeDirectory, entry))
+		}
+	}
+	for (const artifact of artifacts) {
+		writeFileSync(join(runtimeDirectory, artifact.fileName), artifact.contents)
 	}
 	writeFileSync(join(root, "plugin", "THIRD-PARTY-NOTICES.md"), noticesText)
 	writeFileSync(join(runtimeDirectory, "bundle-inventory.json"), serializeInventory(result))
@@ -860,24 +887,59 @@ export function validateBunOnlyPayload(root: string): void {
 	}
 }
 
-async function buildHelloWorldRuntime(root: string): Promise<string> {
+export async function buildHelloWorldRuntime(
+	root: string,
+	stagingDirectory: string,
+): Promise<BundleArtifact> {
+	const skillId = "hello-world"
 	const sourceRoot = join(root, "runtime", "src")
-	const outputDirectory = join(root, "plugin", "runtime")
+	const outputDirectory = join(stagingDirectory, skillId)
 	mkdirSync(outputDirectory, { recursive: true })
-	const result = await Bun.build({
-		entrypoints: [join(sourceRoot, "bun-proof-adapter.ts")],
-		outdir: outputDirectory,
-		naming: "hello-world.js",
-		target: "bun",
-		format: "esm",
-		minify: true,
-		banner: "// Generated from runtime/src/. Edit source, then run bun run build.",
-	})
-	if (!result.success) {
-		for (const log of result.logs) console.error(log)
-		process.exit(1)
+	const violations: BundleValidationError[] = []
+	let result: Awaited<ReturnType<typeof Bun.build>>
+	try {
+		result = await Bun.build({
+			entrypoints: [join(sourceRoot, "bun-proof-adapter.ts")],
+			outdir: outputDirectory,
+			naming: "hello-world.js",
+			target: "bun",
+			format: "esm",
+			splitting: false,
+			sourcemap: "none",
+			minify: true,
+			env: "disable",
+			plugins: [createClosedResolutionPlugin(realpathSync(root), skillId, violations)],
+			banner: "// Generated from runtime/src/. Edit source, then run bun run build.",
+		})
+	} catch (error) {
+		if (violations.length > 0) throw violations[0]
+		throw error
 	}
-	return join(outputDirectory, "hello-world.js")
+	if (violations.length > 0) throw violations[0]
+	if (!result.success) {
+		throw new BundleValidationError(
+			skillId,
+			"bundler-failure",
+			result.logs.map((log) => String(log)).join("\n"),
+		)
+	}
+	const outputs = readdirSync(outputDirectory, { recursive: true }) as string[]
+	if (outputs.length !== 1 || outputs[0] !== "hello-world.js") {
+		throw new BundleValidationError(
+			skillId,
+			"unexpected-output",
+			`bundle must emit exactly one JavaScript artifact; received ${JSON.stringify(outputs.sort())}`,
+		)
+	}
+	const contents = new Uint8Array(readFileSync(join(outputDirectory, "hello-world.js")))
+	validateBundleText(skillId, new TextDecoder().decode(contents))
+	return {
+		skillId,
+		fileName: "hello-world.js",
+		bytes: contents.byteLength,
+		sha256: sha256Hex(contents),
+		contents,
+	}
 }
 
 async function main(): Promise<void> {
@@ -893,8 +955,6 @@ async function main(): Promise<void> {
 		}
 	}
 
-	const helloWorldPath = await buildHelloWorldRuntime(root)
-
 	const install = Bun.spawnSync({
 		cmd: [process.execPath, "install", "--frozen-lockfile"],
 		cwd: root,
@@ -905,7 +965,7 @@ async function main(): Promise<void> {
 
 	const closure = await buildWorkspaceBundles(root)
 	validateBundleClosure(root)
-	console.log(helloWorldPath)
+	console.log(join(root, "plugin", "runtime", "hello-world.js"))
 	console.log(
 		JSON.stringify({
 			ok: true,

@@ -15,6 +15,8 @@ import { afterEach, beforeAll, expect, test } from "bun:test"
 import {
 	admitDependencyClosure,
 	BundleValidationError,
+	buildHelloWorldRuntime,
+	buildWorkspaceBundles,
 	bundleWorkspaceSkill,
 	collectModuleSpecifiers,
 	DependencyAdmissionError,
@@ -125,6 +127,18 @@ test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,
 	)
+})
+
+test("validateBundleText rejects built-in loader escape hatches", () => {
+	expect(() =>
+		validateBundleText(
+			"skill-a",
+			`import { createRequire as load } from "node:module";load(import.meta.url)("ambient-package");`,
+		),
+	).toThrow(/runtime module-loader escape/)
+	expect(() =>
+		validateBundleText("skill-a", `process.getBuiltinModule("module").createRequire(import.meta.url);`),
+	).toThrow(/runtime module-loader escape/)
 })
 
 test("validateBundleText rejects a concatenated require that begins with a string literal", () => {
@@ -410,6 +424,56 @@ test("a computed dynamic import fails with a precise build error", async () => {
 		`const target = process.env.TARGET_MODULE;export const load = () => import(target);console.log("loaded");`,
 	)
 	await expectBundleRejection(fixture, "computed-dynamic-import", /computed dynamic import/)
+})
+
+test("an aliased createRequire fails before bundle materialization", async () => {
+	const fixture = fixtureWorkspace(
+		`import { createRequire as load } from "node:module";const require = load(import.meta.url);console.log(require("ambient-package"));`,
+	)
+	await expectBundleRejection(fixture, "runtime-loader", /runtime module-loader escape/)
+})
+
+test("hello-world uses the same closed bundle validation gate", async () => {
+	const fixtureRoot = temporaryDirectory("hello-world-closure-")
+	const sourceDirectory = join(fixtureRoot, "runtime", "src")
+	mkdirSync(sourceDirectory, { recursive: true })
+	writeFileSync(
+		join(sourceDirectory, "bun-proof-adapter.ts"),
+		`const target = process.env.TARGET_MODULE;await import(target);`,
+	)
+	await expect(
+		buildHelloWorldRuntime(fixtureRoot, join(fixtureRoot, "staging")),
+	).rejects.toMatchObject({ code: "computed-dynamic-import" })
+})
+
+test("a failed complete build leaves checked payload input unchanged", async () => {
+	const fixtureRoot = temporaryDirectory("atomic-build-candidate-")
+	mkdirSync(join(fixtureRoot, "runtime", "src"), { recursive: true })
+	mkdirSync(join(fixtureRoot, "plugin", "runtime"), { recursive: true })
+	writeFileSync(join(fixtureRoot, "package.json"), '{"private":true}\n')
+	writeFileSync(join(fixtureRoot, "bun.lock"), '{"lockfileVersion":1,"packages":{}}\n')
+	cpSync(join(root, "runtime", "runtime.lock.json"), join(fixtureRoot, "runtime", "runtime.lock.json"))
+	cpSync(
+		join(root, "runtime", "skill-catalog.json"),
+		join(fixtureRoot, "runtime", "skill-catalog.json"),
+	)
+	writeFileSync(
+		join(fixtureRoot, "runtime", "src", "bun-proof-adapter.ts"),
+		`const target = process.env.TARGET_MODULE;await import(target);`,
+	)
+	const protectedOutputs = new Map([
+		[join(fixtureRoot, "plugin", "runtime", "hello-world.js"), "old hello\n"],
+		[join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json"), "old inventory\n"],
+		[join(fixtureRoot, "plugin", "THIRD-PARTY-NOTICES.md"), "old notices\n"],
+	])
+	for (const [path, contents] of protectedOutputs) writeFileSync(path, contents)
+
+	await expect(buildWorkspaceBundles(fixtureRoot)).rejects.toMatchObject({
+		code: "computed-dynamic-import",
+	})
+	for (const [path, contents] of protectedOutputs) {
+		expect(readFileSync(path, "utf8")).toBe(contents)
+	}
 })
 
 test("a native addon import fails with a precise native-addon error", async () => {

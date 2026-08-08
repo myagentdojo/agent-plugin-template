@@ -2,6 +2,7 @@ import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "no
 import { join } from "node:path"
 
 import type { GeneratedFile } from "./plugin-config"
+import { compareCodeUnits } from "./plugin-files"
 
 interface RuntimeAsset {
 	archiveName: string
@@ -39,7 +40,7 @@ export interface SkillCatalog {
 	skills: Record<string, SkillCatalogEntry>
 }
 
-const supportedPlatforms = [
+export const SUPPORTED_RUNTIME_PLATFORMS = [
 	"darwin-arm64",
 	"darwin-x64",
 	"linux-arm64",
@@ -47,11 +48,6 @@ const supportedPlatforms = [
 ] as const
 const lowercaseSha256 = /^[a-f0-9]{64}$/
 const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
-
-/** Deterministic code-unit comparator shared by shell-projection renderers. */
-export function compareCodeUnits(left: string, right: string): number {
-	return left < right ? -1 : left > right ? 1 : 0
-}
 
 /** Single-quote a projection value, rejecting values that cannot be quoted safely. */
 export function shellQuote(value: string): string {
@@ -74,11 +70,11 @@ function validateRuntimeLock(lock: RuntimeLock): void {
 	}
 	if (
 		Object.keys(profile.assets).sort(compareCodeUnits).join(",") !==
-		[...supportedPlatforms].sort(compareCodeUnits).join(",")
+		[...SUPPORTED_RUNTIME_PLATFORMS].sort(compareCodeUnits).join(",")
 	) {
 		throw new Error("runtime lock must contain exactly the four supported platforms")
 	}
-	for (const platform of supportedPlatforms) {
+	for (const platform of SUPPORTED_RUNTIME_PLATFORMS) {
 		const asset = profile.assets[platform]
 		if (
 			!asset ||
@@ -92,13 +88,16 @@ function validateRuntimeLock(lock: RuntimeLock): void {
 			throw new Error(`runtime lock asset metadata is invalid for ${platform}`)
 		}
 		const upstreamPlatform = platform.replace("arm64", "aarch64")
-		const expectedArchive = `bun-${upstreamPlatform}.zip`
+		const upstreamAsset = platform.endsWith("-x64")
+			? `${upstreamPlatform}-baseline`
+			: upstreamPlatform
+		const expectedArchive = `bun-${upstreamAsset}.zip`
 		const expectedUrl =
 			`https://github.com/oven-sh/bun/releases/download/bun-v${profile.version}/${expectedArchive}`
 		if (
 			asset.archiveName !== expectedArchive ||
 			asset.url !== expectedUrl ||
-			asset.executablePath !== `bun-${upstreamPlatform}/bun`
+			asset.executablePath !== `bun-${upstreamAsset}/bun`
 		) {
 			throw new Error(`runtime lock asset identity is invalid for ${platform}`)
 		}
@@ -140,16 +139,23 @@ function validateSkillCatalog(catalog: SkillCatalog, lock: RuntimeLock): void {
  * ```
  */
 export function loadSkillCatalog(root: string): SkillCatalog {
+	return loadRuntimeCustodyConfig(root).catalog
+}
+
+function loadRuntimeCustodyConfig(root: string): {
+	lock: RuntimeLock
+	catalog: SkillCatalog
+} {
 	const lock = loadJson<RuntimeLock>(join(root, "runtime", "runtime.lock.json"))
 	const catalog = loadJson<SkillCatalog>(join(root, "runtime", "skill-catalog.json"))
 	validateRuntimeLock(lock)
 	validateSkillCatalog(catalog, lock)
-	return catalog
+	return { lock, catalog }
 }
 
 function renderLockProjection(lock: RuntimeLock): string {
 	const profile = lock.profiles.bun
-	const cases = supportedPlatforms.map((platform) => {
+	const cases = SUPPORTED_RUNTIME_PLATFORMS.map((platform) => {
 		const asset = profile.assets[platform]
 		return `	${platform})
 		RUNTIME_ASSET_ARCHIVE_NAME=${shellQuote(asset.archiveName)}
@@ -199,7 +205,11 @@ function renderLauncher(skillId: string): string {
 	return `#!/bin/sh
 # Generated from runtime/skill-catalog.json. Edit the source, then run bun run generate.
 set -eu
-plugin_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+case "$0" in
+*/*) launcher_dir=\${0%/*} ;;
+*) launcher_dir=. ;;
+esac
+plugin_root=$(CDPATH='' cd -- "$launcher_dir/.." && pwd -P)
 exec "$plugin_root/runtime/runtime-exec" run ${skillId} -- "$@"
 `
 }
@@ -217,10 +227,7 @@ exec "$plugin_root/runtime/runtime-exec" run ${skillId} -- "$@"
  * ```
  */
 export function renderRuntimeCustodyFiles(root: string): GeneratedFile[] {
-	const lock = loadJson<RuntimeLock>(join(root, "runtime", "runtime.lock.json"))
-	const catalog = loadJson<SkillCatalog>(join(root, "runtime", "skill-catalog.json"))
-	validateRuntimeLock(lock)
-	validateSkillCatalog(catalog, lock)
+	const { lock, catalog } = loadRuntimeCustodyConfig(root)
 	return [
 		{
 			path: "plugin/runtime/runtime-lock.sh",

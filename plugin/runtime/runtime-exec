@@ -208,6 +208,14 @@ file_size() {
 	printf '%s' "${1-}"
 }
 
+sanitize_bun_environment() {
+	unset BUN_OPTIONS NODE_OPTIONS NODE_PATH BUN_INSTALL BUN_INSTALL_CACHE_DIR BUN_CONFIG_FILE 2>/dev/null || :
+	DO_NOT_TRACK=1
+	export DO_NOT_TRACK
+	BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+	export BUN_RUNTIME_TRANSPILER_CACHE_PATH
+}
+
 # --- platform custody (R9) ----------------------------------------------------
 
 detect_platform() {
@@ -223,6 +231,17 @@ detect_platform() {
 		die 21 UNSUPPORTED_PLATFORM '[]' false 'Use a supported platform: macOS arm64/x64 or Linux glibc arm64/x64.'
 		;;
 	esac
+	if [ "$_dp_system" = Linux ]; then
+		need_tool getconf
+		_dp_libc=$("$tool_getconf" GNU_LIBC_VERSION 2>/dev/null) || _dp_libc=''
+		case "$_dp_libc" in
+		glibc\ *) ;;
+		*)
+			diag 'unsupported Linux libc; this payload requires glibc'
+			die 21 UNSUPPORTED_PLATFORM '[]' false 'Use glibc Linux arm64/x64; musl and unrecognized Linux libc implementations are unsupported.'
+			;;
+		esac
+	fi
 }
 
 # --- generated projections (R14) ----------------------------------------------
@@ -631,8 +650,9 @@ verify_staged() {
 	fi
 	# Execute permission is granted only after byte and hash verification (R12).
 	"$tool_chmod" 700 "$staged_path"
+	sanitize_bun_environment
 	_vs_version=''
-	if ! _vs_version=$("$staged_path" --version </dev/null 2>/dev/null); then
+	if ! _vs_version=$("$staged_path" --config=/dev/null --version </dev/null 2>/dev/null); then
 		_vs_version=''
 	fi
 	if [ "$_vs_version" != "$RUNTIME_LOCK_VERSION" ]; then
@@ -696,7 +716,10 @@ do_apply() {
 		exit 0
 	fi
 	stage_dir=$store_root/staging/$nonce
-	"$tool_mkdir" -p "$stage_dir"
+	if ! "$tool_mkdir" -p "$stage_dir" 2>/dev/null; then
+		diag 'could not create the private repair staging directory'
+		fail_apply 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the runtime cache writable by the current user (mode 700), or point XDG_CACHE_HOME at a writable private directory, then retry.'
+	fi
 	download_archive
 	verify_archive
 	extract_member
@@ -821,39 +844,18 @@ cmd_run() {
 	# The caller's cwd is preserved for the skill, but Bun auto-discovers
 	# bunfig.toml from that cwd and a top-level `preload` there would run
 	# caller-controlled code inside the verified runtime. Point --config at an
-	# owner-only empty config so no ambient bunfig is loaded.
-	#
-	# The empty config is staged in a fresh per-process temp directory, never in
-	# the custody store: run must not mutate custody state, and a read-only
-	# custody cache holding a valid blob must still launch. The temp dir is
-	# removed after exec fails to start; a successful exec replaces this process,
-	# so the OS reclaims the temp dir with the caller's normal TMPDIR hygiene.
-	launch_tmp_base=${TMPDIR:-/tmp}
-	case "$launch_tmp_base" in
-	/*) ;;
-	*) launch_tmp_base=/tmp ;;
-	esac
-	# $$ is unique among live processes; the dir is per-launch and short-lived, so
-	# it needs no cryptographic nonce (and run does not resolve the dd tool that
-	# make_nonce uses). mkdir with a fresh name also fails closed if a stale dir
-	# with this exact name somehow already exists.
-	launch_tmp=$launch_tmp_base/runtime-exec-run.$$
-	"$tool_rm" -rf "$launch_tmp" 2>/dev/null || :
-	if ! (umask 077; "$tool_mkdir" "$launch_tmp") 2>/dev/null; then
-		diag 'could not stage the transient runtime config directory'
-		die 20 CACHE_ROOT_UNSAFE '[]' true 'Ensure TMPDIR (or /tmp) is writable by the current user, then retry.'
+	# /dev/null is the admitted immutable empty config on every supported Unix
+	# target. It avoids per-run temp state while preventing cwd bunfig discovery.
+	sanitize_bun_environment
+	_run_version=''
+	if ! _run_version=$("$blob_path" --config=/dev/null --version </dev/null 2>/dev/null); then
+		diag 'verified runtime bytes cannot execute from the cache'
+		die 21 RUNTIME_NOT_EXECUTABLE '[]' false 'Point XDG_CACHE_HOME at a filesystem that permits execution, then retry.'
 	fi
-	empty_bunfig=$launch_tmp/empty-bunfig.toml
-	if ! (umask 077; : >"$empty_bunfig") 2>/dev/null; then
-		"$tool_rm" -rf "$launch_tmp" 2>/dev/null || :
-		diag 'could not stage the empty runtime config'
-		die 20 CACHE_ROOT_UNSAFE '[]' true 'Ensure TMPDIR (or /tmp) is writable by the current user, then retry.'
+	if [ "$_run_version" != "$RUNTIME_LOCK_VERSION" ]; then
+		diag 'verified runtime reported an unexpected version before launch'
+		die 23 EXECUTABLE_VERSION_MISMATCH '[]' false 'Run runtime-exec repair --apply after approval to replace the unusable cached runtime.'
 	fi
-	unset BUN_OPTIONS NODE_OPTIONS NODE_PATH BUN_INSTALL BUN_INSTALL_CACHE_DIR BUN_CONFIG_FILE 2>/dev/null || :
-	DO_NOT_TRACK=1
-	export DO_NOT_TRACK
-	BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
-	export BUN_RUNTIME_TRANSPILER_CACHE_PATH
 	if [ "$caller_lc_all_set" = 1 ]; then
 		LC_ALL=$caller_lc_all
 		export LC_ALL
@@ -869,7 +871,7 @@ cmd_run() {
 	# Restore the caller umask so the launched skill's own file writes are not
 	# forced to the tightened 077 custody mask.
 	umask "$caller_umask"
-	exec "$blob_path" --config="$empty_bunfig" --no-install --env-file=/dev/null "$bundle_path" "$@"
+	exec "$blob_path" --config=/dev/null --no-install --env-file=/dev/null "$bundle_path" "$@"
 }
 
 # --- dispatch -----------------------------------------------------------------

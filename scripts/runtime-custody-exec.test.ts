@@ -151,7 +151,12 @@ function fixtureBunScript(version: string): string {
 flags=''
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--version) printf '%s\\n' '${version}'; exit 0 ;;
+		--version)
+			[ -z "\${BUN_OPTIONS-}" ] || exit 97
+			case "$flags" in *--config=/dev/null*) ;; *) [ ! -f ./bunfig.toml ] || exit 98 ;; esac
+			printf '%s\\n' '${version}'
+			exit 0
+			;;
 		--*) flags="$flags $1"; shift ;;
 		*) break ;;
 	esac
@@ -367,6 +372,7 @@ function readEnvelope(result: ReturnType<typeof Bun.spawnSync>): Record<string, 
 
 const engineToolNames = [
 	"uname",
+	"getconf",
 	"ls",
 	"id",
 	"wc",
@@ -436,6 +442,20 @@ test("unsupported platform fails closed with one envelope and exit 21", () => {
 	const apply = runEngine(fixture, ["repair", "--apply"])
 	expect(apply.exitCode).toBe(21)
 	expect(readEnvelope(apply).code).toBe("UNSUPPORTED_PLATFORM")
+	expect(readdirSync(fixture.cacheDir)).toEqual([])
+})
+
+test("musl Linux fails closed before cache or network work", () => {
+	const toolDir = makeToolDir({
+		uname: `#!/bin/sh\ncase "\${1-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n`,
+		getconf: "#!/bin/sh\necho 'musl libc'\n",
+	})
+	const fixture = makeFixture({ hostToolDirs: toolDir })
+	for (const args of [["run", "skill-a"], ["repair"], ["repair", "--apply"]]) {
+		const result = runEngine(fixture, args)
+		expect(result.exitCode).toBe(21)
+		expect(readEnvelope(result).code).toBe("UNSUPPORTED_PLATFORM")
+	}
 	expect(readdirSync(fixture.cacheDir)).toEqual([])
 })
 
@@ -759,8 +779,7 @@ test("run does not write into the custody store and launches from a read-only ca
 	const fixture = makeFixture()
 	applyRepair(fixture)
 	// Snapshot the store, then make the whole store tree read-only. A valid blob
-	// must still launch: run must not create any file under the store (the empty
-	// bunfig is staged in a per-launch temp dir, not the custody cache).
+	// must still launch: run must not create any file under the store.
 	const before = readdirSync(fixture.storeRoot).sort()
 	const readOnlyPaths = [
 		fixture.storeRoot,
@@ -781,6 +800,15 @@ test("run does not write into the custody store and launches from a read-only ca
 	// no new custody-store state was created by run
 	expect(readdirSync(fixture.storeRoot).sort()).toEqual(before)
 	expect(existsSync(join(fixture.storeRoot, "empty-bunfig.toml"))).toBe(false)
+})
+
+test("successful run creates no transient config directory", () => {
+	const fixture = makeFixture()
+	applyRepair(fixture)
+	const launchTemp = temporaryDirectory("runtime-launch-tmp-")
+	const run = runEngine(fixture, ["run", "skill-a"], { env: { TMPDIR: launchTemp } })
+	expect(run.exitCode).toBe(0)
+	expect(readdirSync(launchTemp)).toEqual([])
 })
 
 test("run restores the caller umask for the launched skill", () => {
@@ -851,6 +879,19 @@ test("AE9: hostile env, PATH, and cwd cannot alter custody; app env is preserved
 	// ordinary app environment is preserved: caller cwd and caller PATH
 	expect(report.cwd).toBe(hostileCwd)
 	expect(report.PATH).toBe(hostileTools)
+})
+
+test("repair version verification ignores hostile Bun options and cwd config", () => {
+	const fixture = makeFixture()
+	const hostileCwd = join(temporaryDirectory("hostile-repair-cwd-"), "app")
+	mkdirSync(hostileCwd)
+	writeFileSync(join(hostileCwd, "bunfig.toml"), 'preload = ["./evil.ts"]\n')
+	const apply = runEngine(fixture, ["repair", "--apply"], {
+		cwd: hostileCwd,
+		env: { BUN_OPTIONS: "--preload ./evil.ts" },
+	})
+	expect(apply.exitCode).toBe(0)
+	expect(readEnvelope(apply).code).toBe("REPAIR_APPLIED")
 })
 
 // --- AE11: a fresh lock identity never mutates on run -------------------------
@@ -1029,6 +1070,23 @@ test("a world-writable cache root is rejected for run and repair with exit 20", 
 	expect(apply.exitCode).toBe(20)
 	expect(readEnvelope(apply).code).toBe("CACHE_ROOT_UNSAFE")
 	expect(existsSync(fixture.blobPath)).toBe(false)
+})
+
+test("an unwritable staging root fails with one envelope and releases its lock", () => {
+	const fixture = makeFixture()
+	mkdirSync(join(fixture.storeRoot, "bun"), { recursive: true, mode: 0o700 })
+	mkdirSync(join(fixture.storeRoot, "locks"), { mode: 0o700 })
+	const stagingRoot = join(fixture.storeRoot, "staging")
+	mkdirSync(stagingRoot, { mode: 0o700 })
+	chmodSync(stagingRoot, 0o500)
+	try {
+		const apply = runEngine(fixture, ["repair", "--apply"])
+		expect(apply.exitCode).toBe(20)
+		expect(readEnvelope(apply).code).toBe("CACHE_ROOT_UNSAFE")
+		expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+	} finally {
+		chmodSync(stagingRoot, 0o700)
+	}
 })
 
 test("a symlinked store root is rejected with exit 20", () => {

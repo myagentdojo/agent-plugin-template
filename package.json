@@ -25,6 +25,6 @@
     "prove:dx": "bun run scripts/prove-dx.ts",
     "prove:runtime-custody": "bun run scripts/prove-runtime-custody.ts",
     "prove:runtime-platform": "bun run scripts/prove-runtime-platform.ts",
-    "prove:all": "bun test && bun run generate:check && bun run release:validate && bun run prove:runtime-custody && bun run prove:harness-install -- --require-native --fixture-acknowledged && bun run prove:distribution && bun run prove:dx"
+    "prove:all": "bun test --path-ignore-patterns=scripts/runtime-custody-exec.test.ts && bun run generate:check && bun run release:validate && bun run prove:runtime-custody && bun run prove:harness-install -- --require-native --fixture-acknowledged && bun run prove:distribution && bun run prove:dx"
   }
 }

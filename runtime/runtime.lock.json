@@ -13,12 +13,12 @@
           "executableBytes": 63096576,
           "executableSha256": "e0c90ec15d33363e6b70713d56bc3b2c7585c17f40a0fe0f8fd9305901d4e233"
         },
-        "darwin-x64": {
-          "archiveName": "bun-darwin-x64.zip",
-          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-x64.zip",
-          "archiveBytes": 26509109,
-          "archiveSha256": "4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633",
-          "executablePath": "bun-darwin-x64/bun",
+      "darwin-x64": {
+        "archiveName": "bun-darwin-x64-baseline.zip",
+        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-x64-baseline.zip",
+        "archiveBytes": 26509145,
+        "archiveSha256": "3e35ad6f53971a9834bf9e6786e2adf72b5f1921cc9a9c5fde073d2972944076",
+        "executablePath": "bun-darwin-x64-baseline/bun",
           "executableBytes": 69173328,
           "executableSha256": "ea2f223e94bb2f4bf3050895113c3cf346438f6fa0501c8532284e063f72f7a0"
         },
@@ -31,14 +31,14 @@
           "executableBytes": 91801560,
           "executableSha256": "37141662ebed915a2ab89313156e455e2a1374395f5f6760d06407f49406f086"
         },
-        "linux-x64": {
-          "archiveName": "bun-linux-x64.zip",
-          "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip",
-          "archiveBytes": 35969274,
-          "archiveSha256": "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f",
-          "executablePath": "bun-linux-x64/bun",
-          "executableBytes": 92752752,
-          "executableSha256": "9fd36f87e4b90b07632b987a2e4ec81ca15a62c81bf983190cea6d715be2ad74"
+      "linux-x64": {
+        "archiveName": "bun-linux-x64-baseline.zip",
+        "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64-baseline.zip",
+        "archiveBytes": 35595658,
+        "archiveSha256": "a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7",
+        "executablePath": "bun-linux-x64-baseline/bun",
+        "executableBytes": 91802480,
+        "executableSha256": "a8f9ebd1770ddc8e55dab7a68d4ec1ec1eebf374bb97cc65cf2c3cb373fc6791"
         }
       }
     }
