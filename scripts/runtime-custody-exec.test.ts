@@ -785,6 +785,30 @@ test("AE8: a provably dead writer's lock is reclaimed with only its staging remo
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 })
 
+test("concurrent stale-lock reclaimers cannot claim a replacement lock", async () => {
+	const fixture = makeFixture()
+	writeLockRecord(fixture, {
+		pid: 999999,
+		start: "Thu Jan 1 00:00:00 1970",
+		staging: "stalenonce",
+	})
+	const spawnApply = () =>
+		Bun.spawn({
+			cmd: [fixture.engine, "repair", "--apply"],
+			cwd: fixture.root,
+			env: fixture.env,
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+	const first = spawnApply()
+	const second = spawnApply()
+	const exits = await Promise.all([first.exited, second.exited])
+	expect(exits).toContain(0)
+	for (const exitCode of exits) expect([0, 22]).toContain(exitCode)
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
+})
+
 test("a stale lock replaced by a live writer is revalidated before reclamation", () => {
 	const realWc = Bun.which("wc")
 	if (!realWc) throw new Error("wc is required by the test fixture")

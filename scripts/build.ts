@@ -136,7 +136,7 @@ export function collectModuleSpecifiers(code: string): string[] {
 		/\bfrom\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1/g,
 		/\bimport\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1/g,
 		/\bimport\(\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g,
-		/\brequire\(\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g,
+		/\b(?:__require|require)\(\s*(["'])((?:(?!\1)[^\\]|\\.)*)\1\s*\)/g,
 	]
 	const specifiers = new Set<string>()
 	for (const pattern of patterns) {
@@ -175,16 +175,6 @@ export function validateBundleText(skillId: string, code: string): void {
 	// literal: any other argument shape (concatenation, identifier, member
 	// expression, template) is a runtime-computed load the closure cannot prove.
 	const literalCallTail = /^\s*(["'])(?:(?!\1)[^\\]|\\.)*\1\s*\)/
-	if (
-		/\b(?:__require|require)\s*\.\s*(?:call|apply|bind)\s*\(/.test(code) ||
-		/\b(?:__require|require)\s*\[\s*["'](?:call|apply|bind)["']\s*\]\s*\(/.test(code)
-	) {
-		throw new BundleValidationError(
-			skillId,
-			"computed-require",
-			"bundle retains an indirect runtime require call",
-		)
-	}
 	for (const match of code.matchAll(/\bimport\s*\(/g)) {
 		if (!literalCallTail.test(code.slice(match.index + match[0].length))) {
 			throw new BundleValidationError(
@@ -194,12 +184,14 @@ export function validateBundleText(skillId: string, code: string): void {
 			)
 		}
 	}
-	for (const match of code.matchAll(/\b(?:__require|require)\s*\(/g)) {
-		if (!literalCallTail.test(code.slice(match.index + match[0].length))) {
+	for (const match of code.matchAll(/\b(?:__require|require)\b/g)) {
+		const tail = code.slice(match.index + match[0].length)
+		const callOpen = /^\s*\(/.exec(tail)
+		if (!callOpen || !literalCallTail.test(tail.slice(callOpen[0].length))) {
 			throw new BundleValidationError(
 				skillId,
 				"computed-require",
-				`bundle retains a computed runtime require near "${code.slice(match.index, match.index + 40)}"`,
+				`bundle retains a computed runtime require or escaping reference near "${code.slice(match.index, match.index + 40)}"`,
 			)
 		}
 	}

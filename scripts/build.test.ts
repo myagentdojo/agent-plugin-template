@@ -124,7 +124,7 @@ test("collectModuleSpecifiers finds static, side-effect, dynamic, and require sp
 test("validateBundleText allows node and bun built-ins only", () => {
 	validateBundleText(
 		"skill-a",
-		`import { join } from "node:path";import fs from "fs";import "bun:sqlite";`,
+		`import { join } from "node:path";import fs from "fs";import "bun:sqlite";const os = __require("node:os");`,
 	)
 	expect(() => validateBundleText("skill-a", `const x = require("left-pad");`)).toThrow(
 		/bare specifier "left-pad"/,
@@ -148,8 +148,9 @@ test("validateBundleText rejects indirect runtime require calls", () => {
 		`__require.call(null, target);`,
 		`require.apply(null, args);`,
 		`require["bind"](null)(target);`,
+		`const load = __require;load(target);`,
 	]) {
-		expect(() => validateBundleText("skill-a", code)).toThrow(/indirect runtime require/)
+		expect(() => validateBundleText("skill-a", code)).toThrow(/computed runtime require/)
 	}
 })
 
@@ -1069,7 +1070,14 @@ test("an indirect runtime require fails before bundle materialization", async ()
 	const fixture = fixtureWorkspace(
 		`const target = process.env.TARGET_MODULE;console.log(require.call(null, target));`,
 	)
-	await expectBundleRejection(fixture, "computed-require", /indirect runtime require/)
+	await expectBundleRejection(fixture, "computed-require", /computed runtime require/)
+})
+
+test("an aliased runtime require fails before bundle materialization", async () => {
+	const fixture = fixtureWorkspace(
+		`const load = require;const target = process.env.TARGET_MODULE;console.log(load(target));`,
+	)
+	await expectBundleRejection(fixture, "computed-require", /computed runtime require/)
 })
 
 test("an aliased createRequire fails before bundle materialization", async () => {

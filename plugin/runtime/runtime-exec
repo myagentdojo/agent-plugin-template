@@ -496,8 +496,10 @@ read_lock_record() {
 }
 
 lock_record_identity() {
-	printf 'host=%s\npid=%s\nstart=%s\nstaging=%s\n' \
-		"$rec_host" "$rec_pid" "$rec_start" "$rec_staging"
+	_lri_line=$("$tool_ls" -idn "$lock_dir" 2>/dev/null) || _lri_line=''
+	set -- $_lri_line
+	printf 'inode=%s\nhost=%s\npid=%s\nstart=%s\nstaging=%s\n' \
+		"${1-}" "$rec_host" "$rec_pid" "$rec_start" "$rec_staging"
 }
 
 # Recordless grace in whole minutes. find -mmin only accepts an integer on BSD
@@ -549,20 +551,35 @@ writer_is_live() {
 
 reclaim_stale_lock() {
 	_rsl_expected_identity=$1
+	# Atomically claim this exact directory before the final identity check. The
+	# fixed marker means only one current-version contender can reach rename; if
+	# the directory was replaced first, the marker lands in the replacement and
+	# the identity check below removes it without moving that live lock.
+	_rsl_marker=$lock_dir/.reclaim-claim
+	if ! "$tool_mkdir" "$_rsl_marker" 2>/dev/null; then
+		if [ ! -e "$lock_dir" ] && [ ! -L "$lock_dir" ]; then
+			return 0
+		fi
+		if [ -d "$_rsl_marker" ] && [ ! -L "$_rsl_marker" ]; then
+			return 0
+		fi
+		diag 'could not claim the stale repair lock safely'
+		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Make the private runtime cache writable and remove malformed reclaim debris, then retry.'
+	fi
 	# The stale judgment and rename are separate filesystem operations. Re-read
-	# the record immediately before the rename so a contender cannot replace the
-	# inspected stale lock with a new live lock (ABA) and have that lock moved.
+	# the record after owning the in-directory claim so a replacement lock is
+	# never renamed based on the earlier judgment.
 	if ! read_lock_record; then
+		"$tool_rm" -rf "$_rsl_marker" 2>/dev/null || :
 		diag 'could not re-read the repair lock before reclamation'
 		die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'Restore the private runtime cache lock record to an owner-readable file, or point XDG_CACHE_HOME at a writable private directory, then retry.'
 	fi
 	_rsl_current_identity=$(lock_record_identity)
 	if [ "$_rsl_current_identity" != "$_rsl_expected_identity" ]; then
+		if ! "$tool_rm" -rf "$_rsl_marker" 2>/dev/null; then
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The repair lock changed and its reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
+		fi
 		diag 'repair lock changed before stale reclamation; retrying acquisition'
-		return 0
-	fi
-	if [ -z "$rec_host" ] && [ -z "$rec_pid" ] && ! lock_is_older_than_grace; then
-		diag 'recordless repair lock was replaced before reclamation; retrying acquisition'
 		return 0
 	fi
 	# Claim the stale lock by renaming its directory to a private nonce-suffixed
@@ -573,7 +590,10 @@ reclaim_stale_lock() {
 	# winning rename proceeds to remove the stale staging and the claimed dir.
 	_rsl_claim=$store_root/locks/reclaim-$nonce
 	if ! "$tool_mv" "$lock_dir" "$_rsl_claim" 2>/dev/null; then
-		# Someone else already claimed or re-created the lock; retry acquisition.
+		if ! "$tool_rm" -rf "$_rsl_marker" 2>/dev/null; then
+			die 20 CACHE_ROOT_UNSAFE "$(side_effects_json)" true 'The stale repair lock could not be claimed and its reclaim marker could not be removed. Make the private runtime cache writable, then retry.'
+		fi
+		# The directory disappeared independently; retry acquisition.
 		return 0
 	fi
 	_rsl_cleanup_failed=0
