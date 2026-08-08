@@ -5,6 +5,8 @@
 #   run <skill> [-- args...]   execute a catalog skill on the verified runtime
 #   repair                     read-only, network-free repair preview
 #   repair --apply             the sole acquisition/replacement operation
+#   repair --apply --reclaim-foreign-lock
+#                              explicitly approved migrated-cache recovery
 #   help | -h | --help         ordinary help
 #
 # Exit classes:
@@ -114,6 +116,8 @@ print_help() {
 		'  runtime-exec run <skill> [-- args...]  Run a catalog skill on the verified runtime.' \
 		'  runtime-exec repair                    Preview needed repair (read-only, no network).' \
 		'  runtime-exec repair --apply            Download, verify, and install the locked runtime.' \
+		'  runtime-exec repair --apply --reclaim-foreign-lock' \
+		'                                         Reclaim a lock from another host after explicit approval.' \
 		'  runtime-exec help                      Show this help.' \
 		'' \
 		'run never downloads or repairs; repair --apply is the only operation that' \
@@ -522,7 +526,13 @@ writer_is_live() {
 		fi
 		return 0
 	fi
-	if [ "$rec_host" != "$host_id" ]; then return 0; fi
+	if [ "$rec_host" != "$host_id" ]; then
+		if [ "$reclaim_foreign_lock" = 1 ]; then return 1; fi
+		# A PID from another host cannot be proven live or dead locally. Require a
+		# separate human-approved recovery instead of reclaiming a potentially
+		# active writer on a shared cache.
+		return 2
+	fi
 	case "$rec_pid" in
 	'' | *[!0-9]*) return 1 ;;
 	esac
@@ -604,6 +614,12 @@ acquire_lock() {
 		if writer_is_live; then
 			diag 'repair lock is held by a live writer'
 			die 22 LOCK_HELD "$(side_effects_json)" true 'Another repair is in progress; retry runtime-exec repair --apply after it finishes.'
+		else
+			_al_writer_status=$?
+			if [ "$_al_writer_status" = 2 ]; then
+				diag "repair lock belongs to another host: $rec_host"
+				die 20 FOREIGN_LOCK_REQUIRES_APPROVAL "$(side_effects_json)" false 'Confirm that no other machine is repairing this private cache, ask the user to approve foreign-lock reclamation, then run runtime-exec repair --apply --reclaim-foreign-lock.'
+			fi
 		fi
 		reclaim_stale_lock
 	done
@@ -845,11 +861,15 @@ do_apply() {
 
 cmd_repair() {
 	apply=0
+	reclaim_foreign_lock=0
 	if [ $# -gt 0 ]; then
 		if [ "$1" = "--apply" ] && [ $# -eq 1 ]; then
 			apply=1
+		elif [ "$1" = "--apply" ] && [ "${2-}" = "--reclaim-foreign-lock" ] && [ $# -eq 2 ]; then
+			apply=1
+			reclaim_foreign_lock=1
 		else
-			die 2 USAGE '[]' true 'Usage: runtime-exec repair [--apply].'
+			die 2 USAGE '[]' true 'Usage: runtime-exec repair [--apply [--reclaim-foreign-lock]].'
 		fi
 	fi
 	require_common_tools

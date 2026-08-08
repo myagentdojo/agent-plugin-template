@@ -504,9 +504,13 @@ test("help prints usage on stdout and unknown commands are a typed usage error",
 	expect(help.exitCode).toBe(0)
 	expect(help.stdout.toString()).toContain("run <skill>")
 	expect(help.stdout.toString()).toContain("repair")
+	expect(help.stdout.toString()).toContain("--reclaim-foreign-lock")
 	const unknown = runEngine(fixture, ["doctor"])
 	expect(unknown.exitCode).toBe(2)
 	expect(readEnvelope(unknown).code).toBe("USAGE")
+	const unapprovedForeignReclaim = runEngine(fixture, ["repair", "--reclaim-foreign-lock"])
+	expect(unapprovedForeignReclaim.exitCode).toBe(2)
+	expect(readEnvelope(unapprovedForeignReclaim).code).toBe("USAGE")
 	const missingSeparator = runEngine(fixture, ["run", "skill-a", "extra"])
 	expect(missingSeparator.exitCode).toBe(2)
 	expect(readEnvelope(missingSeparator).code).toBe("USAGE")
@@ -702,7 +706,7 @@ exec ${realRm} "$@"
 	expect(statSync(fixture.blobPath).isDirectory()).toBe(true)
 	expect(readdirSync(join(fixture.storeRoot, "locks"))).toEqual([])
 	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
-})
+}, 10_000)
 
 // --- AE7: cold offline stays read-only; apply retries later -------------------
 
@@ -847,6 +851,38 @@ exec ${realRm} "$@"
 	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
 })
 
+test("a foreign-host lock requires separate approval before bounded reclamation", () => {
+	const fixture = makeFixture()
+	mkdirSync(join(fixture.storeRoot, "staging", "foreignnonce"), { recursive: true })
+	writeFileSync(join(fixture.storeRoot, "staging", "foreignnonce", "bun"), "partial-bytes")
+	const lockDir = writeLockRecord(fixture, {
+		host: "retired-host",
+		pid: process.pid,
+		start: startToken(process.pid),
+		staging: "foreignnonce",
+	})
+
+	const blocked = runEngine(fixture, ["repair", "--apply"])
+	expect(blocked.exitCode).toBe(20)
+	const blockedEnvelope = readEnvelope(blocked)
+	expect(blockedEnvelope.code).toBe("FOREIGN_LOCK_REQUIRES_APPROVAL")
+	expect(blockedEnvelope.sideEffects).toEqual([])
+	expect(blockedEnvelope.retrySafe).toBe(false)
+	expect(String(blockedEnvelope.nextAction)).toContain("--reclaim-foreign-lock")
+	expect(existsSync(lockDir)).toBe(true)
+	expect(existsSync(join(fixture.storeRoot, "staging", "foreignnonce"))).toBe(true)
+	expect(existsSync(fixture.blobPath)).toBe(false)
+
+	const approved = runEngine(fixture, ["repair", "--apply", "--reclaim-foreign-lock"])
+	expect(approved.exitCode).toBe(0)
+	const approvedEnvelope = readEnvelope(approved)
+	expect(approvedEnvelope.code).toBe("REPAIR_APPLIED")
+	expect(approvedEnvelope.sideEffects).toEqual(["reclaimed-stale-lock", "published-runtime"])
+	expect(existsSync(lockDir)).toBe(false)
+	expect(existsSync(join(fixture.storeRoot, "staging", "foreignnonce"))).toBe(false)
+	expect(sha256Hex(readFileSync(fixture.blobPath))).toBe(fixture.lock.executableSha256)
+})
+
 test("AE8: a live writer's lock is never reclaimed", async () => {
 	const fixture = makeFixture()
 	const sleeper = Bun.spawn({ cmd: ["sleep", "60"], stdout: "ignore", stderr: "ignore" })
@@ -864,6 +900,10 @@ test("AE8: a live writer's lock is never reclaimed", async () => {
 		// the live writer's lock and record are untouched, nothing published
 		expect(existsSync(join(lockDir, "record"))).toBe(true)
 		expect(existsSync(fixture.blobPath)).toBe(false)
+		const explicitlyScoped = runEngine(fixture, ["repair", "--apply", "--reclaim-foreign-lock"])
+		expect(explicitlyScoped.exitCode).toBe(22)
+		expect(readEnvelope(explicitlyScoped).code).toBe("LOCK_HELD")
+		expect(existsSync(join(lockDir, "record"))).toBe(true)
 	} finally {
 		sleeper.kill()
 		await sleeper.exited

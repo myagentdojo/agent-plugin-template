@@ -16,6 +16,7 @@ Workflow:
 3. Present the preview's plain-language action to the human and get explicit approval. This workflow owns the approval and its receipt; the engine does not authenticate anyone.
 4. Only after approval, run `runtime/runtime-exec repair --apply` — the sole operation that acquires or replaces the runtime.
 5. Rerun the original skill.
-6. On failures with `retrySafe: true` (for example offline or a held lock), retry later per `nextAction`. Never edit the runtime cache by hand.
+6. On `FOREIGN_LOCK_REQUIRES_APPROVAL`, present `nextAction` and confirm no other machine is repairing the cache. After explicit approval, run the exact recovery command from `nextAction`, then rerun the original skill.
+7. On failures with `retrySafe: true` (for example offline or a held lock), retry later per `nextAction`. Keep cache recovery inside `runtime-exec`.
 
 Runtime identity is pinned by a reviewed lock; repair downloads only the locked official release and verifies the bytes before publication.
