@@ -341,6 +341,25 @@ function isPropertyLabel(code: string, start: number, length: number): boolean {
 	return code[after] === ":"
 }
 
+function isMethodDeclarationTail(tail: string): boolean {
+	let cursor = 0
+	while (/\s/.test(tail[cursor] ?? "")) cursor++
+	if (tail[cursor] !== "(") return false
+	let depth = 0
+	for (; cursor < tail.length; cursor++) {
+		if (tail[cursor] === "(") depth++
+		else if (tail[cursor] === ")") {
+			depth--
+			if (depth === 0) {
+				cursor++
+				while (/\s/.test(tail[cursor] ?? "")) cursor++
+				return tail[cursor] === "{"
+			}
+		}
+	}
+	return false
+}
+
 /**
  * Collect every string-literal module specifier used by bundle text.
  *
@@ -470,7 +489,7 @@ export function validateBundleText(skillId: string, code: string): void {
 			)
 		}
 		const tail = executable.slice(match.index + match[0].length)
-		if (/^\s*\([^)]*\)\s*\{/.test(tail)) continue
+		if (isMethodDeclarationTail(tail)) continue
 		const callOpen = /^\s*\(/.exec(tail)
 		if (!callOpen || !literalCallTail.test(tail.slice(callOpen[0].length))) {
 			throw new BundleValidationError(
