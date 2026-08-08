@@ -1,6 +1,10 @@
 import { resolve } from "node:path"
 
 import { checkGeneratedFiles, loadPluginConfig, writeGeneratedFiles } from "./plugin-config"
+import {
+	checkRuntimeCustodyFiles,
+	writeRuntimeCustodyFiles,
+} from "./runtime-custody-config"
 
 const root = resolve(import.meta.dir, "..")
 const arguments_ = process.argv.slice(2)
@@ -8,7 +12,7 @@ const check = arguments_.includes("--check")
 const json = arguments_.includes("--json")
 
 if (arguments_.includes("--help") || arguments_.includes("-h")) {
-	console.log(`Generate native harness manifests from plugin.config.json.
+	console.log(`Generate native manifests and runtime-custody projections from canonical sources.
 
 Usage:
   bun run generate
@@ -29,19 +33,27 @@ for (const argument of arguments_) {
 }
 
 const config = loadPluginConfig(root)
-const drifted = checkGeneratedFiles(root, config)
+const drifted = [
+	...checkGeneratedFiles(root, config),
+	...checkRuntimeCustodyFiles(root),
+]
 if (check && drifted.length > 0) {
-	console.error(`Generated manifests differ from plugin.config.json:\n${drifted.join("\n")}`)
+	console.error(`Generated files differ from canonical sources:\n${drifted.join("\n")}`)
 	console.error("Run `bun run generate` and commit the generated files.")
 	process.exit(1)
 }
-const files = check ? [] : writeGeneratedFiles(root, config)
+const files = check
+	? []
+	: [
+			...writeGeneratedFiles(root, config),
+			...writeRuntimeCustodyFiles(root),
+		]
 const result = {
 	ok: true,
 	action: check ? "checked" : "generated",
 	sideEffects: check ? "none" : "repository-files-written",
 	plugin: { name: config.name, version: config.version },
-	files: check ? checkGeneratedFiles(root, config) : files.map((file) => file.path),
+	files: check ? [] : files.map((file) => file.path),
 }
 if (json) console.log(JSON.stringify(result))
-else console.log(check ? "Generated manifests are current." : `Generated ${files.length} manifests.`)
+else console.log(check ? "Generated files are current." : `Generated ${files.length} files.`)

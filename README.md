@@ -9,7 +9,7 @@ Build one Git-distributed plugin for Claude Code and Codex.
 - Publish from GitHub Releases, not npm.
 - Develop through each harness's native plugin workflow.
 
-Consumers need Claude Code or Codex and Git access to the repository. They do not need Bun, Node.js, Python, npm, or a post-install download.
+Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or a setup command. The first use with a missing runtime requires one approved repair; warm use works offline.
 
 The operator verification recipes also use a POSIX shell, `jq`, `awk`, and `diff`.
 

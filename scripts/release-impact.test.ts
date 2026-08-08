@@ -79,6 +79,27 @@ describe("release impact", () => {
 		})
 	})
 
+	test("treats runtime lock and catalog bumps as payload impact under fix title", () => {
+		const result = classifyReleaseImpact({
+			title: "fix: bump the pinned runtime lock",
+			changedFiles: [
+				{ path: "runtime/runtime.lock.json" },
+				{ path: "runtime/skill-catalog.json" },
+			],
+		})
+
+		expect(result).toMatchObject({
+			payloadChanged: true,
+			isReleasePleaseProjection: false,
+			titleIsReleasable: true,
+			ok: true,
+			changedPayloadPaths: [
+				"runtime/runtime.lock.json",
+				"runtime/skill-catalog.json",
+			],
+		})
+	})
+
 	test("exempts the exact Release Please version and changelog projection", () => {
 		const projection = [
 			"plugin.config.json",

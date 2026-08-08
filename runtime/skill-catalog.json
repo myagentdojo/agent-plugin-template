@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "skills": {
+    "hello-world": {
+      "entry": "runtime/hello-world.js",
+      "runtimeProfile": "bun"
+    },
+    "skill-a": {
+      "entry": "runtime/skill-a.js",
+      "runtimeProfile": "bun",
+      "workspace": "packages/skill-a"
+    },
+    "skill-b": {
+      "entry": "runtime/skill-b.js",
+      "runtimeProfile": "bun",
+      "workspace": "packages/skill-b"
+    }
+  }
+}
