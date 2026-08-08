@@ -169,6 +169,15 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 	).toThrow(/runtime module-loader escape/)
 })
 
+test("validateBundleText rejects runtime code generation", () => {
+	for (const code of [
+		`const load = new Function("target", "return im" + "port(target)");`,
+		`const load = eval("target => im" + "port(target)");`,
+	]) {
+		expect(() => validateBundleText("skill-a", code)).toThrow(/runtime code generation/)
+	}
+})
+
 test("validateBundleText rejects a concatenated require that begins with a string literal", () => {
 	expect(() =>
 		validateBundleText("skill-a", `const locale = require("./locale/" + name);`),
@@ -1064,6 +1073,13 @@ test("a computed dynamic import fails with a precise build error", async () => {
 		`const target = process.env.TARGET_MODULE;export const load = () => import(target);console.log("loaded");`,
 	)
 	await expectBundleRejection(fixture, "computed-dynamic-import", /computed dynamic import/)
+})
+
+test("runtime code generation fails before bundle materialization", async () => {
+	const fixture = fixtureWorkspace(
+		`const load = new Function("target", "return im" + "port(target)");console.log(load);`,
+	)
+	await expectBundleRejection(fixture, "dynamic-code-generation", /runtime code generation/)
 })
 
 test("an indirect runtime require fails before bundle materialization", async () => {

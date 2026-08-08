@@ -41,6 +41,7 @@ export type BundleValidationCode =
 	| "computed-dynamic-import"
 	| "computed-require"
 	| "runtime-loader"
+	| "dynamic-code-generation"
 	| "bare-specifier"
 	| "unexpected-output"
 	| "bundler-failure"
@@ -164,6 +165,13 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  * ```
  */
 export function validateBundleText(skillId: string, code: string): void {
+	if (/\b(?:eval|Function)\b/.test(code)) {
+		throw new BundleValidationError(
+			skillId,
+			"dynamic-code-generation",
+			"bundle retains runtime code generation; eval and Function are not allowed",
+		)
+	}
 	if (/\b(?:createRequire|getBuiltinModule)\b/.test(code)) {
 		throw new BundleValidationError(
 			skillId,
