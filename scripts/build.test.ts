@@ -653,29 +653,57 @@ test("dependency admission follows the bounded production dependency graph", () 
 	])
 })
 
-test("dependency admission resolves an npm alias through its lock key", () => {
+test("dependency admission resolves versioned and versionless npm aliases through their lock key", () => {
+	for (const [realName, requested] of [
+		["real-package", "npm:real-package@1.2.3"],
+		["real-package", "npm:real-package"],
+		["@scope/real-package", "npm:@scope/real-package"],
+	] as const) {
+		const fixtureRoot = admissionFixture({
+			packageJson: { name: realName, version: "1.2.3", license: "MIT" },
+		})
+		const workspaceManifestPath = join(
+			fixtureRoot,
+			"packages",
+			"fixture-skill",
+			"package.json",
+		)
+		const workspaceManifest = JSON.parse(readFileSync(workspaceManifestPath, "utf8"))
+		workspaceManifest.dependencies = { alias: requested }
+		writeFileSync(workspaceManifestPath, `${JSON.stringify(workspaceManifest, null, 2)}\n`)
+		const lockPath = join(fixtureRoot, "bun.lock")
+		const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+		lock.workspaces["packages/fixture-skill"].dependencies = { alias: requested }
+		lock.packages.alias = lock.packages[realName]
+		delete lock.packages[realName]
+		writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+
+		expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual([realName])
+	}
+})
+
+test("workspace peers cannot select a different nested package than the workspace dependency", () => {
 	const fixtureRoot = admissionFixture({
-		packageJson: { name: "real-package", version: "1.2.3", license: "MIT" },
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
 	})
-	const workspaceManifestPath = join(
-		fixtureRoot,
-		"packages",
-		"fixture-skill",
-		"package.json",
-	)
-	const workspaceManifest = JSON.parse(readFileSync(workspaceManifestPath, "utf8"))
-	workspaceManifest.dependencies = { alias: "npm:real-package@1.2.3" }
-	writeFileSync(workspaceManifestPath, `${JSON.stringify(workspaceManifest, null, 2)}\n`)
 	const lockPath = join(fixtureRoot, "bun.lock")
 	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
-	lock.workspaces["packages/fixture-skill"].dependencies = {
-		alias: "npm:real-package@1.2.3",
+	lock.workspaces["packages/fixture-skill"].dependencies["runtime-peer"] = "17.0.0"
+	lock.workspaces["packages/fixture-skill"].peerDependencies = {
+		"runtime-peer": "^18.0.0",
 	}
-	lock.packages.alias = lock.packages["real-package"]
-	delete lock.packages["real-package"]
+	lock.packages["runtime-peer"] = ["runtime-peer@17.0.0", "", {}, "sha512-peer-17"]
+	lock.packages["other/runtime-peer"] = [
+		"runtime-peer@18.2.0",
+		"",
+		{},
+		"sha512-peer-18",
+	]
 	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
 
-	expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual(["real-package"])
+	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(
+		/bun\.lock selection runtime-peer does not satisfy runtime-peer@\^18\.0\.0/,
+	)
 })
 
 test("dependency admission resolves a workspace protocol dependency by package identity", () => {

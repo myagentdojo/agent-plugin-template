@@ -593,8 +593,14 @@ function parseLockPackage(key: string, value: unknown): ParsedLockPackage {
 function parseNpmAlias(requested: string): { name: string; range: string } | undefined {
 	if (!requested.startsWith("npm:")) return undefined
 	const identity = requested.slice("npm:".length)
+	if (!identity || identity.endsWith("@")) {
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`malformed npm alias ${JSON.stringify(requested)}`,
+		)
+	}
 	const separator = identity.lastIndexOf("@")
-	if (separator <= 0 || separator === identity.length - 1) return undefined
+	if (separator <= 0) return { name: identity, range: "*" }
 	return { name: identity.slice(0, separator), range: identity.slice(separator + 1) }
 }
 
@@ -604,6 +610,7 @@ function resolveLockDependency(
 	name: string,
 	requested: string,
 	parent?: ParsedLockPackage,
+	boundEntry?: ParsedLockPackage,
 ): ParsedLockPackage {
 	const npmAlias = parseNpmAlias(requested)
 	const expectedName = npmAlias?.name ?? name
@@ -619,6 +626,13 @@ function resolveLockDependency(
 			workspace?.name === entry.name &&
 			typeof workspace.version === "string" &&
 			Bun.semver.satisfies(workspace.version, expectedRange)
+		)
+	}
+	if (boundEntry) {
+		if (satisfies(boundEntry)) return boundEntry
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`bun.lock selection ${boundEntry.key} does not satisfy ${name}@${requested}`,
 		)
 	}
 	if (parent) {
@@ -658,8 +672,17 @@ interface ResolvedWorkspaceDependencyGraph {
 }
 
 function requiredWorkspaceDependencies(
+	lock: FrozenLock,
+	packages: Map<string, ParsedLockPackage>,
 	workspace: FrozenLockWorkspace,
 ): Array<[string, string]> {
+	for (const [name, peerRange] of Object.entries(workspace.peerDependencies ?? {})) {
+		if (workspace.peerDependenciesMeta?.[name]?.optional === true) continue
+		const dependencyRange = workspace.dependencies?.[name]
+		if (dependencyRange === undefined) continue
+		const selected = resolveLockDependency(lock, packages, name, dependencyRange)
+		resolveLockDependency(lock, packages, name, peerRange, undefined, selected)
+	}
 	return [
 		...Object.entries(workspace.dependencies ?? {}),
 		...Object.entries(workspace.peerDependencies ?? {}).filter(
@@ -686,7 +709,7 @@ function resolveWorkspaceDependencyGraph(
 		name: string
 		requested: string
 		parent?: ParsedLockPackage
-	}> = requiredWorkspaceDependencies(workspace).map(([name, requested]) => ({
+	}> = requiredWorkspaceDependencies(lock, packages, workspace).map(([name, requested]) => ({
 		name,
 		requested,
 	}))
@@ -716,10 +739,12 @@ function resolveWorkspaceDependencyGraph(
 				)
 			}
 			pending.push(
-				...requiredWorkspaceDependencies(dependencyWorkspace).map(([name, requested]) => ({
-					name,
-					requested,
-				})),
+				...requiredWorkspaceDependencies(lock, packages, dependencyWorkspace).map(
+					([name, requested]) => ({
+						name,
+						requested,
+					}),
+				),
 			)
 			continue
 		}
