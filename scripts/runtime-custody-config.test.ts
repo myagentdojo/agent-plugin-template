@@ -116,6 +116,20 @@ test("rejects a runtime lock carrying a profile besides bun", () => {
 	)
 })
 
+for (const [shape, value] of [
+	["null", null],
+	["array", []],
+] as const) {
+	test(`rejects runtime lock profiles with ${shape} shape`, () => {
+		const fixtureRoot = custodyFixture((lock) => {
+			lock.profiles = value
+		})
+		expect(() => loadSkillCatalog(fixtureRoot)).toThrow(
+			/runtime lock profiles must be an object/,
+		)
+	})
+}
+
 test("rejects a runtime lock version that is not an exact semantic version", () => {
 	const fixtureRoot = custodyFixture((lock) => {
 		lock.profiles.bun.version = "^1.3.14"
@@ -124,6 +138,20 @@ test("rejects a runtime lock version that is not an exact semantic version", () 
 		/runtime lock bun version must be an exact semantic version/,
 	)
 })
+
+for (const [shape, value] of [
+	["null", null],
+	["array", []],
+] as const) {
+	test(`rejects runtime lock assets with ${shape} shape`, () => {
+		const fixtureRoot = custodyFixture((lock) => {
+			lock.profiles.bun.assets = value
+		})
+		expect(() => loadSkillCatalog(fixtureRoot)).toThrow(
+			/runtime lock bun assets must be an object/,
+		)
+	})
+}
 
 test("rejects a runtime lock missing one of the four supported platforms", () => {
 	const fixtureRoot = custodyFixture((lock) => {
@@ -201,6 +229,20 @@ test("rejects an empty skill catalog", () => {
 	})
 	expect(() => loadSkillCatalog(fixtureRoot)).toThrow(/skill catalog must not be empty/)
 })
+
+for (const [shape, value] of [
+	["null", null],
+	["array", []],
+] as const) {
+	test(`rejects skill catalog skills with ${shape} shape`, () => {
+		const fixtureRoot = custodyFixture((_lock, catalog) => {
+			catalog.skills = value
+		})
+		expect(() => loadSkillCatalog(fixtureRoot)).toThrow(
+			/skill catalog skills must be an object/,
+		)
+	})
+}
 
 test("rejects an invalid skill catalog id", () => {
 	const fixtureRoot = custodyFixture((_lock, catalog) => {

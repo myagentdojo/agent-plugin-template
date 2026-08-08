@@ -10,6 +10,7 @@ import { basename, join, resolve } from "node:path"
 import { assertDistributionChecksumIdentity } from "./distribution-checksums"
 import {
 	directoryArchiveEntries,
+	payloadInventorySha256,
 	PLUGIN_DIRECTORY,
 	pluginPayloadInventory,
 } from "./plugin-files"
@@ -169,17 +170,11 @@ if (lstatSync(coldXdg, { throwIfNoEntry: false }) !== undefined) {
 const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
 const sha256 = (bytes: Uint8Array): string =>
 	new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
-const payloadHash = new Bun.CryptoHasher("sha256")
-for (const relativePath of inventory) {
-	payloadHash.update(relativePath)
-	payloadHash.update("\0")
-	payloadHash.update(readFileSync(join(installedRoot, relativePath)))
-}
 if (
 	checksums.runtimeLockSha256 !== sha256(readFileSync(join(root, "runtime", "runtime.lock.json"))) ||
 	checksums.bundleInventorySha256 !==
 		sha256(readFileSync(join(installedRoot, "runtime", "bundle-inventory.json"))) ||
-	checksums.payloadInventorySha256 !== payloadHash.digest("hex")
+	checksums.payloadInventorySha256 !== payloadInventorySha256(installedRoot, inventory)
 ) {
 	throw new Error("checksum metadata does not bind the runtime lock, bundle inventory, and payload inventory")
 }

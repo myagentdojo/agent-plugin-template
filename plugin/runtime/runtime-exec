@@ -21,6 +21,9 @@
 set -eu
 
 schema_version=1
+# Production acquisition is HTTPS-only. Test fixtures rewrite this internal
+# constant in their private engine copy; caller environment cannot enable it.
+test_allow_file_urls=0
 
 # --- caller environment preservation (R20) ----------------------------------
 # The ordinary app environment is preserved for the skill process; custody
@@ -273,7 +276,34 @@ is_number() {
 	return 0
 }
 
+is_semantic_version() {
+	case "$1" in
+	'' | *[!0-9.]* | .* | *. | *..*) return 1 ;;
+	esac
+	_iv_major=${1%%.*}
+	_iv_tail=${1#*.}
+	if [ "$_iv_tail" = "$1" ]; then return 1; fi
+	_iv_minor=${_iv_tail%%.*}
+	_iv_patch=${_iv_tail#*.}
+	if [ "$_iv_patch" = "$_iv_tail" ]; then return 1; fi
+	case "$_iv_patch" in *.*) return 1 ;; esac
+	for _iv_part in "$_iv_major" "$_iv_minor" "$_iv_patch"; do
+		case "$_iv_part" in
+		0) ;;
+		[1-9]*)
+			case "$_iv_part" in *[!0-9]*) return 1 ;; esac
+			;;
+		*) return 1 ;;
+		esac
+	done
+	return 0
+}
+
 select_locked_asset() {
+	if ! is_semantic_version "${RUNTIME_LOCK_VERSION-}"; then
+		diag 'runtime lock version is malformed'
+		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is malformed.'
+	fi
 	runtime_lock_select_asset "$platform" || {
 		diag "runtime lock has no asset for $platform"
 		die 23 LOCK_INVALID '[]' false 'Regenerate the plugin payload; the runtime lock projection is incomplete.'
@@ -566,7 +596,13 @@ fail_apply() {
 
 validate_asset_url() {
 	case "$RUNTIME_ASSET_URL" in
-	https://* | file:///*) ;;
+	https://*) ;;
+	file:///*)
+		if [ "$test_allow_file_urls" != 1 ]; then
+			diag 'runtime lock URL scheme is not allowed'
+			die 23 URL_REJECTED '[]' false 'Fix the runtime lock to use the official https release URL.'
+		fi
+		;;
 	*)
 		diag 'runtime lock URL scheme is not allowed'
 		die 23 URL_REJECTED '[]' false 'Fix the runtime lock to use the official https release URL.'
@@ -585,9 +621,13 @@ validate_asset_url() {
 download_archive() {
 	archive_path=$stage_dir/$RUNTIME_ASSET_ARCHIVE_NAME
 	_da_status=0
+	_da_protocols='=https'
+	if [ "$test_allow_file_urls" = 1 ]; then
+		_da_protocols='=https,file'
+	fi
 	"$tool_curl" -q --fail --silent --show-error \
 		--location --max-redirs 3 \
-		--proto '=https,file' --proto-redir '=https' \
+		--proto "$_da_protocols" --proto-redir '=https' \
 		--connect-timeout 10 --max-time 300 \
 		--max-filesize "$RUNTIME_ASSET_ARCHIVE_BYTES" \
 		--output "$archive_path" "$RUNTIME_ASSET_URL" </dev/null || _da_status=$?

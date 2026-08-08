@@ -49,6 +49,10 @@ export const SUPPORTED_RUNTIME_PLATFORMS = [
 const lowercaseSha256 = /^[a-f0-9]{64}$/
 const semanticVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 /** Single-quote a projection value, rejecting values that cannot be quoted safely. */
 export function shellQuote(value: string): string {
 	if (value.includes("'")) throw new Error("runtime projection values must not contain single quotes")
@@ -61,13 +65,15 @@ function loadJson<T>(path: string): T {
 
 function validateRuntimeLock(lock: RuntimeLock): void {
 	if (lock.schemaVersion !== 1) throw new Error("runtime lock schemaVersion must be 1")
+	if (!isRecord(lock.profiles)) throw new Error("runtime lock profiles must be an object")
 	if (Object.keys(lock.profiles).join(",") !== "bun") {
 		throw new Error("runtime lock must contain only the bun profile")
 	}
 	const profile = lock.profiles.bun
-	if (!profile || !semanticVersion.test(profile.version)) {
+	if (!isRecord(profile) || typeof profile.version !== "string" || !semanticVersion.test(profile.version)) {
 		throw new Error("runtime lock bun version must be an exact semantic version")
 	}
+	if (!isRecord(profile.assets)) throw new Error("runtime lock bun assets must be an object")
 	if (
 		Object.keys(profile.assets).sort(compareCodeUnits).join(",") !==
 		[...SUPPORTED_RUNTIME_PLATFORMS].sort(compareCodeUnits).join(",")
@@ -106,6 +112,7 @@ function validateRuntimeLock(lock: RuntimeLock): void {
 
 function validateSkillCatalog(catalog: SkillCatalog, lock: RuntimeLock): void {
 	if (catalog.schemaVersion !== 1) throw new Error("skill catalog schemaVersion must be 1")
+	if (!isRecord(catalog.skills)) throw new Error("skill catalog skills must be an object")
 	if (Object.keys(catalog.skills).length === 0) throw new Error("skill catalog must not be empty")
 	for (const [skillId, skill] of Object.entries(catalog.skills)) {
 		if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skillId)) {

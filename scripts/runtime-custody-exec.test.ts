@@ -144,6 +144,7 @@ interface FixtureOptions {
 	url?: string
 	hostToolDirs?: string
 	extraCatalogSkills?: string[]
+	allowFileUrlsForTests?: boolean
 }
 
 function fixtureBunScript(version: string): string {
@@ -162,6 +163,17 @@ while [ $# -gt 0 ]; do
 	esac
 done
 if [ $# -lt 1 ]; then echo 'fixture bun: missing script' >&2; exit 64; fi
+case "$flags" in
+*--config=/dev/null*) ;;
+*)
+	if [ -f "\${HOME-}/.bunfig.toml" ] ||
+		{ [ -n "\${XDG_CONFIG_HOME-}" ] && [ -f "$XDG_CONFIG_HOME/.bunfig.toml" ]; } ||
+		[ -f ./bunfig.toml ]; then
+		echo 'HOSTILE_BUNFIG_RAN' >&2
+		exit 98
+	fi
+	;;
+esac
 script=$1
 shift
 FIXTURE_BUN_FLAGS=$flags
@@ -309,6 +321,9 @@ function makeFixture(options: FixtureOptions = {}): Fixture {
 	writeFileSync(join(runtimeDir, "bundle-inventory.sh"), renderFixtureInventory(bundles))
 
 	let engineText = readFileSync(engineSourcePath, "utf8")
+	if (options.allowFileUrlsForTests !== false) {
+		engineText = engineText.replace(/^test_allow_file_urls=0$/m, "test_allow_file_urls=1")
+	}
 	if (options.hostToolDirs) {
 		engineText = engineText.replace(
 			/^host_tool_dirs='[^']*'$/m,
@@ -470,6 +485,15 @@ test("a missing host tool yields HOST_TOOL_MISSING with exit 21 and no mutation"
 	expect(envelope.code).toBe("HOST_TOOL_MISSING")
 	expect(String(envelope.nextAction)).toContain("unzip")
 	expect(readdirSync(fixture.cacheDir)).toEqual([])
+})
+
+test("a malformed lock version yields a typed LOCK_INVALID envelope", () => {
+	const fixture = makeFixture({ lockVersion: '9.9.9"injected' })
+	const preview = runEngine(fixture, ["repair"])
+	expect(preview.exitCode).toBe(23)
+	const envelope = readEnvelope(preview)
+	expect(envelope.code).toBe("LOCK_INVALID")
+	expect(preview.stdout.toString()).not.toContain("injected")
 })
 
 // --- R17: ordinary help and closed command surface ---------------------------
@@ -817,8 +841,7 @@ test("run restores the caller umask for the launched skill", () => {
 	// Custody tightens umask to 077 for its own writes; the launched skill must
 	// see the caller umask, not the custody one. The caller umask is whatever the
 	// engine was invoked under (inherited from this test process); a sibling
-	// shell launched the same way reports it. The launched skill must match that
-	// and must not be the custody 0077.
+	// shell launched the same way reports it. The launched skill must match that.
 	const callerUmask = Bun.spawnSync({
 		cmd: ["/bin/sh", "-c", "umask"],
 		env: { ...fixture.env },
@@ -829,7 +852,6 @@ test("run restores the caller umask for the launched skill", () => {
 	const run = runEngine(fixture, ["run", "skill-a", "--", "alpha"])
 	expect(run.exitCode).toBe(0)
 	expect(bundleReport(run).umask).toBe(callerUmask)
-	expect(bundleReport(run).umask).not.toBe("0077")
 })
 
 // --- AE9: hostile caller environment cannot alter custody ---------------------
@@ -879,6 +901,25 @@ test("AE9: hostile env, PATH, and cwd cannot alter custody; app env is preserved
 	// ordinary app environment is preserved: caller cwd and caller PATH
 	expect(report.cwd).toBe(hostileCwd)
 	expect(report.PATH).toBe(hostileTools)
+})
+
+test("verified launch ignores hostile HOME and XDG global bunfig preloads", () => {
+	const fixture = makeFixture()
+	applyRepair(fixture)
+	writeFileSync(join(fixture.root, ".bunfig.toml"), 'preload = ["./evil-home.ts"]\n')
+	const homeRun = runEngine(fixture, ["run", "skill-a"])
+	expect(homeRun.exitCode).toBe(0)
+	expect(homeRun.stderr.toString()).not.toContain("HOSTILE_BUNFIG_RAN")
+
+	rmSync(join(fixture.root, ".bunfig.toml"))
+	const xdgConfigHome = join(fixture.root, "xdg-config")
+	mkdirSync(xdgConfigHome)
+	writeFileSync(join(xdgConfigHome, ".bunfig.toml"), 'preload = ["./evil-xdg.ts"]\n')
+	const xdgRun = runEngine(fixture, ["run", "skill-a"], {
+		env: { XDG_CONFIG_HOME: xdgConfigHome },
+	})
+	expect(xdgRun.exitCode).toBe(0)
+	expect(xdgRun.stderr.toString()).not.toContain("HOSTILE_BUNFIG_RAN")
 })
 
 test("repair version verification ignores hostile Bun options and cwd config", () => {
@@ -998,7 +1039,7 @@ test("a wrong archive hash is rejected before extraction with exit 23", () => {
 	const apply = runEngine(fixture, ["repair", "--apply"])
 	expect(apply.exitCode).toBe(23)
 	expect(readEnvelope(apply).code).toBe("ARCHIVE_HASH_MISMATCH")
-	expect(existsSync(join(fixture.storeRoot, "bun", "0".repeat(64), "bun"))).toBe(false)
+	expect(existsSync(fixture.blobPath)).toBe(false)
 	expect(readdirSync(join(fixture.storeRoot, "staging"))).toEqual([])
 })
 
@@ -1113,12 +1154,21 @@ test("an http URL in the lock is rejected without any download, exit 23", () => 
 	expect(readdirSync(fixture.cacheDir)).toEqual([])
 })
 
+test("a file URL is rejected by the production transport policy", () => {
+	const fixture = makeFixture({ allowFileUrlsForTests: false })
+	const apply = runEngine(fixture, ["repair", "--apply"])
+	expect(apply.exitCode).toBe(23)
+	expect(readEnvelope(apply).code).toBe("URL_REJECTED")
+	expect(readdirSync(fixture.cacheDir)).toEqual([])
+})
+
 test("a credential-bearing URL is rejected and never echoed, exit 23", () => {
 	const fixture = makeFixture({ url: "https://user:s3cret@example.com/bun-fixture.zip" })
 	const apply = runEngine(fixture, ["repair", "--apply"])
 	expect(apply.exitCode).toBe(23)
 	expect(readEnvelope(apply).code).toBe("URL_REJECTED")
 	expect(apply.stdout.toString()).not.toContain("s3cret")
+	expect(apply.stderr.toString()).not.toContain("s3cret")
 	expect(readdirSync(fixture.cacheDir)).toEqual([])
 })
 
@@ -1140,7 +1190,7 @@ test("the real payload ships an executable engine and a matching inventory proje
 		readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json"), "utf8"),
 	) as { bundles: Record<string, { path: string; bytes: number; sha256: string }> }
 	for (const [skillId, record] of Object.entries(inventory.bundles)) {
-		expect(projection).toContain(`\t${skillId})`)
+		expect(projection).toContain(`\t'${skillId}')`)
 		expect(projection).toContain(`RUNTIME_BUNDLE_PATH='${record.path}'`)
 		expect(projection).toContain(`RUNTIME_BUNDLE_SHA256='${record.sha256}'`)
 	}

@@ -9,6 +9,7 @@ import {
 	compareCodeUnits,
 	copyPluginPayload,
 	directoryArchiveEntries,
+	payloadInventorySha256,
 	pluginPayloadInventory,
 } from "./plugin-files"
 
@@ -192,6 +193,18 @@ test("inventory includes an unexpected regular file", () => {
 	fileSystem.writeFileSync(join(pluginRoot, "unexpected.extra"), "include me\n")
 
 	expect(pluginPayloadInventory(sourceRoot)).toEqual(["a-safe.txt", "unexpected.extra"])
+})
+
+test("payload digest frames path and body bytes without cross-record ambiguity", () => {
+	const first = pluginFixture()
+	const second = pluginFixture()
+	fileSystem.writeFileSync(join(first.pluginRoot, "a-safe.txt"), Buffer.from("b\0c\0d"))
+	fileSystem.writeFileSync(join(second.pluginRoot, "a-safe.txt"), Buffer.from("b\0"))
+	fileSystem.writeFileSync(join(second.pluginRoot, "c"), "d")
+
+	expect(payloadInventorySha256(first.pluginRoot, ["a-safe.txt"])).not.toBe(
+		payloadInventorySha256(second.pluginRoot, ["a-safe.txt", "c"]),
+	)
 })
 
 test("archive order keeps each directory beside its descendants", () => {

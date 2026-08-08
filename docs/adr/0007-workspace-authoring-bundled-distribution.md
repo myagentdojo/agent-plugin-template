@@ -83,3 +83,6 @@ trivial next to the ~60 MB bootstrapped runtime. Not worth the coupling.
 - The generated runtime inventory maps each logical catalog skill to its exact
   bundle digest; custody executes that bundle, never a source tree or
   `node_modules`.
+- A workspace skill's `entry` remains required catalog and projection metadata;
+  execution selects the digest-named artifact from the generated bundle
+  inventory rather than executing that source-style entry path directly.

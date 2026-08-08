@@ -49,7 +49,7 @@ test("source-bound native receipts reject dirty checkout bytes", () => {
 		for (const command of [
 			["git", "init", "--quiet"],
 			["git", "add", "payload.txt"],
-			["git", "commit", "--quiet", "-m", "fixture"],
+			["git", "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "fixture"],
 		]) {
 			const result = Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment })
 			expect(result.exitCode).toBe(0)
@@ -117,7 +117,6 @@ test("release proof requires both native harness CLIs", () => {
 test("native runtime qualification requires explicit fixture acknowledgement", () => {
 	expect(() =>
 		proveHarnessInstall(root, {
-			requireNative: true,
 			qualifyRuntimeJourney: true,
 		}),
 	).toThrow("requires --fixture-acknowledged")
@@ -267,6 +266,10 @@ test("cleaned CLI proof reports that temporary evidence was removed", () => {
 	expect(JSON.parse(result.stdout.toString())).toMatchObject({
 		ok: true,
 		evidenceRetained: false,
+		codex: {
+			mode: "fixture-copy",
+			activation: null,
+		},
 	})
 }, 60_000)
 

@@ -33,14 +33,16 @@ for (const argument of arguments_) {
 }
 
 const config = loadPluginConfig(root)
-const drifted = [
-	...checkGeneratedFiles(root, config),
-	...checkRuntimeCustodyFiles(root),
-]
-if (check && drifted.length > 0) {
-	console.error(`Generated files differ from canonical sources:\n${drifted.join("\n")}`)
-	console.error("Run `bun run generate` and commit the generated files.")
-	process.exit(1)
+if (check) {
+	const drifted = [
+		...checkGeneratedFiles(root, config),
+		...checkRuntimeCustodyFiles(root),
+	]
+	if (drifted.length > 0) {
+		console.error(`Generated files differ from canonical sources:\n${drifted.join("\n")}`)
+		console.error("Run `bun run generate` and commit the generated files.")
+		process.exit(1)
+	}
 }
 const files = check
 	? []

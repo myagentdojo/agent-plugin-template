@@ -12,7 +12,12 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { validateBunOnlyPayload } from "./build"
-import { copyPluginPayload, directoryArchiveEntries, pluginPayloadInventory } from "./plugin-files"
+import {
+	copyPluginPayload,
+	directoryArchiveEntries,
+	payloadInventorySha256,
+	pluginPayloadInventory,
+} from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
@@ -64,13 +69,7 @@ function sha256(bytes: Uint8Array | string): string {
 }
 
 function payloadInventoryDigest(): string {
-	const hash = new Bun.CryptoHasher("sha256")
-	for (const relativePath of pluginPayloadInventory(root)) {
-		hash.update(relativePath)
-		hash.update("\0")
-		hash.update(readFileSync(join(root, "plugin", relativePath)))
-	}
-	return hash.digest("hex")
+	return payloadInventorySha256(join(root, "plugin"), pluginPayloadInventory(root))
 }
 
 try {

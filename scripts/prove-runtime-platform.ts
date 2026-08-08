@@ -11,7 +11,8 @@ import {
 import { tmpdir } from "node:os"
 import { basename, join, resolve } from "node:path"
 
-import { compareCodeUnits } from "./plugin-files"
+import { compareCodeUnits, payloadInventorySha256 } from "./plugin-files"
+import { requireProofControlEnvelope } from "./proof-control-envelope"
 import { SUPPORTED_RUNTIME_PLATFORMS } from "./runtime-custody-config"
 
 interface PlatformProofOptions {
@@ -19,16 +20,6 @@ interface PlatformProofOptions {
 	checksums: string
 	target: string
 	fixtureAcknowledged: true
-}
-
-interface ControlEnvelope {
-	schemaVersion: number
-	ok: boolean
-	code: string
-	sideEffects: string[]
-	retrySafe: boolean
-	nextAction: string
-	runtime?: { version?: string; executableSha256?: string }
 }
 
 export function currentRuntimeTarget(
@@ -95,37 +86,14 @@ function regularFiles(root: string): string[] {
 }
 
 function payloadDigest(root: string): string {
-	const hash = new Bun.CryptoHasher("sha256")
-	for (const relativePath of regularFiles(root)) {
-		hash.update(relativePath)
-		hash.update("\0")
-		hash.update(readFileSync(join(root, relativePath)))
-	}
-	return hash.digest("hex")
-}
-
-function requireEnvelope(
-	step: string,
-	result: ReturnType<typeof Bun.spawnSync>,
-	expectedExit: number,
-	expectedCode: string,
-): ControlEnvelope {
-	if (result.exitCode !== expectedExit) {
-		throw new Error(`${step}: exit ${result.exitCode}; ${result.stderr.toString().trim()}`)
-	}
-	const lines = result.stdout.toString().trim().split("\n")
-	if (lines.length !== 1) throw new Error(`${step}: expected one JSON control object`)
-	const envelope = JSON.parse(lines[0]) as ControlEnvelope
-	if (envelope.schemaVersion !== 1 || envelope.code !== expectedCode) {
-		throw new Error(`${step}: expected ${expectedCode}, received ${envelope.code}`)
-	}
-	return envelope
+	return payloadInventorySha256(root, regularFiles(root))
 }
 
 function runLauncher(
 	launcher: string,
 	arguments_: string[],
 	cwd: string,
+	homeRoot: string,
 	cacheRoot: string,
 	networkDenied: boolean,
 ): ReturnType<typeof Bun.spawnSync> {
@@ -133,7 +101,7 @@ function runLauncher(
 		cmd: [launcher, ...arguments_],
 		cwd,
 		env: {
-			HOME: cacheRoot,
+			HOME: homeRoot,
 			XDG_CACHE_HOME: cacheRoot,
 			PATH: "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
 			...(networkDenied
@@ -170,8 +138,10 @@ export function proveRuntimePlatform(options: PlatformProofOptions): Record<stri
 	const isolationRoot = realpathSync(mkdtempSync(join(tmpdir(), `runtime-platform-${options.target}-`)))
 	chmodSync(isolationRoot, 0o700)
 	const extractedRoot = join(isolationRoot, "extracted")
+	const homeRoot = join(isolationRoot, "home")
 	const cacheRoot = join(isolationRoot, "cache")
 	mkdirSync(extractedRoot, { mode: 0o700 })
+	mkdirSync(homeRoot, { mode: 0o700 })
 	mkdirSync(cacheRoot, { mode: 0o700 })
 	try {
 		const extract = Bun.spawnSync({
@@ -196,27 +166,27 @@ export function proveRuntimePlatform(options: PlatformProofOptions): Record<stri
 		const skillA = join(pluginRoot, "bin", "skill-a")
 		const skillB = join(pluginRoot, "bin", "skill-b")
 		const engine = join(pluginRoot, "runtime", "runtime-exec")
-		const missing = requireEnvelope(
+		const missing = requireProofControlEnvelope(
 			"cold run",
-			runLauncher(skillA, [], pluginRoot, cacheRoot, false),
+			runLauncher(skillA, [], pluginRoot, homeRoot, cacheRoot, false),
 			20,
 			"BUN_MISSING",
 		)
 		if (missing.sideEffects.length !== 0 || readdirSync(cacheRoot).length !== 0) {
 			throw new Error("cold run mutated the isolated cache")
 		}
-		const preview = requireEnvelope(
+		const preview = requireProofControlEnvelope(
 			"repair preview",
-			runLauncher(engine, ["repair"], pluginRoot, cacheRoot, false),
+			runLauncher(engine, ["repair"], pluginRoot, homeRoot, cacheRoot, false),
 			0,
 			"REPAIR_PREVIEW",
 		)
 		if (!preview.nextAction.includes("Ask the user to approve") || preview.sideEffects.length !== 0) {
 			throw new Error("repair preview does not preserve the human-approval boundary")
 		}
-		const applied = requireEnvelope(
+		const applied = requireProofControlEnvelope(
 			"acknowledged repair apply",
-			runLauncher(engine, ["repair", "--apply"], pluginRoot, cacheRoot, false),
+			runLauncher(engine, ["repair", "--apply"], pluginRoot, homeRoot, cacheRoot, false),
 			0,
 			"REPAIR_APPLIED",
 		)
@@ -229,13 +199,13 @@ export function proveRuntimePlatform(options: PlatformProofOptions): Record<stri
 			throw new Error("published runtime bytes do not match the repair receipt")
 		}
 
-		const first = runLauncher(skillA, [], pluginRoot, cacheRoot, true)
+		const first = runLauncher(skillA, [], pluginRoot, homeRoot, cacheRoot, true)
 		if (first.exitCode !== 0) throw new Error(`skill-a failed after repair: ${first.stderr}`)
 		const firstResult = JSON.parse(first.stdout.toString())
 		if (firstResult.skill !== "skill-a" || firstResult.esmDependency !== "skillAOfflineProof") {
 			throw new Error("skill-a returned the wrong packaged dependency proof")
 		}
-		const warm = runLauncher(skillB, [], pluginRoot, cacheRoot, true)
+		const warm = runLauncher(skillB, [], pluginRoot, homeRoot, cacheRoot, true)
 		if (warm.exitCode !== 0) throw new Error(`warm skill-b failed: ${warm.stderr}`)
 		const warmResult = JSON.parse(warm.stdout.toString())
 		if (warmResult.skill !== "skill-b" || warmResult.cjsDependencyDuration !== "2 hours") {

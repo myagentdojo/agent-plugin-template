@@ -22,13 +22,14 @@ import {
 import {
 	provePostMutationRecovery,
 } from "./harness-install-recovery"
-import { copyPluginPayload, pluginPayloadInventory } from "./plugin-files"
+import { copyPluginPayload, payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
 	loadPluginConfig,
 	type PluginConfig,
 	writeGeneratedFiles,
 } from "./plugin-config"
+import { requireProofControlEnvelope } from "./proof-control-envelope"
 import { currentRuntimeTarget } from "./prove-runtime-platform"
 
 const help = `Prove tagged plugin installation in isolated Claude and Codex homes.
@@ -221,7 +222,7 @@ export interface CodexProof {
 		lifecycleHookPresent: false
 		executionEntry: "explicit skill launcher"
 		runtimeRepairOwner: "agent workflow with human approval"
-	}
+	} | null
 }
 
 interface HarnessInstallProof {
@@ -251,15 +252,6 @@ export interface HarnessInstallProofOptions {
 	qualifyRuntimeJourney?: boolean
 	/** Explicit CI/test acknowledgement for isolated repair mutation; never a human-approval claim. */
 	fixtureAcknowledged?: boolean
-}
-
-interface RuntimeControlEnvelope {
-	schemaVersion: number
-	ok: boolean
-	code: string
-	sideEffects: string[]
-	nextAction: string
-	runtime?: { version?: string; executableSha256?: string }
 }
 
 interface NativeRuntimeJourney {
@@ -1112,16 +1104,10 @@ export function runtimeClosureEvidence(pluginRoot: string): {
 		readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 	)
 	const inventory = regularFiles(pluginRoot)
-	const payloadHash = createHash("sha256")
-	for (const relativePath of inventory) {
-		payloadHash.update(relativePath)
-		payloadHash.update("\0")
-		payloadHash.update(readFileSync(join(pluginRoot, relativePath)))
-	}
 	return {
 		version: manifest.version,
 		inventoryHash: createHash("sha256").update(inventory.join("\0")).digest("hex"),
-		payloadHash: payloadHash.digest("hex"),
+		payloadHash: payloadInventorySha256(pluginRoot, inventory),
 	}
 }
 
@@ -1153,24 +1139,6 @@ function runInstalledRuntime(
 	})
 }
 
-function requireRuntimeControl(
-	step: string,
-	result: ReturnType<typeof Bun.spawnSync>,
-	expectedExit: number,
-	expectedCode: string,
-): RuntimeControlEnvelope {
-	if (result.exitCode !== expectedExit) {
-		throw new Error(`${step}: exit ${result.exitCode}; ${result.stderr.toString().trim()}`)
-	}
-	const lines = result.stdout.toString().trim().split("\n")
-	if (lines.length !== 1) throw new Error(`${step}: expected one JSON control object`)
-	const envelope = JSON.parse(lines[0]) as RuntimeControlEnvelope
-	if (envelope.schemaVersion !== 1 || envelope.code !== expectedCode) {
-		throw new Error(`${step}: expected ${expectedCode}, received ${envelope.code}`)
-	}
-	return envelope
-}
-
 function proveNativeRuntimeJourney(
 	client: NativeRuntimeJourney["client"],
 	pluginRoot: string,
@@ -1178,18 +1146,19 @@ function proveNativeRuntimeJourney(
 	corruptRecovery: boolean,
 	identity: Pick<NativeRuntimeJourney, "repository" | "sourceCommit" | "runtimeLockSha256">,
 ): NativeRuntimeJourney {
+	const target = nativeRuntimeTarget()
 	const cacheRoot = join(temporaryRoot, "runtime-journeys", client)
 	mkdirSync(cacheRoot, { recursive: true, mode: 0o700 })
 	const launcher = join(pluginRoot, "bin", client === "claude-cli" ? "skill-a" : "skill-b")
 	const engine = join(pluginRoot, "runtime", "runtime-exec")
-	const missing = requireRuntimeControl(
+	const missing = requireProofControlEnvelope(
 		`${client} cold run`,
 		runInstalledRuntime(pluginRoot, cacheRoot, [launcher]),
 		20,
 		"BUN_MISSING",
 	)
 	if (missing.sideEffects.length !== 0) throw new Error(`${client} cold run mutated custody state`)
-	const preview = requireRuntimeControl(
+	const preview = requireProofControlEnvelope(
 		`${client} repair preview`,
 		runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair"]),
 		0,
@@ -1198,7 +1167,7 @@ function proveNativeRuntimeJourney(
 	if (!preview.nextAction.includes("Ask the user to approve") || preview.sideEffects.length !== 0) {
 		throw new Error(`${client} repair preview did not expose the plain-language approval boundary`)
 	}
-	const applied = requireRuntimeControl(
+	const applied = requireProofControlEnvelope(
 		`${client} acknowledged repair`,
 		runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair", "--apply"]),
 		0,
@@ -1220,13 +1189,13 @@ function proveNativeRuntimeJourney(
 	if (corruptRecovery) {
 		const runtimePath = join(cacheRoot, "agent-plugin-runtime", "bun", executableSha256, "bun")
 		writeFileSync(runtimePath, "corrupt runtime fixture\n")
-		requireRuntimeControl(
+		requireProofControlEnvelope(
 			`${client} corrupt run`,
 			runInstalledRuntime(pluginRoot, cacheRoot, [launcher]),
 			20,
 			"REPAIR_REQUIRED",
 		)
-		const corruptPreview = requireRuntimeControl(
+		const corruptPreview = requireProofControlEnvelope(
 			`${client} corrupt repair preview`,
 			runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair"]),
 			0,
@@ -1235,7 +1204,7 @@ function proveNativeRuntimeJourney(
 		if (!corruptPreview.nextAction.includes("Ask the user to approve")) {
 			throw new Error(`${client} corrupt recovery omitted the approval boundary`)
 		}
-		requireRuntimeControl(
+		requireProofControlEnvelope(
 			`${client} corrupt repair`,
 			runInstalledRuntime(pluginRoot, cacheRoot, [engine, "repair", "--apply"]),
 			0,
@@ -1257,7 +1226,7 @@ function proveNativeRuntimeJourney(
 	return {
 		kind: "installed-payload-mechanics",
 		client,
-		target: nativeRuntimeTarget(),
+		target,
 		...identity,
 		version: closure.version,
 		payloadHash: closure.payloadHash,

@@ -314,6 +314,13 @@ test("release workflow is pinned and publishes proven assets after validation", 
 		workflow.indexOf("\n  maintain:\n"),
 		workflow.indexOf("\n  compatibility:\n"),
 	)
+	const candidateJob = workflow.slice(
+		workflow.indexOf("\n  candidate:\n"),
+		workflow.indexOf("\n  compatibility:\n"),
+	)
+	expect(candidateJob).toContain("    permissions:\n      actions: read\n      contents: read\n")
+	expect(candidateJob).toContain("persist-credentials: false")
+	expect(workflow.match(/--dir "\$RUNNER_TEMP\/platform-candidate"/g)).toHaveLength(2)
 	expect(maintainJob).toContain("persist-credentials: false")
 	expect(maintainJob).toContain("group: release-maintenance")
 	expect(maintainJob).toContain("id: bootstrap-version")

@@ -244,11 +244,6 @@ export function proveCodexFixtureCopy(
 			enabledStateRestored: false,
 			failureRestored: false,
 		},
-		activation: {
-			pluginEnabled: true,
-			lifecycleHookPresent: false,
-			executionEntry: "explicit skill launcher",
-			runtimeRepairOwner: "agent workflow with human approval",
-		},
+		activation: null,
 	}
 }

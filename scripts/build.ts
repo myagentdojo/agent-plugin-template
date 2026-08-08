@@ -63,6 +63,7 @@ export class BundleValidationError extends Error {
 /** Precise reason one dependency was rejected from the pure-JavaScript closure. */
 export type DependencyAdmissionCode =
 	| "trusted-dependencies"
+	| "lock-invalid"
 	| "store-missing"
 	| "lifecycle-script"
 	| "native-addon"
@@ -101,6 +102,12 @@ export interface BundleRecord {
 export interface BundleClosureResult {
 	bundles: Record<string, BundleRecord>
 	notices: BundleRecord
+}
+
+interface InstallResult {
+	exitCode: number | null
+	signalCode?: string
+	stderr?: Uint8Array
 }
 
 interface BundleArtifact {
@@ -147,11 +154,11 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
 }
 
 /**
- * Reject bundle text that still reaches outside the closed artifact at runtime.
+ * Reject detectable static and computed import/require text patterns that escape the bundle contract.
  *
  * @param skillId - Skill whose bundle is validated
  * @param code - Final JavaScript bundle text
- * @throws {BundleValidationError} On computed dynamic imports, computed requires, or non-built-in specifiers
+ * @throws {BundleValidationError} On detected loader escapes, computed loads, or non-built-in specifiers
  *
  * @example
  * ```ts
@@ -212,24 +219,15 @@ function createClosedResolutionPlugin(
 	return {
 		name: "closed-dependency-resolution",
 		setup(builder) {
-			builder.onResolve({ filter: /\.node$/ }, (args) => {
-				violations.push(
-					new BundleValidationError(
-						skillId,
-						"native-addon",
-						`native addon "${args.path}" imported from ${relative(realRoot, args.importer)}`,
-					),
-				)
-				return { path: args.path, external: true }
-			})
 			// Validation only: Bun's own condition-aware resolver performs the real
-			// resolution so require and import conditions stay correct.
+			// resolution so require and import conditions stay correct. This probe is
+			// used only to turn a missing bare import into our typed error; containment
+			// and native-addon checks use Bun's actual resolved onLoad path below.
 			builder.onResolve({ filter: /^[^./]/ }, (args) => {
 				const specifier = args.path
 				if (allowedRuntimeSpecifier(specifier)) return undefined
-				let resolved: string
 				try {
-					resolved = Bun.resolveSync(specifier, dirname(args.importer))
+					Bun.resolveSync(specifier, dirname(args.importer))
 				} catch {
 					violations.push(
 						new BundleValidationError(
@@ -240,47 +238,32 @@ function createClosedResolutionPlugin(
 					)
 					return { path: specifier, external: true }
 				}
-				const realResolved = realpathSync(resolved)
-				if (resolved.endsWith(".node") || realResolved.endsWith(".node")) {
+				return undefined
+			})
+			builder.onLoad({ filter: /\.(?:[cm]?[jt]sx?|json|node)$/ }, (args) => {
+				if (args.namespace !== "file") return undefined
+				const realResolved = realpathSync(args.path)
+				if (args.path.endsWith(".node") || realResolved.endsWith(".node")) {
 					violations.push(
 						new BundleValidationError(
 							skillId,
 							"native-addon",
-							`native addon "${specifier}" imported from ${relative(realRoot, args.importer)}`,
+							`native addon resolved to ${realResolved}`,
 						),
 					)
-					return { path: specifier, external: true }
+					// Do not hand a rejected native file back to Bun's loader. The
+					// accumulated typed violation is thrown immediately after the build.
+					return { contents: "export default {};", loader: "js" }
 				}
 				if (!isInsideDirectory(realResolved, realRoot)) {
 					violations.push(
 						new BundleValidationError(
 							skillId,
 							"parent-resolution",
-							`"${specifier}" resolved outside the repository: ${realResolved}`,
+							`module resolved outside the repository: ${realResolved}`,
 						),
 					)
-					return { path: specifier, external: true }
-				}
-				return undefined
-			})
-			builder.onResolve({ filter: /^[./]/ }, (args) => {
-				if (!args.importer) return undefined
-				let realResolved: string
-				try {
-					realResolved = realpathSync(Bun.resolveSync(args.path, dirname(args.importer)))
-				} catch {
-					// Unresolvable relative/absolute paths surface as the bundler's own error.
 					return undefined
-				}
-				if (!isInsideDirectory(realResolved, realRoot)) {
-					violations.push(
-						new BundleValidationError(
-							skillId,
-							"parent-resolution",
-							`"${args.path}" resolved outside the repository: ${realResolved}`,
-						),
-					)
-					return { path: args.path, external: true }
 				}
 				return undefined
 			})
@@ -311,9 +294,20 @@ export async function bundleWorkspaceSkill(
 ): Promise<BundleArtifact> {
 	const realRoot = realpathSync(repositoryRoot)
 	const workspaceRoot = join(realRoot, workspace)
-	const workspaceManifest = JSON.parse(readFileSync(join(workspaceRoot, "package.json"), "utf8"))
-	const entryPoint = join(workspaceRoot, String(workspaceManifest.main ?? ""))
-	if (!workspaceManifest.main || !existsSync(entryPoint)) {
+	let workspaceManifest: { main?: string }
+	try {
+		workspaceManifest = JSON.parse(
+			readFileSync(join(workspaceRoot, "package.json"), "utf8"),
+		) as { main?: string }
+	} catch (error) {
+		throw new BundleValidationError(
+			skillId,
+			"missing-entry",
+			`workspace ${workspace} package.json is missing, unreadable, or invalid: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	}
+	const entryPoint = join(workspaceRoot, workspaceManifest.main ?? "")
+	if (typeof workspaceManifest.main !== "string" || !workspaceManifest.main || !existsSync(entryPoint)) {
 		throw new BundleValidationError(
 			skillId,
 			"missing-entry",
@@ -398,7 +392,28 @@ export async function bundleWorkspaceSkill(
 	}
 }
 
-function parseFrozenLock(root: string): { packages: Record<string, unknown[]> } {
+interface FrozenLockWorkspace {
+	name?: string
+	dependencies?: Record<string, string>
+}
+
+interface FrozenLockPackageMetadata {
+	dependencies?: Record<string, string>
+}
+
+interface FrozenLock {
+	workspaces: Record<string, FrozenLockWorkspace>
+	packages: Record<string, unknown>
+}
+
+interface ParsedLockPackage {
+	key: string
+	name: string
+	reference: string
+	metadata: FrozenLockPackageMetadata
+}
+
+function parseFrozenLock(root: string): FrozenLock {
 	const lockPath = join(root, "bun.lock")
 	if (!existsSync(lockPath)) {
 		throw new DependencyAdmissionError(
@@ -407,7 +422,57 @@ function parseFrozenLock(root: string): { packages: Record<string, unknown[]> } 
 		)
 	}
 	const lockText = readFileSync(lockPath, "utf8")
-	return JSON.parse(lockText.replace(/,(\s*[}\]])/g, "$1"))
+	try {
+		const parsed = Bun.JSONC.parse(lockText) as Partial<FrozenLock>
+		return {
+			workspaces: parsed.workspaces ?? {},
+			packages: parsed.packages ?? {},
+		}
+	} catch (error) {
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`bun.lock is not valid JSONC: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	}
+}
+
+function parseLockPackage(key: string, value: unknown): ParsedLockPackage {
+	if (!Array.isArray(value)) {
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`bun.lock package ${JSON.stringify(key)} is not an array entry`,
+		)
+	}
+	const identity = String(value[0] ?? "")
+	const separator = identity.lastIndexOf("@")
+	if (separator <= 0 || separator === identity.length - 1) {
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`bun.lock package ${JSON.stringify(key)} has malformed identity ${JSON.stringify(identity)}`,
+		)
+	}
+	return {
+		key,
+		name: identity.slice(0, separator),
+		reference: identity.slice(separator + 1),
+		metadata: (value[2] ?? {}) as FrozenLockPackageMetadata,
+	}
+}
+
+function resolveLockDependency(
+	packages: Map<string, ParsedLockPackage>,
+	name: string,
+	requested: string,
+): ParsedLockPackage {
+	const direct = packages.get(name)
+	if (direct?.name === name && direct.reference === requested) return direct
+	const candidates = [...packages.values()].filter((entry) => entry.name === name)
+	const exact = candidates.filter((entry) => entry.reference === requested)
+	if (exact.length === 1) return exact[0]
+	throw new DependencyAdmissionError(
+		"lock-invalid",
+		`bun.lock cannot resolve ${name}@${requested} to one package entry`,
+	)
 }
 
 function dependencyStoreDirectory(root: string, name: string, version: string): string {
@@ -435,7 +500,7 @@ function findNativeArtifact(directory: string, prefix = ""): string | undefined 
 }
 
 function readLicenseText(directory: string): string | undefined {
-	for (const entry of readdirSync(directory)) {
+	for (const entry of readdirSync(directory).sort(compareCodeUnits)) {
 		if (/^(license|licence|copying)(\.(md|txt))?$/i.test(entry)) {
 			return readFileSync(join(directory, entry), "utf8")
 		}
@@ -465,20 +530,69 @@ export function admitDependencyClosure(root: string): AdmittedDependency[] {
 	}
 
 	const lock = parseFrozenLock(root)
-	const lockedNames = new Set<string>()
-	const npmDependencies: Array<{ name: string; version: string }> = []
-	for (const value of Object.values(lock.packages ?? {})) {
-		const identity = String(value[0])
-		const separator = identity.lastIndexOf("@")
-		const name = identity.slice(0, separator)
-		const reference = identity.slice(separator + 1)
-		lockedNames.add(name)
-		if (!reference.startsWith("workspace:")) npmDependencies.push({ name, version: reference })
+	for (const workspace of Object.keys(lock.workspaces).sort(compareCodeUnits)) {
+		if (!workspace) continue
+		const manifestPath = join(root, workspace, "package.json")
+		if (!existsSync(manifestPath)) {
+			throw new DependencyAdmissionError(
+				"lock-invalid",
+				`bun.lock workspace ${JSON.stringify(workspace)} has no package.json`,
+			)
+		}
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+		if (manifest.trustedDependencies !== undefined) {
+			throw new DependencyAdmissionError(
+				"trusted-dependencies",
+				`${workspace}/package.json must not declare trustedDependencies`,
+			)
+		}
 	}
 
+	const packages = new Map(
+		Object.entries(lock.packages).map(([key, value]) => [key, parseLockPackage(key, value)]),
+	)
+	const catalog = loadSkillCatalog(root)
+	const pending: Array<{ name: string; requested: string }> = []
+	for (const skill of Object.values(catalog.skills)) {
+		if (skill.workspace === undefined) continue
+		const workspace = lock.workspaces[skill.workspace]
+		if (!workspace) {
+			throw new DependencyAdmissionError(
+				"lock-invalid",
+				`catalog workspace ${JSON.stringify(skill.workspace)} is absent from bun.lock`,
+			)
+		}
+		pending.push(...Object.entries(workspace.dependencies ?? {}).map(([name, requested]) => ({ name, requested })))
+	}
+
+	const reachablePackages = new Map<string, ParsedLockPackage>()
+	const visitedWorkspaces = new Set<string>()
+	while (pending.length > 0) {
+		const dependency = pending.pop() as { name: string; requested: string }
+		const locked = resolveLockDependency(packages, dependency.name, dependency.requested)
+		if (locked.reference.startsWith("workspace:")) {
+			const workspacePath = locked.reference.slice("workspace:".length)
+			if (visitedWorkspaces.has(workspacePath)) continue
+			visitedWorkspaces.add(workspacePath)
+			const workspace = lock.workspaces[workspacePath]
+			if (!workspace) {
+				throw new DependencyAdmissionError(
+					"lock-invalid",
+					`package ${locked.name} refers to missing workspace ${JSON.stringify(workspacePath)}`,
+				)
+			}
+			pending.push(...Object.entries(workspace.dependencies ?? {}).map(([name, requested]) => ({ name, requested })))
+			continue
+		}
+		if (reachablePackages.has(locked.key)) continue
+		reachablePackages.set(locked.key, locked)
+		pending.push(...Object.entries(locked.metadata.dependencies ?? {}).map(([name, requested]) => ({ name, requested })))
+	}
+	const lockedNames = new Set([...reachablePackages.values()].map((entry) => entry.name))
+
 	const admitted: AdmittedDependency[] = []
-	for (const { name, version } of npmDependencies.sort((left, right) =>
-		compareCodeUnits(left.name, right.name),
+	for (const { name, reference: version } of [...reachablePackages.values()].sort((left, right) =>
+		compareCodeUnits(left.name, right.name) || compareCodeUnits(left.reference, right.reference),
 	)) {
 		const packageDirectory = dependencyStoreDirectory(root, name, version)
 		const manifest = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8"))
@@ -574,7 +688,7 @@ export function renderBundleInventoryProjection(bundles: Record<string, BundleRe
 		.sort(compareCodeUnits)
 		.map((skillId) => {
 			const record = bundles[skillId]
-			return `	${skillId})
+			return `	${shellQuote(skillId)})
 		RUNTIME_BUNDLE_PATH=${shellQuote(record.path)}
 		RUNTIME_BUNDLE_BYTES=${shellQuote(String(record.bytes))}
 		RUNTIME_BUNDLE_SHA256=${shellQuote(record.sha256)}
@@ -942,6 +1056,16 @@ export async function buildHelloWorldRuntime(
 	}
 }
 
+/** Reject every install outcome except an ordinary zero exit. */
+export function assertSuccessfulInstall(install: InstallResult): void {
+	if (install.exitCode === 0) return
+	const detail = install.signalCode
+		? `terminated by signal ${install.signalCode}`
+		: `exited with code ${String(install.exitCode)}`
+	const stderr = install.stderr ? new TextDecoder().decode(install.stderr).trim() : ""
+	throw new Error(`bun install ${detail}${stderr ? `: ${stderr}` : ""}`)
+}
+
 async function main(): Promise<void> {
 	const root = resolve(import.meta.dir, "..")
 	const pluginConfig = loadPluginConfig(root)
@@ -956,21 +1080,21 @@ async function main(): Promise<void> {
 	}
 
 	const install = Bun.spawnSync({
-		cmd: [process.execPath, "install", "--frozen-lockfile"],
+		cmd: [process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"],
 		cwd: root,
-		stdout: "inherit",
-		stderr: "inherit",
+		stdout: "pipe",
+		stderr: "pipe",
 	})
-	if (install.exitCode !== 0) process.exit(install.exitCode)
+	assertSuccessfulInstall(install)
 
 	const closure = await buildWorkspaceBundles(root)
 	validateBundleClosure(root)
-	console.log(join(root, "plugin", "runtime", "hello-world.js"))
 	console.log(
 		JSON.stringify({
 			ok: true,
 			action: "built",
 			sideEffects: "repository-files-written",
+			helloWorldRuntime: join(root, "plugin", "runtime", "hello-world.js"),
 			bundles: closure.bundles,
 			notices: closure.notices,
 		}),

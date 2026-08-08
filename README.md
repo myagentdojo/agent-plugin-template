@@ -515,6 +515,9 @@ These canaries prove this repository's Git publishing transport and native Git-m
 ## Current boundaries
 
 - macOS arm64/x64 and Linux arm64/x64 only.
+- The locked x64 baseline assets support AVX-capable CPUs for this Bun 1.3.14
+  candidate. Older no-AVX x64 hosts are outside the support boundary; custody
+  executes `bun --version` before publication and refuses an unusable binary.
 - Bun is pinned by version and per-target archive/executable digests; users do not install or pin it themselves.
 - Publisher-reviewed bundles and dependencies execute with the user's normal Bun and OS capabilities. This is not a sandbox or an untrusted-plugin runtime.
 - Native addons, computed dynamic imports, undeclared assets, and runtime package installation are rejected from the closed bundle contract.

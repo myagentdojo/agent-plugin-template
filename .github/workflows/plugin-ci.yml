@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
@@ -64,13 +66,13 @@ jobs:
       - name: Download the single packaged candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "runtime-candidate-${GITHUB_SHA}" --dir candidate
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "runtime-candidate-${GITHUB_SHA}" --dir "$RUNNER_TEMP/platform-candidate"
       - name: Prove packaged runtime custody on this target
         shell: bash
         run: |
           set -euo pipefail
-          archive=$(find candidate -maxdepth 1 -name '*.tar.gz' -print -quit)
-          checksums=$(find candidate -maxdepth 1 -name '*.checksums.json' -print -quit)
+          archive=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.tar.gz' -print -quit)
+          checksums=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.checksums.json' -print -quit)
           [[ -n "$archive" && -n "$checksums" ]]
           bun run prove:runtime-platform -- \
             --archive "$archive" \
@@ -97,7 +99,7 @@ jobs:
       - name: Download the platform-proven candidate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "runtime-candidate-${GITHUB_SHA}" --dir candidate
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "runtime-candidate-${GITHUB_SHA}" --dir "$RUNNER_TEMP/platform-candidate"
       - run: bun run generate:check
       - run: bun test
       - run: bun run prove:harness-install -- --require-native --fixture-acknowledged
@@ -108,8 +110,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          candidate_archive=$(find candidate -maxdepth 1 -name '*.tar.gz' -print -quit)
-          candidate_checksums=$(find candidate -maxdepth 1 -name '*.checksums.json' -print -quit)
+          candidate_archive=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.tar.gz' -print -quit)
+          candidate_checksums=$(find "$RUNNER_TEMP/platform-candidate" -maxdepth 1 -name '*.checksums.json' -print -quit)
           rebuilt_archive=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
           rebuilt_checksums=$(find dist -maxdepth 1 -name '*.checksums.json' -print -quit)
           [[ -n "$candidate_archive" && -n "$candidate_checksums" && -n "$rebuilt_archive" && -n "$rebuilt_checksums" ]]
@@ -122,8 +124,8 @@ jobs:
           name: agent-plugin-${{ github.sha }}
           overwrite: true
           path: |
-            candidate/*.tar.gz
-            candidate/*.checksums.json
+            ${{ runner.temp }}/platform-candidate/*.tar.gz
+            ${{ runner.temp }}/platform-candidate/*.checksums.json
           if-no-files-found: error
 
   attest:

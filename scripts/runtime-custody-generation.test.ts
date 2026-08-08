@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
+import { fileURLToPath } from "node:url"
 
-const root = new URL("..", import.meta.url).pathname
+const root = fileURLToPath(new URL("..", import.meta.url))
 
 function runGenerateCheck(): ReturnType<typeof Bun.spawnSync> {
 	return Bun.spawnSync({
@@ -20,7 +21,7 @@ test("one Bun version is pinned across packageManager, bun.lock, CI, and the run
 
 	expect(await Bun.file(new URL("../bun.lock", import.meta.url)).exists()).toBe(true)
 
-	const workflowsDirectory = new URL("../.github/workflows/", import.meta.url).pathname
+	const workflowsDirectory = fileURLToPath(new URL("../.github/workflows/", import.meta.url))
 	const { readdirSync, readFileSync } = await import("node:fs")
 	const workflowFiles = readdirSync(workflowsDirectory).filter((name) => name.endsWith(".yml"))
 	expect(workflowFiles.length).toBeGreaterThan(0)
@@ -95,19 +96,19 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 	for (const [skillId, skill] of Object.entries(
 		catalog.skills as Record<string, { workspace?: string }>,
 	)) {
-		expect(existsSync(new URL(`../plugin/skills/${skillId}/SKILL.md`, import.meta.url).pathname)).toBe(
-			true,
-		)
+		expect(
+			existsSync(fileURLToPath(new URL(`../plugin/skills/${skillId}/SKILL.md`, import.meta.url))),
+		).toBe(true)
 		if (skill.workspace) {
-			expect(existsSync(new URL(`../${skill.workspace}/package.json`, import.meta.url).pathname)).toBe(
-				true,
-			)
+			expect(
+				existsSync(fileURLToPath(new URL(`../${skill.workspace}/package.json`, import.meta.url))),
+			).toBe(true)
 		}
 	}
 
 	// Every logical catalog member is active through one generated custody launcher.
 	const { renderRuntimeCustodyFiles } = await import("./runtime-custody-config")
-	const generated = renderRuntimeCustodyFiles(new URL("..", import.meta.url).pathname)
+	const generated = renderRuntimeCustodyFiles(fileURLToPath(new URL("..", import.meta.url)))
 	for (const skillId of Object.keys(catalog.skills)) {
 		const launcher = await Bun.file(new URL(`../plugin/bin/${skillId}`, import.meta.url)).text()
 		expect(launcher).toContain(`runtime-exec\" run ${skillId} --`)

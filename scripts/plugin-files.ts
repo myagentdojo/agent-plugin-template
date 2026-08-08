@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto"
 import {
 	chmodSync,
 	copyFileSync,
 	lstatSync,
 	mkdirSync,
+	readFileSync,
 	readdirSync,
 	realpathSync,
 } from "node:fs"
@@ -25,6 +27,29 @@ export const PLUGIN_DIRECTORY = "plugin"
  */
 export function compareCodeUnits(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0
+}
+
+function framedLength(length: number): Buffer {
+	const frame = Buffer.allocUnsafe(8)
+	frame.writeBigUInt64BE(BigInt(length))
+	return frame
+}
+
+/** Hash an ordered payload inventory with collision-free path/body framing. */
+export function payloadInventorySha256(
+	payloadRoot: string,
+	inventory: readonly string[],
+): string {
+	const hash = createHash("sha256")
+	for (const relativePath of inventory) {
+		const pathBytes = Buffer.from(relativePath, "utf8")
+		const fileBytes = readFileSync(join(payloadRoot, relativePath))
+		hash.update(framedLength(pathBytes.byteLength))
+		hash.update(pathBytes)
+		hash.update(framedLength(fileBytes.byteLength))
+		hash.update(fileBytes)
+	}
+	return hash.digest("hex")
 }
 
 /**

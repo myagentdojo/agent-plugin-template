@@ -1,5 +1,6 @@
 import {
 	cpSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -14,6 +15,7 @@ import { afterEach, beforeAll, expect, test } from "bun:test"
 
 import {
 	admitDependencyClosure,
+	assertSuccessfulInstall,
 	BundleValidationError,
 	buildHelloWorldRuntime,
 	buildWorkspaceBundles,
@@ -175,6 +177,9 @@ test("dependency admission returns the pure-JavaScript permissive-license closur
 function admissionFixture(options: {
 	packageJson: Record<string, unknown>
 	files?: Record<string, string>
+	extraLockedPackages?: Record<string, unknown[]>
+	workspaceDevDependencies?: Record<string, string>
+	omitStore?: boolean
 }): string {
 	const fixtureRoot = temporaryDirectory("admission-fixture-")
 	writeFileSync(
@@ -183,14 +188,63 @@ function admissionFixture(options: {
 	)
 	const name = options.packageJson.name as string
 	const version = options.packageJson.version as string
+	const workspaceDirectory = join(fixtureRoot, "packages", "fixture-skill")
+	mkdirSync(join(fixtureRoot, "runtime"), { recursive: true })
+	mkdirSync(workspaceDirectory, { recursive: true })
+	cpSync(join(root, "runtime", "runtime.lock.json"), join(fixtureRoot, "runtime", "runtime.lock.json"))
+	writeFileSync(
+		join(fixtureRoot, "runtime", "skill-catalog.json"),
+		`${JSON.stringify({
+			schemaVersion: 1,
+			skills: {
+				"fixture-skill": {
+					entry: "runtime/fixture-skill.js",
+					runtimeProfile: "bun",
+					workspace: "packages/fixture-skill",
+				},
+			},
+		})}\n`,
+	)
+	writeFileSync(
+		join(workspaceDirectory, "package.json"),
+		`${JSON.stringify({
+			name: "fixture-skill",
+			private: true,
+			dependencies: { [name]: version },
+			devDependencies: options.workspaceDevDependencies,
+		})}\n`,
+	)
 	writeFileSync(
 		join(fixtureRoot, "bun.lock"),
 		`${JSON.stringify({
 			lockfileVersion: 1,
-			workspaces: { "": { name: "fixture-root" } },
-			packages: { [name]: [`${name}@${version}`, "", {}, "sha512-fixture"] },
+			workspaces: {
+				"": { name: "fixture-root" },
+				"packages/fixture-skill": {
+					name: "fixture-skill",
+					dependencies: { [name]: version },
+					devDependencies: options.workspaceDevDependencies,
+				},
+			},
+			packages: {
+				[name]: [`${name}@${version}`, "", {}, "sha512-fixture"],
+				"fixture-skill": ["fixture-skill@workspace:packages/fixture-skill"],
+				...options.extraLockedPackages,
+			},
 		})}\n`,
 	)
+	if (options.omitStore) return fixtureRoot
+	writeFixturePackageStore(fixtureRoot, options.packageJson, options.files)
+	return fixtureRoot
+}
+
+function writeFixturePackageStore(
+	fixtureRoot: string,
+	packageJson: Record<string, unknown>,
+	files: Record<string, string> = {},
+): void {
+	const name = packageJson.name as string
+	const version = packageJson.version as string
 	const packageDirectory = join(
 		fixtureRoot,
 		"node_modules",
@@ -202,14 +256,55 @@ function admissionFixture(options: {
 	mkdirSync(packageDirectory, { recursive: true })
 	writeFileSync(
 		join(packageDirectory, "package.json"),
-		`${JSON.stringify(options.packageJson, null, 2)}\n`,
+		`${JSON.stringify(packageJson, null, 2)}\n`,
 	)
 	writeFileSync(join(packageDirectory, "LICENSE"), "Permission is hereby granted.\n")
-	for (const [relativePath, contents] of Object.entries(options.files ?? {})) {
+	for (const [relativePath, contents] of Object.entries(files)) {
 		writeFileSync(join(packageDirectory, relativePath), contents)
 	}
-	return fixtureRoot
 }
+
+test("dependency admission parses JSONC comments, trailing commas, and quoted comma sequences", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "jsonc-package", version: "1.0.0", license: "MIT" },
+	})
+	writeFileSync(
+		join(fixtureRoot, "bun.lock"),
+		`{
+			// Bun lockfiles are JSONC.
+			"lockfileVersion": 1,
+			"note": "quoted,} and quoted,] stay intact",
+			"workspaces": {
+				"": { "name": "fixture-root", },
+				"packages/fixture-skill": {
+					"name": "fixture-skill",
+					"dependencies": { "jsonc-package": "1.0.0", },
+				},
+			},
+			"packages": {
+				"jsonc-package": ["jsonc-package@1.0.0", "", {}, "sha512-fixture"],
+				"fixture-skill": ["fixture-skill@workspace:packages/fixture-skill"],
+			},
+		}\n`,
+	)
+	expect(admitDependencyClosure(fixtureRoot).map((dependency) => dependency.name)).toEqual([
+		"jsonc-package",
+	])
+})
+
+test("dependency admission reports malformed JSONC as a typed error", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "broken-lock", version: "1.0.0", license: "MIT" },
+	})
+	writeFileSync(join(fixtureRoot, "bun.lock"), '{ "packages": { "broken": [ } }\n')
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect(error).toBeInstanceOf(DependencyAdmissionError)
+		expect((error as DependencyAdmissionError).code).toBe("lock-invalid")
+	}
+})
 
 test("dependency admission rejects a lifecycle-dependent package", () => {
 	const fixtureRoot = admissionFixture({
@@ -275,6 +370,23 @@ test("dependency admission rejects a root manifest declaring trustedDependencies
 	}
 })
 
+test("dependency admission rejects trustedDependencies in a workspace manifest", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "workspace-trust", version: "1.0.0", license: "MIT" },
+	})
+	writeFileSync(
+		join(fixtureRoot, "packages", "fixture-skill", "package.json"),
+		'{"name":"fixture-skill","trustedDependencies":[]}\n',
+	)
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect(error).toBeInstanceOf(DependencyAdmissionError)
+		expect((error as DependencyAdmissionError).code).toBe("trusted-dependencies")
+	}
+})
+
 test("dependency admission rejects a missing frozen lockfile", () => {
 	const fixtureRoot = temporaryDirectory("missing-lock-")
 	writeFileSync(
@@ -291,19 +403,10 @@ test("dependency admission rejects a missing frozen lockfile", () => {
 })
 
 test("dependency admission rejects a locked package absent from the isolated store", () => {
-	const fixtureRoot = temporaryDirectory("absent-store-")
-	writeFileSync(
-		join(fixtureRoot, "package.json"),
-		`${JSON.stringify({ name: "fixture-root", private: true })}\n`,
-	)
-	writeFileSync(
-		join(fixtureRoot, "bun.lock"),
-		`${JSON.stringify({
-			lockfileVersion: 1,
-			workspaces: { "": { name: "fixture-root" } },
-			packages: { "phantom-pkg": ["phantom-pkg@1.0.0", "", {}, "sha512-fixture"] },
-		})}\n`,
-	)
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "phantom-pkg", version: "1.0.0", license: "MIT" },
+		omitStore: true,
+	})
 	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(
 		/phantom-pkg@1\.0\.0 is not present in the isolated store/,
 	)
@@ -315,11 +418,86 @@ test("dependency admission rejects a locked package absent from the isolated sto
 	}
 })
 
+test("dependency admission excludes dev-only locked packages from the catalog closure", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+		workspaceDevDependencies: { "dev-only-package": "9.0.0" },
+		extraLockedPackages: {
+			"dev-only-package": ["dev-only-package@9.0.0", "", {}, "sha512-dev-only"],
+		},
+	})
+	expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual(["runtime-package"])
+})
+
+test("dependency admission follows the bounded production dependency graph", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+	})
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.packages["runtime-package"][2] = { dependencies: { "runtime-child": "2.0.0" } }
+	lock.packages["runtime-child"] = [
+		"runtime-child@2.0.0",
+		"",
+		{},
+		"sha512-runtime-child",
+	]
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	writeFixturePackageStore(fixtureRoot, {
+		name: "runtime-child",
+		version: "2.0.0",
+		license: "ISC",
+	})
+	expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual([
+		"runtime-child",
+		"runtime-package",
+	])
+})
+
+test("dependency admission rejects a bare-key package at the wrong locked version", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+	})
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.packages["runtime-package"][0] = "runtime-package@2.0.0"
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect(error).toBeInstanceOf(DependencyAdmissionError)
+		expect((error as DependencyAdmissionError).code).toBe("lock-invalid")
+	}
+})
+
+test("dependency admission rejects malformed lock identities with a typed error", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
+		extraLockedPackages: { malformed: ["missing-version-separator"] },
+	})
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect(error).toBeInstanceOf(DependencyAdmissionError)
+		expect((error as DependencyAdmissionError).code).toBe("lock-invalid")
+	}
+})
+
 test("dependency admission rejects a non-permissive license", () => {
 	const fixtureRoot = admissionFixture({
 		packageJson: { name: "gpl-thing", version: "1.0.0", license: "GPL-3.0-only" },
 	})
 	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(/license/)
+})
+
+test("dependency admission selects license files in code-unit order", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "sorted-license", version: "1.0.0", license: "MIT" },
+		files: { LICENCE: "Deterministic licence text.\n" },
+	})
+	expect(admitDependencyClosure(fixtureRoot)[0].licenseText).toBe("Deterministic licence text.\n")
 })
 
 test("third-party notices carry package name, version, license, and text", () => {
@@ -393,6 +571,25 @@ test("a workspace without an existing main entry fails with a precise missing-en
 	await expectBundleRejection(fixture, "missing-entry", /does not declare an existing "main" entry/)
 })
 
+test("a missing or invalid workspace manifest fails with a typed missing-entry error", async () => {
+	for (const manifest of [undefined, "{ invalid json\n"]) {
+		const fixture = fixtureWorkspace(`console.log("unused");`)
+		const manifestPath = join(
+			fixture.fixtureRoot,
+			"packages",
+			"fixture-skill",
+			"package.json",
+		)
+		if (manifest === undefined) rmSync(manifestPath)
+		else writeFileSync(manifestPath, manifest)
+		await expectBundleRejection(
+			fixture,
+			"missing-entry",
+			/package\.json is missing, unreadable, or invalid/,
+		)
+	}
+})
+
 test("a main entry escaping the workspace fails with a precise entry-escape error", async () => {
 	// Bun.build never routes the entrypoint through the closed-resolution plugin,
 	// so a "main" pointing outside the workspace would be bundled as a valid
@@ -453,9 +650,17 @@ test("a failed complete build leaves checked payload input unchanged", async () 
 	writeFileSync(join(fixtureRoot, "package.json"), '{"private":true}\n')
 	writeFileSync(join(fixtureRoot, "bun.lock"), '{"lockfileVersion":1,"packages":{}}\n')
 	cpSync(join(root, "runtime", "runtime.lock.json"), join(fixtureRoot, "runtime", "runtime.lock.json"))
-	cpSync(
-		join(root, "runtime", "skill-catalog.json"),
+	writeFileSync(
 		join(fixtureRoot, "runtime", "skill-catalog.json"),
+		`${JSON.stringify({
+			schemaVersion: 1,
+			skills: {
+				"hello-world": {
+					entry: "runtime/hello-world.js",
+					runtimeProfile: "bun",
+				},
+			},
+		})}\n`,
 	)
 	writeFileSync(
 		join(fixtureRoot, "runtime", "src", "bun-proof-adapter.ts"),
@@ -495,6 +700,14 @@ test("an undeclared asset fails with a precise unexpected-output error", async (
 	await expectBundleRejection(fixture, "unexpected-output", /exactly one JavaScript artifact/)
 })
 
+test("install admission rejects signal and nonzero exits", () => {
+	expect(() => assertSuccessfulInstall({ exitCode: null, signalCode: "SIGTERM" })).toThrow(
+		/terminated by signal SIGTERM/,
+	)
+	expect(() => assertSuccessfulInstall({ exitCode: 17 })).toThrow(/exited with code 17/)
+	expect(() => assertSuccessfulInstall({ exitCode: 0 })).not.toThrow()
+})
+
 function runRepositoryBuild(): {
 	bundles: Record<string, { path: string; bytes: number; sha256: string }>
 	notices: { path: string; bytes: number; sha256: string }
@@ -506,9 +719,14 @@ function runRepositoryBuild(): {
 		stderr: "pipe",
 	})
 	if (build.exitCode !== 0) throw new Error(build.stderr.toString())
+	const outputLines = build.stdout.toString().trim().split("\n")
+	expect(outputLines).toHaveLength(1)
+	const report = JSON.parse(outputLines[0])
+	expect(report.helloWorldRuntime).toBe(join(root, "plugin", "runtime", "hello-world.js"))
 	const inventory = JSON.parse(
 		readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json"), "utf8"),
 	)
+	expect(report.bundles).toEqual(inventory.bundles)
 	return { bundles: inventory.bundles, notices: inventory.notices }
 }
 
@@ -760,25 +978,39 @@ test("bundle closure validation fails on a relocated notices path before packagi
 	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/invalid notices path/)
 })
 
-test("packaging admission fails on a stale bundle before any archive is produced", () => {
-	const inventoryPath = join(root, "plugin", "runtime", "bundle-inventory.json")
+test("packaging admission fails on a stale copied bundle before any archive is produced", () => {
+	const fixtureRoot = temporaryDirectory("stale-package-copy-")
+	for (const directory of ["plugin", "runtime", "scripts"]) {
+		cpSync(join(root, directory), join(fixtureRoot, directory), { recursive: true })
+	}
+	for (const file of ["package.json", "plugin.config.json"]) {
+		cpSync(join(root, file), join(fixtureRoot, file))
+	}
+	const inventoryPath = join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json")
 	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
 	const [skillId] = Object.keys(inventory.bundles)
-	const bundlePath = join(root, "plugin", inventory.bundles[skillId].path)
-	const original = readFileSync(bundlePath)
-	try {
-		writeFileSync(bundlePath, "console.log('tampered');\n")
-		const packaged = Bun.spawnSync({
-			cmd: [process.execPath, "run", "scripts/package.ts"],
-			cwd: root,
-			stdout: "pipe",
-			stderr: "pipe",
-		})
-		expect(packaged.exitCode).not.toBe(0)
-		expect(packaged.stderr.toString()).toContain(`stale bundle for ${skillId}`)
-	} finally {
-		writeFileSync(bundlePath, original)
-	}
+	const bundlePath = join(fixtureRoot, "plugin", inventory.bundles[skillId].path)
+	writeFileSync(bundlePath, "console.log('tampered');\n")
+	const packaged = Bun.spawnSync({
+		cmd: [process.execPath, "run", "scripts/package.ts"],
+		cwd: fixtureRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	expect(packaged.exitCode).not.toBe(0)
+	expect(packaged.stderr.toString()).toContain(`stale bundle for ${skillId}`)
+	expect(existsSync(join(fixtureRoot, "dist"))).toBe(false)
+})
+
+test("bundle inventory quotes skill ids as literal shell case patterns", () => {
+	const projection = renderBundleInventoryProjection({
+		"skill-a|*) echo unsafe": {
+			path: "runtime/safe.js",
+			bytes: 1,
+			sha256: "0".repeat(64),
+		},
+	})
+	expect(projection).toContain("\t'skill-a|*) echo unsafe')")
 })
 
 test("bundle closure validation fails on a stale inventory shell projection", () => {
