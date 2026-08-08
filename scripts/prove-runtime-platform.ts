@@ -107,6 +107,7 @@ export function networkIsolatedCommand(
 		return [
 			"/usr/bin/sudo",
 			"-n",
+			"--preserve-env=HOME,XDG_CACHE_HOME,PATH",
 			"/usr/bin/unshare",
 			"--net",
 			`--setuid=${uid}`,
@@ -222,13 +223,21 @@ export function proveRuntimePlatform(options: PlatformProofOptions): Record<stri
 		}
 
 		const first = runLauncher(skillA, [], pluginRoot, homeRoot, cacheRoot, true)
-		if (first.exitCode !== 0) throw new Error(`skill-a failed after repair: ${first.stderr}`)
+		if (first.exitCode !== 0) {
+			throw new Error(
+				`skill-a failed after repair (exit ${first.exitCode}): ${first.stderr.toString() || first.stdout.toString()}`,
+			)
+		}
 		const firstResult = JSON.parse(first.stdout.toString())
 		if (firstResult.skill !== "skill-a" || firstResult.esmDependency !== "skillAOfflineProof") {
 			throw new Error("skill-a returned the wrong packaged dependency proof")
 		}
 		const warm = runLauncher(skillB, [], pluginRoot, homeRoot, cacheRoot, true)
-		if (warm.exitCode !== 0) throw new Error(`warm skill-b failed: ${warm.stderr}`)
+		if (warm.exitCode !== 0) {
+			throw new Error(
+				`warm skill-b failed (exit ${warm.exitCode}): ${warm.stderr.toString() || warm.stdout.toString()}`,
+			)
+		}
 		const warmResult = JSON.parse(warm.stdout.toString())
 		if (warmResult.skill !== "skill-b" || warmResult.cjsDependencyDuration !== "2 hours") {
 			throw new Error("skill-b returned the wrong warm dependency proof")

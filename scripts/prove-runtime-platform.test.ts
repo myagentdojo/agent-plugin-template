@@ -66,6 +66,7 @@ test("skill runs use kernel-enforced network isolation on each supported host", 
 	expect(networkIsolatedCommand(["/plugin/bin/skill-a"], "linux", 1001, 1001)).toEqual([
 		"/usr/bin/sudo",
 		"-n",
+		"--preserve-env=HOME,XDG_CACHE_HOME,PATH",
 		"/usr/bin/unshare",
 		"--net",
 		"--setuid=1001",
