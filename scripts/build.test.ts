@@ -137,6 +137,14 @@ test("validateBundleText rejects a computed dynamic import", () => {
 	)
 })
 
+test("validateBundleText keeps division after postfix operators executable", () => {
+	for (const operator of ["++", "--"]) {
+		expect(() =>
+			validateBundleText("skill-a", `let x = 1;const value = x${operator} / import(target) / y;`),
+		).toThrow(/computed dynamic import/)
+	}
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,
@@ -184,6 +192,12 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 			`process.getBuiltinModule("module").createRequire(import.meta.url);`,
 		),
 	).toThrow(/runtime module-loader escape/)
+	expect(() =>
+		validateBundleText(
+			"skill-a",
+			`const { require: load } = import.meta;load(process.env.TARGET_MODULE);`,
+		),
+	).toThrow(/destructured runtime module-loader escape/)
 })
 
 test("validateBundleText rejects runtime code generation", () => {

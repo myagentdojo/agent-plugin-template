@@ -280,6 +280,12 @@ function executableCodeMask(code: string): string {
 				regexAllowed = false
 				continue
 			}
+			if ((character === "+" || character === "-") && code[index + 1] === character) {
+				copy(index, index + 2)
+				index += 2
+				regexAllowed = false
+				continue
+			}
 			masked[index++] = character
 			regexAllowed = !/[)\]]/.test(character)
 		}
@@ -352,6 +358,17 @@ export function validateBundleText(skillId: string, code: string): void {
 			skillId,
 			"runtime-loader",
 			"bundle retains a runtime module-loader escape; createRequire and getBuiltinModule are not allowed",
+		)
+	}
+	if (
+		/\{[^{}]*\b(?:__require|require)\s*:[^{}]*\}\s*=\s*(?:import\.meta|globalThis)\b/.test(
+			executable,
+		)
+	) {
+		throw new BundleValidationError(
+			skillId,
+			"runtime-loader",
+			"bundle retains a destructured runtime module-loader escape",
 		)
 	}
 	// Every dynamic-load call site must be a single immediately-closed string
