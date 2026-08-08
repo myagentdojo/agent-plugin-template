@@ -269,6 +269,15 @@ test("rejects a skill runtime profile absent from the lock", () => {
 	)
 })
 
+test("rejects an inherited runtime profile key", () => {
+	const fixtureRoot = custodyFixture((_lock, catalog) => {
+		catalog.skills["hello-world"].runtimeProfile = "constructor"
+	})
+	expect(() => loadSkillCatalog(fixtureRoot)).toThrow(
+		/skill catalog profile is unknown for hello-world/,
+	)
+})
+
 test("rejects a skill workspace outside the packages shape", () => {
 	const fixtureRoot = custodyFixture((_lock, catalog) => {
 		catalog.skills["skill-a"].workspace = "../elsewhere/skill-a"

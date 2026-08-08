@@ -143,6 +143,16 @@ test("validateBundleText rejects a computed runtime require", () => {
 	)
 })
 
+test("validateBundleText rejects indirect runtime require calls", () => {
+	for (const code of [
+		`__require.call(null, target);`,
+		`require.apply(null, args);`,
+		`require["bind"](null)(target);`,
+	]) {
+		expect(() => validateBundleText("skill-a", code)).toThrow(/indirect runtime require/)
+	}
+})
+
 test("validateBundleText rejects built-in loader escape hatches", () => {
 	expect(() =>
 		validateBundleText(
@@ -643,6 +653,31 @@ test("dependency admission follows the bounded production dependency graph", () 
 	])
 })
 
+test("dependency admission resolves an npm alias through its lock key", () => {
+	const fixtureRoot = admissionFixture({
+		packageJson: { name: "real-package", version: "1.2.3", license: "MIT" },
+	})
+	const workspaceManifestPath = join(
+		fixtureRoot,
+		"packages",
+		"fixture-skill",
+		"package.json",
+	)
+	const workspaceManifest = JSON.parse(readFileSync(workspaceManifestPath, "utf8"))
+	workspaceManifest.dependencies = { alias: "npm:real-package@1.2.3" }
+	writeFileSync(workspaceManifestPath, `${JSON.stringify(workspaceManifest, null, 2)}\n`)
+	const lockPath = join(fixtureRoot, "bun.lock")
+	const lock = JSON.parse(readFileSync(lockPath, "utf8"))
+	lock.workspaces["packages/fixture-skill"].dependencies = {
+		alias: "npm:real-package@1.2.3",
+	}
+	lock.packages.alias = lock.packages["real-package"]
+	delete lock.packages["real-package"]
+	writeFileSync(lockPath, `${JSON.stringify(lock)}\n`)
+
+	expect(admitDependencyClosure(fixtureRoot).map(({ name }) => name)).toEqual(["real-package"])
+})
+
 test("dependency admission resolves a workspace protocol dependency by package identity", () => {
 	const fixtureRoot = admissionFixture({
 		packageJson: { name: "runtime-package", version: "1.0.0", license: "MIT" },
@@ -1000,6 +1035,13 @@ test("a computed dynamic import fails with a precise build error", async () => {
 		`const target = process.env.TARGET_MODULE;export const load = () => import(target);console.log("loaded");`,
 	)
 	await expectBundleRejection(fixture, "computed-dynamic-import", /computed dynamic import/)
+})
+
+test("an indirect runtime require fails before bundle materialization", async () => {
+	const fixture = fixtureWorkspace(
+		`const target = process.env.TARGET_MODULE;console.log(require.call(null, target));`,
+	)
+	await expectBundleRejection(fixture, "computed-require", /indirect runtime require/)
 })
 
 test("an aliased createRequire fails before bundle materialization", async () => {

@@ -175,6 +175,16 @@ export function validateBundleText(skillId: string, code: string): void {
 	// literal: any other argument shape (concatenation, identifier, member
 	// expression, template) is a runtime-computed load the closure cannot prove.
 	const literalCallTail = /^\s*(["'])(?:(?!\1)[^\\]|\\.)*\1\s*\)/
+	if (
+		/\b(?:__require|require)\s*\.\s*(?:call|apply|bind)\s*\(/.test(code) ||
+		/\b(?:__require|require)\s*\[\s*["'](?:call|apply|bind)["']\s*\]\s*\(/.test(code)
+	) {
+		throw new BundleValidationError(
+			skillId,
+			"computed-require",
+			"bundle retains an indirect runtime require call",
+		)
+	}
 	for (const match of code.matchAll(/\bimport\s*\(/g)) {
 		if (!literalCallTail.test(code.slice(match.index + match[0].length))) {
 			throw new BundleValidationError(
@@ -580,6 +590,14 @@ function parseLockPackage(key: string, value: unknown): ParsedLockPackage {
 	}
 }
 
+function parseNpmAlias(requested: string): { name: string; range: string } | undefined {
+	if (!requested.startsWith("npm:")) return undefined
+	const identity = requested.slice("npm:".length)
+	const separator = identity.lastIndexOf("@")
+	if (separator <= 0 || separator === identity.length - 1) return undefined
+	return { name: identity.slice(0, separator), range: identity.slice(separator + 1) }
+}
+
 function resolveLockDependency(
 	lock: FrozenLock,
 	packages: Map<string, ParsedLockPackage>,
@@ -587,17 +605,20 @@ function resolveLockDependency(
 	requested: string,
 	parent?: ParsedLockPackage,
 ): ParsedLockPackage {
+	const npmAlias = parseNpmAlias(requested)
+	const expectedName = npmAlias?.name ?? name
+	const expectedRange = npmAlias?.range ?? requested
 	const satisfies = (entry: ParsedLockPackage | undefined): entry is ParsedLockPackage => {
-		if (entry?.name !== name) return false
+		if (entry?.name !== expectedName) return false
 		if (requested.startsWith("workspace:")) return entry.reference.startsWith("workspace:")
 		if (!entry.reference.startsWith("workspace:")) {
-			return Bun.semver.satisfies(entry.reference, requested)
+			return Bun.semver.satisfies(entry.reference, expectedRange)
 		}
 		const workspace = lock.workspaces[entry.reference.slice("workspace:".length)]
 		return (
 			workspace?.name === entry.name &&
 			typeof workspace.version === "string" &&
-			Bun.semver.satisfies(workspace.version, requested)
+			Bun.semver.satisfies(workspace.version, expectedRange)
 		)
 	}
 	if (parent) {
@@ -612,10 +633,16 @@ function resolveLockDependency(
 	}
 	const direct = packages.get(name)
 	if (requested.startsWith("workspace:") && satisfies(direct)) return direct
-	if (direct?.name === name && direct.reference === requested) return direct
+	if (direct?.name === expectedName && direct.reference === expectedRange) return direct
 	if (satisfies(direct)) return direct
-	const candidates = [...packages.values()].filter((entry) => entry.name === name)
-	const exact = candidates.filter((entry) => entry.reference === requested)
+	if (npmAlias) {
+		throw new DependencyAdmissionError(
+			"lock-invalid",
+			`bun.lock cannot resolve npm alias ${name}@${requested} by its lock key`,
+		)
+	}
+	const candidates = [...packages.values()].filter((entry) => entry.name === expectedName)
+	const exact = candidates.filter((entry) => entry.reference === expectedRange)
 	if (exact.length === 1) return exact[0]
 	const satisfying = candidates.filter(satisfies)
 	if (satisfying.length === 1) return satisfying[0]

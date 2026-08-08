@@ -121,7 +121,7 @@ function validateSkillCatalog(catalog: SkillCatalog, lock: RuntimeLock): void {
 		if (!/^runtime\/[a-z0-9]+(?:-[a-z0-9]+)*\.js$/.test(skill.entry)) {
 			throw new Error(`skill catalog entry is invalid for ${skillId}`)
 		}
-		if (!(skill.runtimeProfile in lock.profiles)) {
+		if (!Object.hasOwn(lock.profiles, skill.runtimeProfile)) {
 			throw new Error(`skill catalog profile is unknown for ${skillId}`)
 		}
 		if (
