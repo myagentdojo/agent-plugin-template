@@ -16,8 +16,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  candidate:
+    name: Build candidate once
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+      - name: Package the exact workflow commit
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: bun run package
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-candidate-${{ github.sha }}
+          overwrite: true
+          path: |
+            dist/*.tar.gz
+            dist/*.checksums.json
+          if-no-files-found: error
+
   compatibility:
     name: Compatibility (${{ matrix.target }})
+    needs: candidate
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -36,11 +61,31 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.14
-      - run: bun run prove:runtime-custody
+      - name: Download the single packaged candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "runtime-candidate-${GITHUB_SHA}" --dir candidate
+      - name: Prove packaged runtime custody on this target
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(find candidate -maxdepth 1 -name '*.tar.gz' -print -quit)
+          checksums=$(find candidate -maxdepth 1 -name '*.checksums.json' -print -quit)
+          [[ -n "$archive" && -n "$checksums" ]]
+          bun run prove:runtime-platform -- \
+            --archive "$archive" \
+            --checksums "$checksums" \
+            --target "${{ matrix.target }}" \
+            --fixture-acknowledged
 
   package:
     name: Deterministic package
-    needs: compatibility
+    needs:
+      - candidate
+      - compatibility
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,20 +94,36 @@ jobs:
           bun-version: 1.3.14
       - name: Install pinned native marketplace CLIs
         run: bun add --global "@anthropic-ai/claude-code@2.1.222" "@openai/codex@0.146.1"
+      - name: Download the platform-proven candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "runtime-candidate-${GITHUB_SHA}" --dir candidate
       - run: bun run generate:check
       - run: bun test
-      - run: bun run prove:harness-install -- --require-native
+      - run: bun run prove:harness-install -- --require-native --fixture-acknowledged
       - run: bun run release:validate
       - run: bun run prove:distribution
       - run: bun run prove:dx
+      - name: Compare the rebuilt package with the platform-proven candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_archive=$(find candidate -maxdepth 1 -name '*.tar.gz' -print -quit)
+          candidate_checksums=$(find candidate -maxdepth 1 -name '*.checksums.json' -print -quit)
+          rebuilt_archive=$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)
+          rebuilt_checksums=$(find dist -maxdepth 1 -name '*.checksums.json' -print -quit)
+          [[ -n "$candidate_archive" && -n "$candidate_checksums" && -n "$rebuilt_archive" && -n "$rebuilt_checksums" ]]
+          cmp --silent "$candidate_archive" "$rebuilt_archive"
+          cmp --silent "$candidate_checksums" "$rebuilt_checksums"
       - name: Prove generated payload was merged with its sources
         run: git diff --exit-code -- plugin/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agent-plugin-${{ github.sha }}
+          overwrite: true
           path: |
-            dist/*.tar.gz
-            dist/*.checksums.json
+            candidate/*.tar.gz
+            candidate/*.checksums.json
           if-no-files-found: error
 
   attest:
@@ -71,6 +132,7 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
       id-token: write
       attestations: write

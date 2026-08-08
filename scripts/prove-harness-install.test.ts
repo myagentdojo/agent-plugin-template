@@ -83,6 +83,16 @@ test("release proof requires both native harness CLIs", () => {
 		"bun run scripts/prove-harness-install.ts",
 	)
 	expect(packageJson.scripts["prove:all"]).toContain("prove:harness-install -- --require-native")
+	expect(packageJson.scripts["prove:all"]).toContain("--fixture-acknowledged")
+})
+
+test("native runtime qualification requires explicit fixture acknowledgement", () => {
+	expect(() =>
+		proveHarnessInstall(root, {
+			requireNative: true,
+			qualifyRuntimeJourney: true,
+		}),
+	).toThrow("requires --fixture-acknowledged")
 })
 
 test("native harness commands receive no publication credentials", () => {

@@ -564,6 +564,9 @@ test("initialized repository packages the configured plugin identity", () => {
 		archive: `dojo-hello-${initialVersion}.tar.gz`,
 		archiveBytes: expect.any(Number),
 		archiveSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+		runtimeLockSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+		bundleInventorySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+		payloadInventorySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
 		evidence:
 			"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
 	})

@@ -172,6 +172,8 @@ jq -e '.installed[] | select(.pluginId == "PLUGIN_NAME@PLUGIN_NAME" and .version
 
 Start an isolated task with `codex -C "$PREFLIGHT_ROOT"` and invoke one installed skill. A missing runtime returns `BUN_MISSING` without mutation. The agent previews the verified repair, asks for approval in plain language, runs `runtime/runtime-exec repair --apply` only after approval, and retries the skill. No lifecycle hook or manual setup command is involved.
 
+For a release qualification, keep the bounded Codex Desktop receipt private at `$XDG_STATE_HOME/agent-plugin-template/runtime-custody/codex-desktop-<candidate-sha>-<target>.json` (defaulting `XDG_STATE_HOME` to `~/.local/state`). Record the repository, candidate commit, plugin version, target, runtime-lock digest, bundle-inventory digest, payload digest, the `BUN_MISSING` → preview → approved repair → retry journey, and `humanApprovalClaimed: true`. Create this receipt only from the actual Desktop interaction after the person approves; automated CLI and platform receipts must say `humanApprovalClaimed: false`. Store only its digest and pass/fail conclusion in release notes, never the private raw receipt.
+
 The replacement recipe below preserves the marketplace source, ref, and prior `enabled` state. Remove the pinned marketplace entry only after target and restoration preflights pass.
 
 Official references: [build Codex plugins](https://developers.openai.com/plugins/build/plugins), [Codex plugins](https://learn.chatgpt.com/docs/plugins), and [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli).

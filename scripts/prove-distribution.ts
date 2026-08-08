@@ -167,6 +167,22 @@ if (lstatSync(coldXdg, { throwIfNoEntry: false }) !== undefined) {
 }
 
 const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
+const sha256 = (bytes: Uint8Array): string =>
+	new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+const payloadHash = new Bun.CryptoHasher("sha256")
+for (const relativePath of inventory) {
+	payloadHash.update(relativePath)
+	payloadHash.update("\0")
+	payloadHash.update(readFileSync(join(installedRoot, relativePath)))
+}
+if (
+	checksums.runtimeLockSha256 !== sha256(readFileSync(join(root, "runtime", "runtime.lock.json"))) ||
+	checksums.bundleInventorySha256 !==
+		sha256(readFileSync(join(installedRoot, "runtime", "bundle-inventory.json"))) ||
+	checksums.payloadInventorySha256 !== payloadHash.digest("hex")
+) {
+	throw new Error("checksum metadata does not bind the runtime lock, bundle inventory, and payload inventory")
+}
 const sourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA ?? Bun.spawnSync({
 	cmd: ["git", "rev-parse", "HEAD"],
 	cwd: root,

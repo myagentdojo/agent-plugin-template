@@ -578,6 +578,9 @@ test("AE3: publication binding agrees on candidate, immutable tag, package, rele
 				sourceCommit: "a".repeat(40),
 				tag: "v0.1.0",
 				version: "0.1.0",
+				runtimeLockSha256: "b".repeat(64),
+				bundleInventorySha256: "c".repeat(64),
+				payloadInventorySha256: "d".repeat(64),
 			},
 		}),
 	).toEqual(candidate)
@@ -597,6 +600,9 @@ test("publication binding rejects an artifact proven from SHA A under a tag for 
 				sourceCommit: "a".repeat(40),
 				tag: "v0.1.0",
 				version: "0.1.0",
+				runtimeLockSha256: "b".repeat(64),
+				bundleInventorySha256: "c".repeat(64),
+				payloadInventorySha256: "d".repeat(64),
 			},
 		}),
 	).toThrow("tag target")
@@ -616,6 +622,9 @@ test("publication binding rejects a lookalike repository on another host", () =>
 				sourceCommit: "a".repeat(40),
 				tag: "v0.1.0",
 				version: "0.1.0",
+				runtimeLockSha256: "b".repeat(64),
+				bundleInventorySha256: "c".repeat(64),
+				payloadInventorySha256: "d".repeat(64),
 			},
 		}),
 	).toThrow("GitHub repository")

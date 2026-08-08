@@ -106,6 +106,12 @@ export interface PublicationChecksumsBinding {
 	tag: string
 	/** Plugin manifest version. */
 	version: string
+	/** Canonical source runtime-lock digest. */
+	runtimeLockSha256: string
+	/** Installed bundle-inventory digest. */
+	bundleInventorySha256: string
+	/** Canonical path-and-byte digest of the complete plugin payload. */
+	payloadInventorySha256: string
 }
 
 /** Complete pre-publication equality proof. */
@@ -339,6 +345,15 @@ export function validatePublicationBinding(
 	) {
 		throw new Error("packaged GitHub repository does not match publication candidate")
 	}
+	for (const field of [
+		"runtimeLockSha256",
+		"bundleInventorySha256",
+		"payloadInventorySha256",
+	] as const) {
+		if (!/^[a-f0-9]{64}$/.test(checksums[field])) {
+			throw new Error(`packaged ${field} is not a SHA-256 closure binding`)
+		}
+	}
 	return candidate
 }
 
@@ -530,6 +545,10 @@ function validateRepository(repositoryRoot: string) {
 		"group: release-maintenance",
 		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
 		"release-candidate-${{ github.run_id }}",
+		"release-platform-candidate-${{ github.run_id }}",
+		"bun run prove:runtime-platform",
+		"--fixture-acknowledged",
+		'cmp --silent "$candidate_archive" "$rebuilt_archive"',
 		"overwrite: true",
 		"environment: release",
 		"gh attestation verify",
