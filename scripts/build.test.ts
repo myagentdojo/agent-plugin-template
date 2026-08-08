@@ -181,6 +181,20 @@ test("validateBundleText does not treat control-keyword member names as conditio
 	}
 })
 
+test("validateBundleText does not treat regex-prefix member names as keywords", () => {
+	expect(() =>
+		validateBundleText("skill-a", `const ratio = obj.return / import(target) / y;`),
+	).toThrow(/computed dynamic import/)
+})
+
+test("validateBundleText masks regex literals after declaration blocks", () => {
+	validateBundleText("skill-a", `export function f() { return 1 } /require/.test(value)`)
+	validateBundleText("skill-a", `export class C {} /require/.test(value)`)
+	expect(() =>
+		validateBundleText("skill-a", `const f = function () {}; const ratio = f / import(target) / y;`),
+	).toThrow(/computed dynamic import/)
+})
+
 test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,

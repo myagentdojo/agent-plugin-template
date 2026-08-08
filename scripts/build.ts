@@ -223,7 +223,11 @@ function executableCodeMask(code: string): string {
 		let regexAllowed = true
 		let pendingControlCondition = false
 		let pendingControlBlock = false
+		let pendingFunctionDeclaration = false
+		let pendingClassDeclarationDepth: number | null = null
+		let declarationBodyReady = false
 		const controlConditionParens: boolean[] = []
+		const functionParameterParens: boolean[] = []
 		const statementBlockBraces: boolean[] = []
 		while (index < code.length) {
 			const character = code[index]
@@ -268,14 +272,24 @@ function executableCodeMask(code: string): string {
 				const identifier = code.slice(start, index)
 				let before = start - 1
 				while (before >= 0 && /\s/.test(masked[before])) before--
+				const isMemberIdentifier = masked[before] === "." || masked[before] === "#"
 				if (!(pendingControlCondition && identifier === "await")) {
 					pendingControlCondition =
-						masked[before] !== "." &&
-						masked[before] !== "#" &&
-						controlConditionKeywords.has(identifier)
+						!isMemberIdentifier && controlConditionKeywords.has(identifier)
+				}
+				if (
+					!isMemberIdentifier &&
+					(identifier === "function" || identifier === "class") &&
+					/(?:^|[;{}])\s*(?:export\s+(?:default\s+)?)?(?:async\s+)?$/.test(
+						masked.slice(0, start).join(""),
+					)
+				) {
+					pendingFunctionDeclaration = identifier === "function"
+					pendingClassDeclarationDepth =
+						identifier === "class" ? controlConditionParens.length : null
 				}
 				pendingControlBlock = false
-				regexAllowed = regexPrefixKeywords.has(identifier)
+				regexAllowed = !isMemberIdentifier && regexPrefixKeywords.has(identifier)
 				continue
 			}
 			if (/[0-9]/.test(character)) {
@@ -289,8 +303,15 @@ function executableCodeMask(code: string): string {
 			if (character === "{") {
 				masked[index++] = character
 				braceDepth++
-				statementBlockBraces.push(pendingControlBlock)
+				const isDeclarationBlock =
+					declarationBodyReady ||
+					pendingClassDeclarationDepth === controlConditionParens.length
+				statementBlockBraces.push(pendingControlBlock || isDeclarationBlock)
 				pendingControlBlock = false
+				if (isDeclarationBlock) {
+					declarationBodyReady = false
+					pendingClassDeclarationDepth = null
+				}
 				regexAllowed = true
 				continue
 			}
@@ -312,6 +333,8 @@ function executableCodeMask(code: string): string {
 			if (character === "(") {
 				masked[index++] = character
 				controlConditionParens.push(pendingControlCondition)
+				functionParameterParens.push(pendingFunctionDeclaration)
+				pendingFunctionDeclaration = false
 				pendingControlCondition = false
 				pendingControlBlock = false
 				regexAllowed = true
@@ -321,6 +344,7 @@ function executableCodeMask(code: string): string {
 				masked[index++] = character
 				pendingControlCondition = false
 				pendingControlBlock = controlConditionParens.pop() ?? false
+				if (functionParameterParens.pop() ?? false) declarationBodyReady = true
 				regexAllowed = pendingControlBlock
 				continue
 			}
