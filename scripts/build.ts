@@ -151,21 +151,27 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  * ```
  */
 export function validateBundleText(skillId: string, code: string): void {
-	const computedImport = /(^|[^.\w$])import\(\s*(?!["')])/.exec(code)
-	if (computedImport) {
-		throw new BundleValidationError(
-			skillId,
-			"computed-dynamic-import",
-			`bundle retains a computed dynamic import near "${code.slice(computedImport.index, computedImport.index + 40)}"`,
-		)
+	// Every dynamic-load call site must be a single immediately-closed string
+	// literal: any other argument shape (concatenation, identifier, member
+	// expression, template) is a runtime-computed load the closure cannot prove.
+	const literalCallTail = /^\s*(["'])(?:(?!\1)[^\\]|\\.)*\1\s*\)/
+	for (const match of code.matchAll(/\bimport\s*\(/g)) {
+		if (!literalCallTail.test(code.slice(match.index + match[0].length))) {
+			throw new BundleValidationError(
+				skillId,
+				"computed-dynamic-import",
+				`bundle retains a computed dynamic import near "${code.slice(match.index, match.index + 40)}"`,
+			)
+		}
 	}
-	const computedRequire = /(^|[^.\w$])(?:__require|require)\(\s*(?!["')])/.exec(code)
-	if (computedRequire) {
-		throw new BundleValidationError(
-			skillId,
-			"computed-require",
-			`bundle retains a computed runtime require near "${code.slice(computedRequire.index, computedRequire.index + 40)}"`,
-		)
+	for (const match of code.matchAll(/\b(?:__require|require)\s*\(/g)) {
+		if (!literalCallTail.test(code.slice(match.index + match[0].length))) {
+			throw new BundleValidationError(
+				skillId,
+				"computed-require",
+				`bundle retains a computed runtime require near "${code.slice(match.index, match.index + 40)}"`,
+			)
+		}
 	}
 	for (const specifier of collectModuleSpecifiers(code)) {
 		if (specifier.startsWith("./") || specifier.startsWith("../")) continue
@@ -271,23 +277,52 @@ export async function bundleWorkspaceSkill(
 				}
 				return undefined
 			})
+			builder.onResolve({ filter: /^[./]/ }, (args) => {
+				if (!args.importer) return undefined
+				let realResolved: string
+				try {
+					realResolved = realpathSync(Bun.resolveSync(args.path, dirname(args.importer)))
+				} catch {
+					// Unresolvable relative/absolute paths surface as the bundler's own error.
+					return undefined
+				}
+				if (!isInsideDirectory(realResolved, realRoot)) {
+					violations.push(
+						new BundleValidationError(
+							skillId,
+							"parent-resolution",
+							`"${args.path}" resolved outside the repository: ${realResolved}`,
+						),
+					)
+					return { path: args.path, external: true }
+				}
+				return undefined
+			})
 		},
 	}
 
 	const outputDirectory = join(stagingDirectory, skillId)
 	mkdirSync(outputDirectory, { recursive: true })
-	const result = await Bun.build({
-		entrypoints: [entryPoint],
-		outdir: outputDirectory,
-		naming: `${skillId}.js`,
-		target: "bun",
-		format: "esm",
-		splitting: false,
-		sourcemap: "none",
-		minify: false,
-		env: "disable",
-		plugins: [closedResolution],
-	})
+	let result: Awaited<ReturnType<typeof Bun.build>>
+	try {
+		result = await Bun.build({
+			entrypoints: [entryPoint],
+			outdir: outputDirectory,
+			naming: `${skillId}.js`,
+			target: "bun",
+			format: "esm",
+			splitting: false,
+			sourcemap: "none",
+			minify: false,
+			env: "disable",
+			plugins: [closedResolution],
+		})
+	} catch (error) {
+		if (violations.length > 0) throw violations[0]
+		const messages =
+			error instanceof AggregateError ? error.errors.map((entry) => String(entry)) : [String(error)]
+		throw new BundleValidationError(skillId, "bundler-failure", messages.join("\n"))
+	}
 	if (violations.length > 0) throw violations[0]
 	if (!result.success) {
 		throw new BundleValidationError(
@@ -607,6 +642,17 @@ export function validateBundleClosure(root: string): void {
 		if (!workspaceSkillIds.has(skillId)) {
 			throw new Error(`bundle closure: orphaned mapping for ${skillId}; run bun run build`)
 		}
+		// The recorded path must be exactly the digest-derived name inside
+		// plugin/runtime; anything else could pass digest checks while packaging
+		// ships a payload without the executable bundle.
+		if (!/^[a-f0-9]{64}$/.test(record.sha256)) {
+			throw new Error(`bundle closure: invalid bundle digest for ${skillId}; run bun run build`)
+		}
+		if (record.path !== `runtime/${skillId}-${record.sha256.slice(0, 16)}.js`) {
+			throw new Error(
+				`bundle closure: invalid bundle path ${record.path} for ${skillId}; run bun run build`,
+			)
+		}
 		const bundlePath = join(root, "plugin", record.path)
 		if (!existsSync(bundlePath)) {
 			throw new Error(`bundle closure: missing bundle file ${record.path} for ${skillId}`)
@@ -623,6 +669,11 @@ export function validateBundleClosure(root: string): void {
 		if (managedBundlePattern.test(entry) && !activePaths.has(entry)) {
 			throw new Error(`bundle closure: orphaned bundle ${entry}; run bun run build`)
 		}
+	}
+	if (inventory.notices.path !== "THIRD-PARTY-NOTICES.md") {
+		throw new Error(
+			`bundle closure: invalid notices path ${inventory.notices.path}; run bun run build`,
+		)
 	}
 	const noticesPath = join(root, "plugin", inventory.notices.path)
 	if (!existsSync(noticesPath)) {

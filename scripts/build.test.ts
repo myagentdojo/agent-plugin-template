@@ -77,7 +77,7 @@ async function expectBundleRejection(
 	code: string,
 	pattern: RegExp,
 ): Promise<void> {
-	expect(
+	await expect(
 		bundleWorkspaceSkill(fixture.fixtureRoot, "fixture-skill", fixture.workspace, fixture.staging),
 	).rejects.toThrow(pattern)
 	try {
@@ -87,6 +87,7 @@ async function expectBundleRejection(
 			fixture.workspace,
 			fixture.staging,
 		)
+		expect.unreachable("bundleWorkspaceSkill must reject")
 	} catch (error) {
 		expect(error).toBeInstanceOf(BundleValidationError)
 		expect((error as BundleValidationError).code).toBe(code as BundleValidationError["code"])
@@ -121,6 +122,24 @@ test("validateBundleText rejects a computed runtime require", () => {
 	expect(() => validateBundleText("skill-a", `const name = "m" + "s";require(name);`)).toThrow(
 		/computed runtime require/,
 	)
+})
+
+test("validateBundleText rejects a concatenated require that begins with a string literal", () => {
+	expect(() =>
+		validateBundleText("skill-a", `const locale = require("./locale/" + name);`),
+	).toThrow(/computed runtime require/)
+})
+
+test("validateBundleText rejects a member-access runtime require", () => {
+	expect(() => validateBundleText("skill-a", `const m = globalThis.require(name);`)).toThrow(
+		/computed runtime require/,
+	)
+})
+
+test("validateBundleText rejects a concatenated dynamic import that begins with a string literal", () => {
+	expect(() =>
+		validateBundleText("skill-a", `export const load = (name) => import("./chunk/" + name);`),
+	).toThrow(/computed dynamic import/)
 })
 
 test("dependency admission returns the pure-JavaScript permissive-license closure", () => {
@@ -224,6 +243,61 @@ test("dependency admission rejects an unresolved peer dependency", () => {
 	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(/unresolved peer "missing-peer"/)
 })
 
+test("dependency admission rejects a root manifest declaring trustedDependencies", () => {
+	const fixtureRoot = temporaryDirectory("trusted-dependencies-")
+	writeFileSync(
+		join(fixtureRoot, "package.json"),
+		`${JSON.stringify({ name: "fixture-root", private: true, trustedDependencies: [] })}\n`,
+	)
+	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(/must not declare trustedDependencies/)
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect((error as DependencyAdmissionError).code).toBe("trusted-dependencies")
+	}
+})
+
+test("dependency admission rejects a missing frozen lockfile", () => {
+	const fixtureRoot = temporaryDirectory("missing-lock-")
+	writeFileSync(
+		join(fixtureRoot, "package.json"),
+		`${JSON.stringify({ name: "fixture-root", private: true })}\n`,
+	)
+	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(/bun\.lock is missing/)
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect((error as DependencyAdmissionError).code).toBe("store-missing")
+	}
+})
+
+test("dependency admission rejects a locked package absent from the isolated store", () => {
+	const fixtureRoot = temporaryDirectory("absent-store-")
+	writeFileSync(
+		join(fixtureRoot, "package.json"),
+		`${JSON.stringify({ name: "fixture-root", private: true })}\n`,
+	)
+	writeFileSync(
+		join(fixtureRoot, "bun.lock"),
+		`${JSON.stringify({
+			lockfileVersion: 1,
+			workspaces: { "": { name: "fixture-root" } },
+			packages: { "phantom-pkg": ["phantom-pkg@1.0.0", "", {}, "sha512-fixture"] },
+		})}\n`,
+	)
+	expect(() => admitDependencyClosure(fixtureRoot)).toThrow(
+		/phantom-pkg@1\.0\.0 is not present in the isolated store/,
+	)
+	try {
+		admitDependencyClosure(fixtureRoot)
+		expect.unreachable("admitDependencyClosure must reject")
+	} catch (error) {
+		expect((error as DependencyAdmissionError).code).toBe("store-missing")
+	}
+})
+
 test("dependency admission rejects a non-permissive license", () => {
 	const fixtureRoot = admissionFixture({
 		packageJson: { name: "gpl-thing", version: "1.0.0", license: "GPL-3.0-only" },
@@ -268,6 +342,43 @@ test("parent dependency resolution fails with a precise parent-resolution error"
 		"parent-resolution",
 		/resolved outside the repository/,
 	)
+})
+
+test("a relative import escaping the repository fails with a precise parent-resolution error", async () => {
+	const parentRoot = temporaryDirectory("relative-escape-")
+	writeFileSync(join(parentRoot, "outside.js"), "export default 'escaped'\n")
+	const fixtureRoot = join(parentRoot, "repo")
+	const workspaceDirectory = join(fixtureRoot, "packages", "fixture-skill")
+	mkdirSync(join(workspaceDirectory, "src"), { recursive: true })
+	writeFileSync(
+		join(workspaceDirectory, "package.json"),
+		`${JSON.stringify({ name: "fixture-skill", type: "module", main: "src/main.js" })}\n`,
+	)
+	writeFileSync(
+		join(workspaceDirectory, "src", "main.js"),
+		`import outside from "../../../../outside.js";console.log(outside);`,
+	)
+
+	await expectBundleRejection(
+		{ fixtureRoot, workspace: "packages/fixture-skill", staging: join(fixtureRoot, "staging") },
+		"parent-resolution",
+		/resolved outside the repository/,
+	)
+})
+
+test("a workspace without an existing main entry fails with a precise missing-entry error", async () => {
+	const fixture = fixtureWorkspace(`console.log("unused");`, {
+		name: "fixture-skill",
+		private: true,
+		type: "module",
+		main: "src/absent.js",
+	})
+	await expectBundleRejection(fixture, "missing-entry", /does not declare an existing "main" entry/)
+})
+
+test("an unparseable entry fails with a precise bundler-failure error", async () => {
+	const fixture = fixtureWorkspace(`export const broken = {`)
+	await expectBundleRejection(fixture, "bundler-failure", /./)
 })
 
 test("a computed dynamic import fails with a precise build error", async () => {
@@ -480,14 +591,60 @@ test("bundle closure validation fails on an orphaned mapping before packaging", 
 	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/orphaned mapping for skill-z/)
 })
 
-test("packaging admission fails on a stale inventory before any archive is produced", () => {
+test("bundle closure validation fails on a traversal bundle path before packaging", () => {
+	const fixtureRoot = closureFixture()
+	const inventoryPath = join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json")
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
+	const record = inventory.bundles["skill-a"]
+	writeFileSync(join(fixtureRoot, "outside.js"), "console.log('bundled');\n")
+	record.path = "../outside.js"
+	writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`)
+	expect(() => validateBundleClosure(fixtureRoot)).toThrow(
+		/invalid bundle path \.\.\/outside\.js for skill-a/,
+	)
+})
+
+test("bundle closure validation fails on a digest-mismatched bundle name before packaging", () => {
+	const fixtureRoot = closureFixture()
+	const inventoryPath = join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json")
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
+	const record = inventory.bundles["skill-a"]
+	const mismatchedName = `skill-a-${"0".repeat(16)}.js`
+	writeFileSync(
+		join(fixtureRoot, "plugin", "runtime", mismatchedName),
+		"console.log('bundled');\n",
+	)
+	record.path = `runtime/${mismatchedName}`
+	writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`)
+	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/invalid bundle path/)
+})
+
+test("bundle closure validation fails on a malformed bundle digest before packaging", () => {
+	const fixtureRoot = closureFixture()
+	const inventoryPath = join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json")
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
+	inventory.bundles["skill-a"].sha256 = "not-a-digest"
+	writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`)
+	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/invalid bundle digest for skill-a/)
+})
+
+test("bundle closure validation fails on a relocated notices path before packaging", () => {
+	const fixtureRoot = closureFixture()
+	const inventoryPath = join(fixtureRoot, "plugin", "runtime", "bundle-inventory.json")
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
+	inventory.notices.path = "../THIRD-PARTY-NOTICES.md"
+	writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`)
+	expect(() => validateBundleClosure(fixtureRoot)).toThrow(/invalid notices path/)
+})
+
+test("packaging admission fails on a stale bundle before any archive is produced", () => {
 	const inventoryPath = join(root, "plugin", "runtime", "bundle-inventory.json")
-	const original = readFileSync(inventoryPath)
-	const inventory = JSON.parse(original.toString())
+	const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
 	const [skillId] = Object.keys(inventory.bundles)
-	inventory.bundles[skillId].sha256 = "0".repeat(64)
+	const bundlePath = join(root, "plugin", inventory.bundles[skillId].path)
+	const original = readFileSync(bundlePath)
 	try {
-		writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`)
+		writeFileSync(bundlePath, "console.log('tampered');\n")
 		const packaged = Bun.spawnSync({
 			cmd: [process.execPath, "run", "scripts/package.ts"],
 			cwd: root,
@@ -497,7 +654,7 @@ test("packaging admission fails on a stale inventory before any archive is produ
 		expect(packaged.exitCode).not.toBe(0)
 		expect(packaged.stderr.toString()).toContain(`stale bundle for ${skillId}`)
 	} finally {
-		writeFileSync(inventoryPath, original)
+		writeFileSync(bundlePath, original)
 	}
 })
 

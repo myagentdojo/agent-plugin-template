@@ -18,6 +18,10 @@ describe("release impact", () => {
 		["chore: refresh runtime assets", "plugin/runtime/quickjs-assets.json"],
 		["refactor: reshape the manifest", "plugin/.codex-plugin/plugin.json"],
 		["chore: refresh the marketplace", ".agents/plugins/marketplace.json"],
+		["chore: tweak the skill source", "packages/skill-a/src/main.ts"],
+		["chore: update the skill manifest", "packages/skill-b/package.json"],
+		["chore: refresh the lockfile", "bun.lock"],
+		["chore: tune the install config", "bunfig.toml"],
 	] as const
 
 	for (const [title, path] of nonReleasablePayloadChanges) {

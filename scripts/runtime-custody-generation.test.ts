@@ -24,14 +24,27 @@ test("one Bun version is pinned across packageManager, bun.lock, CI, and the run
 	const { readdirSync, readFileSync } = await import("node:fs")
 	const workflowFiles = readdirSync(workflowsDirectory).filter((name) => name.endsWith(".yml"))
 	expect(workflowFiles.length).toBeGreaterThan(0)
+	let pinnedWorkflows = 0
 	for (const workflowFile of workflowFiles) {
 		const workflow = readFileSync(`${workflowsDirectory}${workflowFile}`, "utf8")
-		for (const match of workflow.matchAll(/bun-version:\s*(\S+)/g)) {
-			expect(`${workflowFile} pins bun-version ${match[1]}`).toBe(
+		const setupCount = [...workflow.matchAll(/uses:\s*oven-sh\/setup-bun/g)].length
+		const pins = [...workflow.matchAll(/bun-version:\s*(\S+)/g)].map((match) => match[1])
+		// Non-vacuous gate: a workflow that runs Bun must set it up, and every
+		// setup must carry exactly one pin at the locked version.
+		if (/\bbun\s+(?:run|test|add|install|x)\b/.test(workflow)) {
+			expect(`${workflowFile} sets up Bun ${setupCount > 0}`).toBe(`${workflowFile} sets up Bun true`)
+		}
+		expect(`${workflowFile} pins ${pins.length} of ${setupCount} setups`).toBe(
+			`${workflowFile} pins ${setupCount} of ${setupCount} setups`,
+		)
+		for (const pin of pins) {
+			expect(`${workflowFile} pins bun-version ${pin}`).toBe(
 				`${workflowFile} pins bun-version ${bunVersion}`,
 			)
 		}
+		if (pins.length > 0) pinnedWorkflows += 1
 	}
+	expect(pinnedWorkflows).toBeGreaterThan(0)
 })
 
 test("runtime custody sources generate one thin launcher and checked shell projections", async () => {

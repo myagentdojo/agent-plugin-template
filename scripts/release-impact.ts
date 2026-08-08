@@ -105,6 +105,9 @@ function isPayloadPath(path: string): boolean {
 	return (
 		path.startsWith("plugin/") ||
 		path.startsWith("runtime/src/") ||
+		path.startsWith("packages/") ||
+		path === "bun.lock" ||
+		path === "bunfig.toml" ||
 		generatedPayloadPaths.has(path)
 	)
 }
