@@ -208,10 +208,18 @@ test("validateBundleText rejects built-in loader escape hatches", () => {
 test("validateBundleText rejects runtime code generation", () => {
 	for (const code of [
 		`const load = new Function("target", "return im" + "port(target)");`,
+		`const load = Function("return 1");`,
 		`const load = eval("target => im" + "port(target)");`,
 	]) {
 		expect(() => validateBundleText("skill-a", code)).toThrow(/runtime code generation/)
 	}
+})
+
+test("validateBundleText allows non-invoked Function references", () => {
+	validateBundleText(
+		"skill-a",
+		`const call = Function.prototype.call;const isFunction = value instanceof Function;console.log(call, isFunction);`,
+	)
 })
 
 test("validateBundleText rejects a concatenated require that begins with a string literal", () => {
@@ -221,9 +229,13 @@ test("validateBundleText rejects a concatenated require that begins with a strin
 })
 
 test("validateBundleText rejects a member-access runtime require", () => {
-	expect(() => validateBundleText("skill-a", `const m = globalThis.require(name);`)).toThrow(
-		/computed runtime require/,
-	)
+	for (const code of [
+		`const m = globalThis.require(name);`,
+		`const fs = globalThis.require("node:fs");`,
+		`const fs = import.meta.require("node:fs");`,
+	]) {
+		expect(() => validateBundleText("skill-a", code)).toThrow(/ambient runtime module loader/)
+	}
 })
 
 test("validateBundleText rejects a concatenated dynamic import that begins with a string literal", () => {

@@ -344,9 +344,8 @@ function allowedRuntimeSpecifier(specifier: string): boolean {
  */
 export function validateBundleText(skillId: string, code: string): void {
 	const executable = executableCodeMask(code)
-	const codeGeneration = /\b(?:eval|Function)\b/g
+	const codeGeneration = /\b(?:eval|Function)\s*\(/g
 	for (const match of executable.matchAll(codeGeneration)) {
-		if (isPropertyLabel(executable, match.index, match[0].length)) continue
 		throw new BundleValidationError(
 			skillId,
 			"dynamic-code-generation",
@@ -386,6 +385,15 @@ export function validateBundleText(skillId: string, code: string): void {
 	}
 	for (const match of executable.matchAll(/\b(?:__require|require)\b/g)) {
 		if (isPropertyLabel(executable, match.index, match[0].length)) continue
+		let before = match.index - 1
+		while (before >= 0 && /\s/.test(executable[before])) before--
+		if (executable[before] === ".") {
+			throw new BundleValidationError(
+				skillId,
+				"runtime-loader",
+				`bundle retains an ambient runtime module loader near "${code.slice(Math.max(0, match.index - 16), match.index + 32)}"`,
+			)
+		}
 		const tail = executable.slice(match.index + match[0].length)
 		const callOpen = /^\s*\(/.exec(tail)
 		if (!callOpen || !literalCallTail.test(tail.slice(callOpen[0].length))) {
