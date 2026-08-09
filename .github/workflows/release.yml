@@ -491,6 +491,8 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      issues: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -735,3 +737,22 @@ jobs:
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
           subject-path: dist/*.tar.gz
+      - name: Reconcile Release Please lineage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr_number=$(jq -er '.pullRequest | select(type == "number" and . > 0 and . == floor)' persisted-candidate.json)
+          labels_endpoint="repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels"
+
+          gh api --method POST "$labels_endpoint" -f 'labels[]=autorelease: tagged' >/dev/null
+          current_labels=$(gh api "$labels_endpoint" --jq '.[].name')
+          if grep -Fxq 'autorelease: pending' <<< "$current_labels"; then
+            gh api --method DELETE "${labels_endpoint}/autorelease%3A%20pending" >/dev/null
+          fi
+
+          current_labels=$(gh api "$labels_endpoint" --jq '.[].name')
+          if ! grep -Fxq 'autorelease: tagged' <<< "$current_labels" || grep -Fxq 'autorelease: pending' <<< "$current_labels"; then
+            echo "Release Please lineage did not converge for PR ${pr_number}." >&2
+            exit 1
+          fi

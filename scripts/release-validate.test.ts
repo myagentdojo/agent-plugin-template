@@ -1,4 +1,12 @@
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	cpSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join, resolve } from "node:path"
 
@@ -365,6 +373,119 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).not.toContain("ref: ${{ inputs.release_tag || github.sha }}")
 	expect(workflow).not.toContain("*.provenance.json")
 	expect(workflow).not.toContain("endswith($repository)")
+})
+
+test("successful publication closes the provenance-bound Release Please lineage", () => {
+	const workflowSource = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+	const workflow = Bun.YAML.parse(workflowSource) as {
+		jobs: {
+			release: {
+				permissions: Record<string, string>
+				steps: Array<{ name?: string; run?: string }>
+			}
+		}
+	}
+	const releaseJob = workflow.jobs.release
+	const lineageStep = releaseJob.steps.find(
+		(step) => step.name === "Reconcile Release Please lineage",
+	)
+
+	expect(releaseJob.permissions.issues).toBe("write")
+	expect(releaseJob.permissions["pull-requests"]).toBe("read")
+	expect(lineageStep?.run).toContain("persisted-candidate.json")
+	expect(lineageStep?.run).toContain("autorelease: tagged")
+	expect(lineageStep?.run).toContain("autorelease%3A%20pending")
+	expect(lineageStep?.run).toContain("Release Please lineage did not converge")
+	expect(lineageStep?.run).toBeString()
+
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "release-lineage-"))
+	const fakeBin = join(temporaryRoot, "bin")
+	const labelsPath = join(temporaryRoot, "labels.txt")
+	const logPath = join(temporaryRoot, "gh.log")
+	try {
+		mkdirSync(fakeBin)
+		writeFileSync(join(temporaryRoot, "persisted-candidate.json"), '{"pullRequest":18}\n')
+		writeFileSync(labelsPath, "autorelease: pending\n")
+		const fakeGh = join(fakeBin, "gh")
+		writeFileSync(
+			fakeGh,
+			`#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$GH_FAKE_LOG"
+[[ "$*" == *"repos/myagentdojo/agent-plugin-template/issues/18/labels"* ]]
+if [[ "$*" == *"--method POST"* ]]; then
+	if [[ "\${GH_FAKE_MODE:-}" == "stale_labels" ]]; then
+		exit 0
+	fi
+	label=""
+	for argument in "$@"; do
+		case "$argument" in
+			'labels[]='*) label="\${argument#*=}" ;;
+		esac
+	done
+	if [[ -z "$label" ]]; then
+		echo 'missing labels[] POST field' >&2
+		exit 2
+	fi
+	grep -Fxq "$label" "$GH_FAKE_LABELS" || printf '%s\\n' "$label" >> "$GH_FAKE_LABELS"
+elif [[ "$*" == *"--method DELETE"* ]]; then
+	if [[ "\${GH_FAKE_MODE:-}" == "delete_forbidden" ]]; then
+		echo 'gh: Forbidden (HTTP 403)' >&2
+		exit 1
+	fi
+	if [[ "\${GH_FAKE_MODE:-}" == "stale_labels" ]]; then
+		exit 0
+	fi
+	if ! grep -Fxq 'autorelease: pending' "$GH_FAKE_LABELS"; then
+		echo 'gh: Not Found (HTTP 404)' >&2
+		exit 1
+	fi
+	grep -Fxv 'autorelease: pending' "$GH_FAKE_LABELS" > "$GH_FAKE_LABELS.next" || true
+	mv "$GH_FAKE_LABELS.next" "$GH_FAKE_LABELS"
+else
+	cat "$GH_FAKE_LABELS"
+fi
+`,
+		)
+		chmodSync(fakeGh, 0o755)
+
+		const runLineage = (mode = "") =>
+			Bun.spawnSync({
+				cmd: ["bash", "-c", lineageStep?.run ?? ""],
+				cwd: temporaryRoot,
+				env: {
+					...process.env,
+					PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+					GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
+					GH_FAKE_LABELS: labelsPath,
+					GH_FAKE_LOG: logPath,
+					GH_FAKE_MODE: mode,
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+			})
+
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const result = runLineage()
+			expect(result.exitCode, result.stderr.toString()).toBe(0)
+			expect(readFileSync(labelsPath, "utf8")).toBe("autorelease: tagged\n")
+		}
+		expect(readFileSync(logPath, "utf8").match(/--method DELETE/g)).toHaveLength(1)
+
+		writeFileSync(labelsPath, "autorelease: pending\n")
+		const deleteFailure = runLineage("delete_forbidden")
+		expect(deleteFailure.exitCode).not.toBe(0)
+		expect(deleteFailure.stderr.toString()).toContain("Forbidden (HTTP 403)")
+
+		writeFileSync(labelsPath, "autorelease: pending\n")
+		const staleLabels = runLineage("stale_labels")
+		expect(staleLabels.exitCode).not.toBe(0)
+		expect(staleLabels.stderr.toString()).toContain(
+			"Release Please lineage did not converge for PR 18.",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
 })
 
 test("immutable tag creation is retry-safe and rejects a rebound candidate", () => {
