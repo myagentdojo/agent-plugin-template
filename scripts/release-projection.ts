@@ -159,7 +159,7 @@ function gitObjectId(ref: string, path: string): string {
 
 function gitChangedFiles(base: string, head: string): string[] {
 	const result = Bun.spawnSync({
-		cmd: ["git", "diff", "--name-only", base, head, "--"],
+		cmd: ["git", "diff", "--name-only", "-z", base, head, "--"],
 		cwd: process.cwd(),
 		stdout: "pipe",
 		stderr: "pipe",
@@ -167,7 +167,7 @@ function gitChangedFiles(base: string, head: string): string[] {
 	if (result.exitCode !== 0) {
 		throw new Error(`cannot resolve candidate changed files: ${result.stderr.toString().trim()}`)
 	}
-	return result.stdout.toString().split("\n").filter(Boolean)
+	return result.stdout.toString().split("\0").filter((path) => path.length > 0)
 }
 
 if (import.meta.main) {

@@ -108,6 +108,19 @@ describe("default branch direct-push protection", () => {
 	})
 
 	test.each([
+		["all branches", ["~ALL"]],
+		["bare default branch", ["main"]],
+		["full default branch ref", ["refs/heads/main"]],
+	] as const)("accepts %s targeting", (_description, include) => {
+		expect(
+			classifyDirectPushProtection(
+				[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include, exclude: [] } } })],
+				"main",
+			),
+		).toMatchObject({ status: "ready" })
+	})
+
+	test.each([
 		["absent", []],
 		["disabled", [reviewedDefaultBranchRuleset({ enforcement: "disabled" })]],
 		[
@@ -121,6 +134,10 @@ describe("default branch direct-push protection", () => {
 		[
 			"non-default branch",
 			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["release"], exclude: [] } } })],
+		],
+		[
+			"excluded default branch",
+			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["~ALL"], exclude: ["main"] } } })],
 		],
 		[
 			"without pull-request rule",
@@ -139,8 +156,9 @@ describe("default branch direct-push protection", () => {
 
 	test.each([
 		["ruleset response", undefined, "main"],
-		["default branch", [reviewedDefaultBranchRuleset()], undefined],
+		["empty default branch", [reviewedDefaultBranchRuleset()], ""],
 		["ruleset", [{}], "main"],
+		["non-record ruleset", ["not-a-ruleset"], "main"],
 		["bypass actors", [reviewedDefaultBranchRuleset({ bypass_actors: {} })], "main"],
 		["conditions", [reviewedDefaultBranchRuleset({ conditions: {} })], "main"],
 		["rule", [reviewedDefaultBranchRuleset({ rules: [{}] })], "main"],
@@ -149,6 +167,12 @@ describe("default branch direct-push protection", () => {
 			name: "direct-push-protection",
 			status: "unavailable",
 		})
+	})
+
+	test("skips well-formed non-branch rulesets", () => {
+		expect(
+			classifyDirectPushProtection([immutableTagRuleset(), reviewedDefaultBranchRuleset()], "main"),
+		).toMatchObject({ status: "ready" })
 	})
 })
 
@@ -160,7 +184,7 @@ describe("release merge methods", () => {
 				allow_squash_merge: true,
 				allow_merge_commit: false,
 			}),
-		).toContainEqual(expect.objectContaining({ name: "merge-commits", status: "ready", repair: "" }))
+		).toContainEqual(expect.objectContaining({ name: "squash-merge", status: "ready", repair: "" }))
 	})
 
 	test("rejects merge-commit-only repositories because ordinary pull requests must remain squashable", () => {
@@ -172,7 +196,7 @@ describe("release merge methods", () => {
 			}),
 		).toContainEqual(
 			expect.objectContaining({
-				name: "merge-commits",
+				name: "squash-merge",
 				status: "missing",
 				repair: expect.stringContaining("Allow squash merging"),
 			}),
@@ -184,9 +208,9 @@ describe("release merge methods", () => {
 			default_branch: "main",
 			allow_squash_merge: false,
 			allow_merge_commit: false,
-		}).find(({ name }) => name === "merge-commits")
+		}).find(({ name }) => name === "squash-merge")
 
-		expect(check).toMatchObject({ name: "merge-commits", status: "missing" })
+		expect(check).toMatchObject({ name: "squash-merge", status: "missing" })
 		expect(check?.repair).toContain("Allow squash merging")
 	})
 
@@ -198,7 +222,7 @@ describe("release merge methods", () => {
 		],
 	] as const)("fails closed for %s", (_condition, repository) => {
 		expect(classifyRepositorySettings(repository)).toContainEqual(
-			expect.objectContaining({ name: "merge-commits", status: "unavailable" }),
+			expect.objectContaining({ name: "squash-merge", status: "unavailable" }),
 		)
 	})
 })

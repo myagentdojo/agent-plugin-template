@@ -122,6 +122,7 @@ test("projection CLI executes the same policy against Git refs", () => {
 	const run = (arguments_: string[]) =>
 		Bun.spawnSync({ cmd: arguments_, cwd: repository, stdout: "pipe", stderr: "pipe" })
 	let result: ReturnType<typeof Bun.spawnSync> | undefined
+	let newlinePathResult: ReturnType<typeof Bun.spawnSync> | undefined
 	try {
 		for (const command of [
 			["git", "init", "--quiet"],
@@ -159,6 +160,23 @@ test("projection CLI executes the same policy against Git refs", () => {
 			projection,
 			"--json",
 		])
+		const unreviewedPath = "unreviewed-☃\nfile.txt"
+		writeFileSync(join(repository, unreviewedPath), "unreviewed\n")
+		expect(run(["git", "add", "--", unreviewedPath]).exitCode).toBe(0)
+		expect(run(["git", "commit", "--quiet", "-m", "unreviewed path"]).exitCode).toBe(0)
+		const headWithUnreviewedPath = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		newlinePathResult = run([
+			process.execPath,
+			"run",
+			join(import.meta.dir, "release-projection.ts"),
+			"--base",
+			base,
+			"--head",
+			headWithUnreviewedPath,
+			"--projection",
+			projection,
+			"--json",
+		])
 	} finally {
 		rmSync(repository, { recursive: true, force: true })
 	}
@@ -171,5 +189,9 @@ test("projection CLI executes the same policy against Git refs", () => {
 		ok: true,
 		changedFiles: ["plugin.config.json"],
 	})
+	expect(newlinePathResult).toBeDefined()
+	if (!newlinePathResult) throw new Error("newline-path projection fixture did not run")
+	expect(newlinePathResult.exitCode).toBe(1)
+	expect(newlinePathResult.stderr.toString()).toContain("candidate changed-file set")
 	expect(RELEASE_PROJECTION_PATHS).not.toContain("plugin/runtime/hello-world.js")
 })

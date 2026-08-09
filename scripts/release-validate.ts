@@ -86,6 +86,23 @@ export interface CandidateTopology {
 	reviewedPrHeadSha: string
 }
 
+const FULL_COMMIT_SHA = /^[a-f0-9]{40}$/
+
+/** Reject malformed Git commit identities before topology equality comparisons. */
+function validateCandidateTopologyCommitShas(topology: CandidateTopology): void {
+	if (
+		!Array.isArray(topology.candidateParentShas) ||
+		![
+			...topology.candidateParentShas,
+			topology.trustedBaseSha,
+			topology.mergedPrBaseSha,
+			topology.reviewedPrHeadSha,
+		].every((sha) => typeof sha === "string" && FULL_COMMIT_SHA.test(sha))
+	) {
+		throw new Error("publication candidate topology contains an invalid commit SHA")
+	}
+}
+
 export interface PublicationAdmissionInput extends CandidateTopology {
 	/** GitHub owner/repository identity. */
 	repository: string
@@ -294,6 +311,7 @@ function admitCandidate(
 	if (candidate.mergeCommit !== input.githubSha) {
 		throw new Error("publication candidate merge commit does not equal github.sha")
 	}
+	validateCandidateTopologyCommitShas(input)
 	if (input.candidateParentShas.length !== 1 && input.candidateParentShas.length !== 2) {
 		throw new Error("publication candidate must have exactly one or two parents")
 	}

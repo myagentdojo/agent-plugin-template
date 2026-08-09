@@ -855,6 +855,23 @@ test("publication candidate admission rejects a candidate with three parents", (
 	).toThrow("exactly one or two parents")
 })
 
+test("publication candidate admission rejects empty or malformed topology commit SHAs", () => {
+	for (const topology of [
+		{ candidateParentShas: [""] },
+		{ candidateParentShas: ["c".repeat(40), "D".repeat(40)] },
+		{ trustedBaseSha: "" },
+		{ mergedPrBaseSha: "e".repeat(39) },
+		{ reviewedPrHeadSha: "D".repeat(40) },
+	]) {
+		expect(() =>
+			admitPublicationCandidate({
+				...admissionInput(),
+				...topology,
+			}),
+		).toThrow("topology contains an invalid commit SHA")
+	}
+})
+
 test("publication candidate admission rejects a candidate parent outside the trusted base", () => {
 	expect(() =>
 		admitPublicationCandidate({
@@ -1117,6 +1134,25 @@ test("manual repair requires the original publication candidate record", () => {
 			manifestVersion: "0.1.0",
 		}),
 	).toThrow("publication candidate")
+})
+
+test("manual repair reuses topology commit SHA validation", () => {
+	const candidate = admitPublicationCandidate(admissionInput())
+
+	expect(() =>
+		validateRepairCandidateBinding({
+			candidate,
+			repository: "myagentdojo/agent-plugin-template",
+			expectedBaseBranch: "main",
+			expectedAutomationIdentities: ["github-actions[bot]"],
+			trustedCandidate: releasePullRequest(),
+			...candidateTopology({ reviewedPrHeadSha: "" }),
+			tag: "v0.1.0",
+			checkoutSha: "a".repeat(40),
+			tagSha: "a".repeat(40),
+			manifestVersion: "0.1.0",
+		}),
+	).toThrow("topology contains an invalid commit SHA")
 })
 
 test("manual repair preserves a historical projection path after the current allowlist removes it", () => {
