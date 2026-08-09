@@ -488,8 +488,11 @@ function validateRepository(repositoryRoot: string) {
 			throw new Error(`${name} version ${String(actual)} does not match plugin.config.json ${version}`)
 		}
 	}
-	if (claudeManifest.hooks !== undefined || codexManifest.hooks !== undefined) {
-		throw new Error("runtime lifecycle hooks must not be active in native manifests")
+	if (
+		claudeManifest.hooks !== "./hooks/claude/hooks.json" ||
+		codexManifest.hooks !== "./hooks/codex/hooks.json"
+	) {
+		throw new Error("native manifests must reference the exact client-specific hook declarations")
 	}
 
 	if (releaseState === "bootstrap") {

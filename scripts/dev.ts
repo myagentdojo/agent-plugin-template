@@ -26,6 +26,8 @@ export const claudeWatchSources = [
 	{ relativePath: "runtime", recursive: true },
 	{ relativePath: "packages", recursive: true },
 	{ relativePath: "plugin/skills", recursive: true },
+	{ relativePath: "plugin/hooks", recursive: true },
+	{ relativePath: "plugin/assets", recursive: true },
 	{ relativePath: "plugin/.claude-plugin", recursive: true },
 	{ relativePath: "plugin/.codex-plugin", recursive: true },
 	{ relativePath: "package.json", recursive: false },

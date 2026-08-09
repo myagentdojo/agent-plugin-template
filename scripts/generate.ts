@@ -16,7 +16,7 @@ const check = arguments_.includes("--check")
 const json = arguments_.includes("--json")
 
 if (arguments_.includes("--help") || arguments_.includes("-h")) {
-	console.log(`Generate native manifests, lifecycle proof fixture, and runtime-custody projections from canonical sources.
+	console.log(`Generate native manifests, hook declarations, lifecycle proof fixture, and runtime-custody projections from canonical sources.
 
 Usage:
   bun run generate

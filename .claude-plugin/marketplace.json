@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "harness-native-plugin-prototype",
-      "description": "Dependency-closed skills using a verified, plugin-managed Bun runtime",
+      "description": "Portable Bun skills and a guided native capability tour for Claude Code and Codex",
       "author": {
         "name": "Prototype"
       },

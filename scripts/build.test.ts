@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -1526,6 +1527,32 @@ function bunPayloadFixture(): string {
 
 test("Bun-only release admission accepts the complete current payload", () => {
 	expect(() => validateBunOnlyPayload(bunPayloadFixture())).not.toThrow()
+})
+
+test("Bun-only release admission rejects an arbitrary model-only skill", () => {
+	const fixtureRoot = bunPayloadFixture()
+	mkdirSync(join(fixtureRoot, "plugin", "skills", "unexpected-model-skill"), {
+		recursive: true,
+	})
+	writeFileSync(
+		join(fixtureRoot, "plugin", "skills", "unexpected-model-skill", "SKILL.md"),
+		"# Unexpected model skill\n",
+	)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/skill sidecar inventory/)
+})
+
+test("Bun-only release admission rejects an arbitrary executable sidecar", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", "hooks", "unexpected-handler"), "#!/bin/sh\n")
+	chmodSync(join(fixtureRoot, "plugin", "hooks", "unexpected-handler"), 0o755)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/hook sidecar inventory/)
+})
+
+test("Bun-only release admission rejects an unsupported component surface", () => {
+	const fixtureRoot = bunPayloadFixture()
+	mkdirSync(join(fixtureRoot, "plugin", "mcp"))
+	writeFileSync(join(fixtureRoot, "plugin", "mcp", "server.json"), "{}\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/unsupported payload surface mcp/)
 })
 
 test("Bun-only release admission rejects a legacy runtime surface", () => {

@@ -203,8 +203,8 @@ test("template user initializes both harness manifests from one metadata source"
 		version: initialVersion,
 		defaultEnabled: false,
 		skills: "./skills/",
+		hooks: "./hooks/claude/hooks.json",
 	})
-	expect(claudeManifest).not.toHaveProperty("hooks")
 	const claudeMarketplace = JSON.parse(
 		readFileSync(join(temporaryRoot, ".claude-plugin", "marketplace.json"), "utf8"),
 	)
@@ -221,9 +221,19 @@ test("template user initializes both harness manifests from one metadata source"
 		name: "dojo-hello",
 		version: initialVersion,
 		skills: "./skills/",
-		interface: { displayName: "Dojo Hello" },
+		hooks: "./hooks/codex/hooks.json",
+		interface: {
+			displayName: "Dojo Hello",
+			brandColor: "#3B5CCC",
+			composerIcon: "./assets/composer-icon.svg",
+			logo: "./assets/logo.svg",
+		},
 	})
-	expect(codexManifest).not.toHaveProperty("hooks")
+	for (const field of ["composerIcon", "logo"] as const) {
+		const assetPath = join(temporaryRoot, "plugin", codexManifest.interface[field])
+		expect(existsSync(assetPath)).toBe(true)
+		expect(readFileSync(assetPath, "utf8")).not.toMatch(/Harness Plugin Prototype|dojo-hello|Dojo Hello/)
+	}
 
 	const codexMarketplace = JSON.parse(
 		readFileSync(join(temporaryRoot, ".agents", "plugins", "marketplace.json"), "utf8"),
@@ -348,7 +358,8 @@ test("initialization resets recipient release lineage to 0.1.0", () => {
 	)
 	expect(releaseConfig.packages["."]["package-name"]).toBe("dojo-hello")
 
-	expect(existsSync(join(temporaryRoot, "plugin", "hooks"))).toBe(false)
+	expect(existsSync(join(temporaryRoot, "plugin", "hooks", "claude", "hooks.json"))).toBe(true)
+	expect(existsSync(join(temporaryRoot, "plugin", "hooks", "codex", "hooks.json"))).toBe(true)
 })
 
 test("reinitialization without force preserves recipient release files", () => {

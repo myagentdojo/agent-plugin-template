@@ -42,7 +42,11 @@ function installedState(
 	writeFileSync(join(installedPath, "runtime", "hello-world.js"), runtime)
 	writeFileSync(
 		join(installedPath, ".codex-plugin", "plugin.json"),
-		JSON.stringify({ name: "plugin", version: listedVersion }),
+		JSON.stringify({
+			name: "plugin",
+			version: listedVersion,
+			hooks: "./hooks/codex/hooks.json",
+		}),
 	)
 	return {
 		marketplaceAdd: { marketplaceName: "plugin", installedRoot: root, alreadyAdded: false },

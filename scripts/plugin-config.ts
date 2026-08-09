@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 
 /** Canonical plugin identity and presentation metadata. */
 export interface PluginConfig {
@@ -31,6 +31,12 @@ export interface PluginConfig {
 	capabilities: string[]
 	/** Starter prompts shown by Codex. */
 	defaultPrompts: string[]
+	/** Restrained hexadecimal accent projected into Codex interface metadata. */
+	brandColor: string
+	/** Plugin-relative identity-neutral composer icon. */
+	composerIcon: string
+	/** Plugin-relative identity-neutral logo. */
+	logo: string
 	/** Public and private repositories used for hosted distribution proof. */
 	canary: {
 		/** GitHub account or organization that owns the canary repositories. */
@@ -274,6 +280,17 @@ export function validatePackageContract(config: PluginConfig): void {
 			"defaultPrompts accepts at most three unique, non-empty, single-line entries that do not start with @mentions",
 		)
 	}
+	if (!/^#[0-9A-F]{6}$/.test(config.brandColor)) {
+		throw packageContractError("brandColor must be an uppercase six-digit hexadecimal color")
+	}
+	for (const [field, path] of [
+		["composerIcon", config.composerIcon],
+		["logo", config.logo],
+	] as const) {
+		if (!/^\.\/assets\/[a-z0-9]+(?:-[a-z0-9]+)*\.svg$/.test(path)) {
+			throw packageContractError(`${field} must be a plugin-relative SVG asset path`)
+		}
+	}
 }
 
 /**
@@ -383,7 +400,23 @@ function claudeManifest(config: PluginConfig): GeneratedFile {
 			license: config.license,
 			keywords: config.keywords,
 			skills: "./skills/",
+			hooks: "./hooks/claude/hooks.json",
 		}),
+	}
+}
+
+function codexInterface(config: PluginConfig): Record<string, unknown> {
+	return {
+		displayName: config.displayName,
+		shortDescription: config.shortDescription,
+		longDescription: config.longDescription,
+		developerName: config.author.name,
+		category: config.category,
+		capabilities: config.capabilities,
+		defaultPrompt: config.defaultPrompts,
+		brandColor: config.brandColor,
+		composerIcon: config.composerIcon,
+		logo: config.logo,
 	}
 }
 
@@ -399,14 +432,22 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 			license: config.license,
 			keywords: config.keywords,
 			skills: "./skills/",
-			interface: {
-				displayName: config.displayName,
-				shortDescription: config.shortDescription,
-				longDescription: config.longDescription,
-				developerName: config.author.name,
-				category: config.category,
-				capabilities: config.capabilities,
-				defaultPrompt: config.defaultPrompts,
+			hooks: "./hooks/codex/hooks.json",
+			interface: codexInterface(config),
+		}),
+	}
+}
+
+function hookDeclaration(client: "claude" | "codex"): GeneratedFile {
+	const pluginRoot = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "CODEX_PLUGIN_ROOT"
+	const command = (event: "SessionStart" | "Stop") =>
+		`"\${${pluginRoot}}/hooks/native-capability-hook" ${event} ${client}`
+	return {
+		path: `plugin/hooks/${client}/hooks.json`,
+		contents: serialize({
+			hooks: {
+				SessionStart: [{ hooks: [{ type: "command", command: command("SessionStart") }] }],
+				Stop: [{ hooks: [{ type: "command", command: command("Stop") }] }],
 			},
 		}),
 	}
@@ -419,19 +460,30 @@ export function renderGeneratedFiles(config: PluginConfig): GeneratedFile[] {
 		codexMarketplace(config),
 		claudeManifest(config),
 		codexManifest(config),
+		hookDeclaration("claude"),
+		hookDeclaration("codex"),
 	]
 }
 
 /** Write every generated manifest to its deterministic repository path. */
 export function writeGeneratedFiles(root: string, config: PluginConfig): GeneratedFile[] {
 	const files = renderGeneratedFiles(config)
-	for (const file of files) writeFileSync(join(root, file.path), file.contents)
+	for (const file of files) {
+		const path = join(root, file.path)
+		if (existsSync(path) && readFileSync(path, "utf8") === file.contents) continue
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, file.contents)
+	}
 	return files
 }
 
 /** Return generated paths whose checked-in contents differ from canonical metadata. */
 export function checkGeneratedFiles(root: string, config: PluginConfig): string[] {
 	return renderGeneratedFiles(config)
-		.filter((file) => readFileSync(join(root, file.path), "utf8") !== file.contents)
+		.filter(
+			(file) =>
+				!existsSync(join(root, file.path)) ||
+				readFileSync(join(root, file.path), "utf8") !== file.contents,
+		)
 		.map((file) => file.path)
 }

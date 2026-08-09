@@ -164,7 +164,9 @@ export function proveCodexNative(
 	const manifest = JSON.parse(
 		readFileSync(join(restored.add.installedPath, ".codex-plugin", "plugin.json"), "utf8"),
 	)
-	if (manifest.hooks !== undefined) throw new Error("Codex installed payload activates lifecycle hooks")
+	if (manifest.hooks !== "./hooks/codex/hooks.json") {
+		throw new Error("Codex installed payload does not reference the exact capability hook declaration")
+	}
 	return {
 		mode: "native-local-marketplace",
 		version: restored.add.version,
