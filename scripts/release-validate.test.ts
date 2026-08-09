@@ -257,6 +257,10 @@ test("release validation rejects a duplicate changelog heading", () => {
 
 test("release workflow is pinned and publishes proven assets after validation", () => {
 	const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+	const parsedWorkflow = Bun.YAML.parse(workflow) as {
+		jobs: Record<string, { if?: string }>
+	}
+	const normalizePredicate = (predicate: string | undefined) => predicate?.replace(/\s+/g, " ")
 	const finalReleaseJob = workflow.slice(workflow.indexOf("  release:\n"))
 	const compareStepStart = finalReleaseJob.indexOf("      - name: Compare release assets before mutation\n")
 	const uploadStepStart = finalReleaseJob.indexOf("      - name: Add or replace admitted release assets\n")
@@ -337,20 +341,14 @@ test("release workflow is pinned and publishes proven assets after validation", 
 		workflow.indexOf("\n  candidate:\n"),
 		workflow.indexOf("\n  compatibility:\n"),
 	)
-	const compatibilityJob = workflow.slice(
-		workflow.indexOf("\n  compatibility:\n"),
-		workflow.indexOf("\n  package:\n"),
-	)
-	const packageJob = workflow.slice(
-		workflow.indexOf("\n  package:\n"),
-		workflow.indexOf("\n  release:\n"),
-	)
 	expect(candidateJob).toContain("    permissions:\n      actions: read\n      contents: read\n")
 	expect(candidateJob).toContain("persist-credentials: false")
-	expect(compatibilityJob).toContain("if: needs.resolve.outputs.mode == 'publish'")
-	expect(packageJob).toContain("always()")
-	expect(packageJob).toContain("needs.compatibility.result == 'skipped'")
-	expect(packageJob).toContain("needs.resolve.outputs.mode == 'repair'")
+	expect(normalizePredicate(parsedWorkflow.jobs.compatibility.if)).toBe(
+		"needs.resolve.outputs.mode == 'publish'",
+	)
+	expect(normalizePredicate(parsedWorkflow.jobs.package.if)).toBe(
+		"always() && needs.resolve.result == 'success' && needs.candidate.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair') && (needs.compatibility.result == 'success' || (needs.resolve.outputs.mode == 'repair' && needs.compatibility.result == 'skipped'))",
+	)
 	expect(workflow.match(/--dir "\$RUNNER_TEMP\/platform-candidate"/g)).toHaveLength(2)
 	expect(maintainJob).toContain("persist-credentials: false")
 	expect(maintainJob).toContain("group: release-maintenance")
