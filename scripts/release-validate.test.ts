@@ -533,7 +533,7 @@ test("successful publication closes the provenance-bound Release Please lineage"
 	)
 
 	expect(releaseJob.permissions.issues).toBe("write")
-	expect(releaseJob.permissions["pull-requests"]).toBe("read")
+	expect(releaseJob.permissions["pull-requests"]).toBe("write")
 	expect(lineageStep?.run).toContain("persisted-candidate.json")
 	expect(lineageStep?.run).toContain("autorelease: tagged")
 	expect(lineageStep?.run).toContain("autorelease%3A%20pending")
@@ -830,6 +830,23 @@ test.each([
 
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("job boundary")
+})
+
+test("release validation rejects read-only pull-request lineage permissions", () => {
+	const temporaryRoot = copyRepository()
+	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+	writeFileSync(
+		workflowPath,
+		readFileSync(workflowPath, "utf8").replace(
+			"      issues: write\n      pull-requests: write\n    steps:\n",
+			"      issues: write\n      pull-requests: read\n    steps:\n",
+		),
+	)
+
+	const result = validate(temporaryRoot)
+
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("permissions must match the protected release contract")
 })
 
 test("AE3: publication binding agrees on candidate, immutable tag, package, release, and manifest", () => {
