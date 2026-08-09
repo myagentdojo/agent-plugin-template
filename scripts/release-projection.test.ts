@@ -40,6 +40,38 @@ test("runtime hook files are outside the release projection", () => {
 	).toThrow("unsupported path")
 })
 
+test("projection binds every changed candidate blob to the reviewed pull-request head", () => {
+	const file = { filename: "plugin.config.json", status: "modified", sha: "reviewed-blob" }
+	const versions = {
+		before: '{"version":"0.1.0","name":"x"}',
+		after: '{"version":"0.2.0","name":"x"}',
+		afterSha: "reviewed-blob",
+	}
+
+	expect(validateReleaseProjection([file], () => versions).changedFiles).toEqual([
+		"plugin.config.json",
+	])
+	expect(() =>
+		validateReleaseProjection([{ ...file, sha: "different-blob" }], () => versions),
+	).toThrow("reviewed head blob")
+})
+
+test("projection binds the complete candidate changed-file set to the reviewed pull request", () => {
+	const file = { filename: "plugin.config.json", status: "modified", sha: "reviewed-blob" }
+	const versions = {
+		before: '{"version":"0.1.0","name":"x"}',
+		after: '{"version":"0.2.0","name":"x"}',
+		afterSha: "reviewed-blob",
+	}
+
+	expect(validateReleaseProjection([file], () => versions, [file.filename]).changedFiles).toEqual([
+		file.filename,
+	])
+	expect(() =>
+		validateReleaseProjection([file], () => versions, [file.filename, "plugin/runtime/extra.js"]),
+	).toThrow("candidate changed-file set")
+})
+
 test("changelog projection prepends exactly one current-version section", () => {
 	const manifest = {
 		before: '{".":"0.1.0"}',
@@ -108,8 +140,12 @@ test("projection CLI executes the same policy against Git refs", () => {
 		expect(run(["git", "add", "plugin.config.json"]).exitCode).toBe(0)
 		expect(run(["git", "commit", "--quiet", "-m", "version"]).exitCode).toBe(0)
 		const head = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		const headBlob = run(["git", "rev-parse", `${head}:plugin.config.json`]).stdout.toString().trim()
 		const projection = join(repository, "projection.json")
-		writeFileSync(projection, '[{"filename":"plugin.config.json","status":"modified","sha":"1"}]\n')
+		writeFileSync(
+			projection,
+			`${JSON.stringify([{ filename: "plugin.config.json", status: "modified", sha: headBlob }])}\n`,
+		)
 
 		result = run([
 			process.execPath,

@@ -44,8 +44,6 @@ export interface ReleasePullRequestCandidate {
 	automationIdentity: string
 	/** Merge commit recorded by GitHub. */
 	mergeCommit: string
-	/** Merge mode inferred from the candidate commit shape. */
-	mergeMode: "merge" | "squash" | "rebase"
 	/** Repository-relative paths changed by the pull request. */
 	changedFiles: string[]
 	/** GitHub file status parallel to each changed path. */
@@ -77,7 +75,18 @@ export interface PublicationCandidateRecord {
 }
 
 /** Inputs needed to fail closed while admitting a publication candidate. */
-export interface PublicationAdmissionInput {
+export interface CandidateTopology {
+	/** Ordered parents of the candidate commit. */
+	candidateParentShas: string[]
+	/** Trusted base SHA supplied by the publication or repair context. */
+	trustedBaseSha: string
+	/** Frozen base SHA recorded on the merged pull request. */
+	mergedPrBaseSha: string
+	/** Reviewed head SHA recorded on the merged pull request. */
+	reviewedPrHeadSha: string
+}
+
+export interface PublicationAdmissionInput extends CandidateTopology {
 	/** GitHub owner/repository identity. */
 	repository: string
 	/** Configured release base branch. */
@@ -145,7 +154,7 @@ export interface RepairBindingInput {
 }
 
 /** GitHub-derived publication facts required to reproduce repair admission. */
-export interface RepairCandidateBindingInput extends RepairBindingInput {
+export interface RepairCandidateBindingInput extends RepairBindingInput, CandidateTopology {
 	/** Untrusted publication record carried by the annotated tag. */
 	candidate: unknown
 	/** Current GitHub owner/repository identity. */
@@ -255,6 +264,19 @@ export function canonicalGitHubRepositoryIdentity(repository: string): string {
 export function admitPublicationCandidate(
 	input: PublicationAdmissionInput,
 ): PublicationCandidateRecord {
+	return admitCandidate(input, true)
+}
+
+/**
+ * Admit a candidate against its supplied projection facts.
+ *
+ * Historical repair projections are executed by the historical base policy,
+ * so the current repair binding must not reinterpret their path allowlist.
+ */
+function admitCandidate(
+	input: PublicationAdmissionInput,
+	enforceCurrentProjectionPaths: boolean,
+): PublicationCandidateRecord {
 	if (input.candidates.length !== 1) {
 		throw new Error(
 			`publication admission requires exactly one merged Release Please PR; received ${input.candidates.length}`,
@@ -272,13 +294,24 @@ export function admitPublicationCandidate(
 	if (candidate.mergeCommit !== input.githubSha) {
 		throw new Error("publication candidate merge commit does not equal github.sha")
 	}
-	if (candidate.mergeMode !== "merge") {
-		throw new Error(`publication candidate merge mode ${candidate.mergeMode} is unsupported`)
+	if (input.candidateParentShas.length !== 1 && input.candidateParentShas.length !== 2) {
+		throw new Error("publication candidate must have exactly one or two parents")
+	}
+	const [baseParent, reviewedHeadParent] = input.candidateParentShas
+	if (baseParent !== input.trustedBaseSha) {
+		throw new Error("publication candidate first parent does not match the trusted base")
+	}
+	if (baseParent !== input.mergedPrBaseSha) {
+		throw new Error("publication candidate first parent does not match the merged PR base")
+	}
+	if (input.candidateParentShas.length === 2 && reviewedHeadParent !== input.reviewedPrHeadSha) {
+		throw new Error("publication candidate second parent does not match the reviewed PR head")
 	}
 	if (
 		candidate.changedFiles.length === 0 ||
 		new Set(candidate.changedFiles).size !== candidate.changedFiles.length ||
-		candidate.changedFiles.some((path) => !ALLOWED_RELEASE_PROJECTION.has(path))
+		(enforceCurrentProjectionPaths &&
+			candidate.changedFiles.some((path) => !ALLOWED_RELEASE_PROJECTION.has(path)))
 	) {
 		throw new Error("publication candidate changed files outside the allowed release projection")
 	}
@@ -388,16 +421,20 @@ export function validateRepairCandidateBinding(
 	input: RepairCandidateBindingInput,
 ): { tag: string; commit: string; version: string } {
 	const candidate = parsePublicationCandidateRecord(input.candidate)
-	admitPublicationCandidate({
+	admitCandidate({
 		repository: input.repository,
 		expectedBaseBranch: input.expectedBaseBranch,
 		expectedAutomationIdentities: input.expectedAutomationIdentities,
 		githubSha: input.checkoutSha,
+		candidateParentShas: input.candidateParentShas,
+		trustedBaseSha: input.trustedBaseSha,
+		mergedPrBaseSha: input.mergedPrBaseSha,
+		reviewedPrHeadSha: input.reviewedPrHeadSha,
 		manifestVersion: input.manifestVersion,
 		tagExists: false,
 		candidates: [input.trustedCandidate],
 		priorRecord: candidate,
-	})
+	}, false)
 	return validateRepairBinding(input)
 }
 
@@ -518,16 +555,34 @@ function validateRepository(repositoryRoot: string) {
 		"publication-candidate-${GITHUB_SHA}",
 		"merge_commit_sha",
 		"EXPECTED_RELEASE_PLEASE_LOGIN",
-		"parent_count",
+		"PUSH_BEFORE_SHA: ${{ github.event.before }}",
+		"PUSH_FORCED: ${{ github.event.forced }}",
+		'if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]',
+		'if [[ "$PUSH_FORCED" != "false" ]]',
+		'git merge-base --is-ancestor "$PUSH_BEFORE_SHA" "$GITHUB_SHA"',
+		"candidate_parent_shas",
+		"merged_pr_base_sha",
+		"reviewed_pr_head_sha",
+		"trusted_base_sha",
+		"admitPublicationCandidate",
 		"scripts/release-projection.ts",
-		'expectedTagState:"absent"',
 		"bun run prove:all",
 		"git diff --exit-code -- plugin/",
 		"ubuntu-24.04-arm",
 		"macos-15-intel",
 		"SOURCE_COMMIT",
 		"ref: ${{ needs.resolve.outputs.candidate_sha }}",
-		"bun run release:validate -- --repair",
+		"workflow_policy_sha=$(git rev-parse HEAD)",
+		'git checkout --detach "$workflow_policy_sha"',
+		'trusted_base_sha=$(git rev-parse "${candidate_sha}^1")',
+		'git checkout --detach "$trusted_base_sha"',
+		'TRUSTED_BASE_SHA: ${{ needs.resolve.outputs.trusted_base_sha }}',
+		'ADMITTED_MERGED_PR_BASE_SHA: ${{ needs.resolve.outputs.merged_pr_base_sha }}',
+		'ADMITTED_REVIEWED_PR_HEAD_SHA: ${{ needs.resolve.outputs.reviewed_pr_head_sha }}',
+		'trusted_base_sha="$TRUSTED_BASE_SHA"',
+		'if [[ "$merged_pr_base_sha" != "$ADMITTED_MERGED_PR_BASE_SHA" || "$reviewed_pr_head_sha" != "$ADMITTED_REVIEWED_PR_HEAD_SHA" ]]',
+		'git checkout --detach "$CANDIDATE_SHA"',
+		'if [[ "$(git rev-parse HEAD)" != "$CANDIDATE_SHA" ]]',
 		"tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json",
 		"git for-each-ref --format='%(contents)'",
 		'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"',
@@ -556,6 +611,11 @@ function validateRepository(repositoryRoot: string) {
 		"github.event.repository.private == false",
 	]) {
 		if (!releaseWorkflow.includes(required)) throw new Error(`release workflow is missing ${required}`)
+	}
+	for (const forbidden of ["parent_count", "mergeMode"]) {
+		if (releaseWorkflow.includes(forbidden)) {
+			throw new Error(`release workflow retains unsupported merge-shape metadata: ${forbidden}`)
+		}
 	}
 	if (releaseWorkflow.includes("github.run_attempt")) {
 		throw new Error("release workflow artifact identity must survive rerun-failed-jobs attempts")
@@ -708,9 +768,15 @@ function main(): void {
 			if (!trustedCandidatePath) {
 				throw new Error("GitHub-derived publication candidate is required for repair")
 			}
-			const trustedCandidate = JSON.parse(
-				readFileSync(trustedCandidatePath, "utf8"),
-			) as ReleasePullRequestCandidate
+			const trustedCandidateInput = JSON.parse(readFileSync(trustedCandidatePath, "utf8")) as
+				ReleasePullRequestCandidate & CandidateTopology
+			const {
+				candidateParentShas,
+				trustedBaseSha,
+				mergedPrBaseSha,
+				reviewedPrHeadSha,
+				...trustedCandidate
+			} = trustedCandidateInput
 			const repository = parsed.repository ?? process.env.GITHUB_REPOSITORY
 			if (!repository) throw new Error("repository identity is required for repair")
 			const expectedBaseBranch = parsed.expectedBaseBranch ?? process.env.BASE_BRANCH
@@ -726,6 +792,10 @@ function main(): void {
 				expectedBaseBranch,
 				expectedAutomationIdentities: [expectedAutomationLogin],
 				trustedCandidate,
+				candidateParentShas,
+				trustedBaseSha,
+				mergedPrBaseSha,
+				reviewedPrHeadSha,
 				tag: parsed.tag ?? process.env.REPAIR_TAG ?? "",
 				checkoutSha: parsed.checkoutSha ?? process.env.CHECKOUT_SHA ?? "",
 				tagSha: parsed.tagSha ?? process.env.TAG_SHA ?? "",

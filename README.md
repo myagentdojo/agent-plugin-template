@@ -373,8 +373,8 @@ Normal PRs merge into `main` without publishing. Each push is classified as rele
 flowchart LR
     change["Conventional PR merged"] --> releasePR["Generated release PR"]
     releasePR --> review["Review version and CHANGELOG"]
-    review --> merge["Two-parent merge into main"]
-    merge --> admit["Admit and persist one candidate SHA"]
+    review --> merge["Squash or merge into main"]
+    merge --> admit["Verify topology and persist one candidate SHA"]
     admit --> proof["Proof pinned to candidate SHA"]
     proof --> publish["Immutable tag, GitHub Release, archive, checksums"]
 ```
@@ -382,8 +382,8 @@ flowchart LR
 ### One-time GitHub setup
 
 1. Open **Settings → Actions → General → Workflow permissions**. Keep the default workflow permission read-only and allow GitHub Actions to create and approve pull requests.
-2. Enable squash merging for normal PRs and merge commits for release PRs. Remove any **Require linear history** rule that applies to `main`. Publication admits only a two-parent release-PR merge commit.
-3. Protect `main`. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
+2. Enable squash merging for all PRs, including Release Please PRs. Merge commits may remain available as an optional release-PR path. Publication does not trust a merge-mode label: it verifies either a one-parent candidate or a two-parent merge candidate against the reviewed PR and its frozen base.
+3. Protect `main` with an active branch ruleset that has no bypass actors. Enable **Require a pull request before merging** and **Block force pushes**. Require `Conventional Commit title`, `Release impact`, `Hosted public and private Git canaries`, all four `Compatibility` checks, and `Deterministic package`.
 4. Open **Settings → Rules → Rulesets**. Create an active tag ruleset for `v*` that restricts tag deletion and updates with no bypass actors.
 5. Open **Settings → Environments**. Create `release` and configure required reviewers for publication and same-tag asset replacement.
 6. Create the public and private canary repositories named by `plugin.config.json`, then create the `hosted-canary-qualification` environment. Add `CANARY_GH_TOKEN`: a fine-grained token for the exact configured `canary.actor`, scoped only to both canary repositories, with Contents read/write, Actions read, and metadata read. Add `CANARY_SSH_PRIVATE_KEY` and `CANARY_SSH_KNOWN_HOSTS` for the same canary identity. Qualification uses the token-backed GitHub API identity and SSH Git identity, and limits writes to create-only immutable candidate refs. Keeping Git transport on SSH allows candidates containing workflow files without broadening the API token.
@@ -394,7 +394,7 @@ flowchart LR
 9. Authenticate `gh` with read access to repository settings, then run `bun run readiness -- --repo OWNER/REPOSITORY`.
 10. Enable release automation only after readiness reports `READY`.
 
-The immutable `v*` tag ruleset is a human-owned safeguard outside the workflow. Release automation never receives repository-administration authority; it cannot change the ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, merge mode, effective merge-history policy, required checks, Actions permissions, tag ruleset, hosted-canary environment and secret names, or workflow authority cannot be proved. It reads secret metadata only, never secret values.
+The immutable `v*` tag ruleset and the no-bypass `main` ruleset are human-owned safeguards outside the workflow. The `main` ruleset prevents a force push from steering the push event's trusted pre-merge base. Release automation never receives repository-administration authority; it cannot change either ruleset or its own release environment. `bun run readiness` is read-only and fails closed when the default branch, squash path, direct-push protection, effective merge-history policy, required checks, Actions permissions, tag ruleset, hosted-canary environment and secret names, or workflow authority cannot be proved. It reads secret metadata only, never secret values.
 
 Release automation requires `RELEASE_PLEASE_TOKEN`; it does not fall back to `GITHUB_TOKEN`. GitHub suppresses workflow runs caused by `GITHUB_TOKEN`, which would leave the generated release PR without its required checks. The separate repository variable `RELEASE_PLEASE_AUTOMATION_LOGIN` records the exact login that owns the token; both the release-impact gate and publication admission bind that identity.
 
@@ -403,14 +403,16 @@ Release automation requires `RELEASE_PLEASE_TOKEN`; it does not fall back to `GI
 1. Merge normal PRs with valid Conventional Commit titles.
 2. Wait for the `Release` workflow's maintenance path to create or update the release PR. No tag or GitHub Release is created here.
 3. Confirm the first release is `v0.1.0`; review the proposed semantic version, exact version projection, and generated `CHANGELOG.md`.
-4. Merge the release PR into `main` with a merge commit. Do not squash it.
-5. Wait for the workflow to admit exactly one merged release PR bound to `github.sha`: base `main`, configured Release Please automation identity, two parents, and only the allowed version projection.
-6. Confirm the workflow persisted `publication-candidate-<SHA>` before proof and checked out that candidate SHA. Publication embeds that admission record in the annotated immutable release tag, so repair remains possible after the workflow artifact expires. Later movement of `main` does not change the candidate.
+4. Squash-merge the release PR into `main`. A two-parent merge commit is also supported when merge commits are enabled and `main` does not require linear history.
+5. Wait for the workflow to admit exactly one merged release PR bound to `github.sha`: base `main`, configured Release Please automation identity, only the allowed version projection, and a verified one-parent or two-parent topology. In both cases the first parent must equal both the trusted pre-merge base and the merged PR's frozen base, and every changed candidate blob must equal the corresponding blob from the reviewed PR head. A two-parent candidate must also bind its second parent to the reviewed PR head.
+6. Confirm the workflow persisted `publication-candidate-<SHA>` before proof and checked out that candidate SHA. The persisted nine-field record is unchanged; parent topology is rederived from the immutable candidate commit instead of being trusted from the tag. Publication embeds the admission record in the annotated immutable release tag, so repair remains possible after the workflow artifact expires. Later movement of `main` does not change the candidate.
 7. Wait for metadata validation, four-platform proof, deterministic packaging, and generated-drift rejection.
 8. Approve the protected `release` environment. The workflow creates `vX.Y.Z` explicitly at the candidate SHA, verifies the remote tag target, then creates the GitHub Release with `--verify-tag --target <candidate-sha>`.
 9. Confirm the Release contains the deterministic archive and `*.checksums.json`. For a public repository, confirm the archive attestation.
 
 Do not hand-edit versions or `CHANGELOG.md`. Do not create the tag first. Do not publish to npm.
+
+The one-parent path is intended for squash merges. GitHub does not expose a reliable field that proves which merge button produced a commit, so a lineage-equivalent single-commit rebase can satisfy the same checks. This is not a rebase-only support promise: readiness still requires squash merging because release PRs can contain multiple commits and ordinary PRs must remain squashable. Arbitrary or multi-commit rebases cannot pass admission because the candidate's first parent would not equal the trusted pre-merge and frozen PR base. Manual repair repeats these topology checks from GitHub and checks both the persisted identity and the fresh PR author against `RELEASE_PLEASE_AUTOMATION_LOGIN`; neither topology nor identity is self-authorized by the persisted record.
 
 ### Manually maintain or repair release state
 
