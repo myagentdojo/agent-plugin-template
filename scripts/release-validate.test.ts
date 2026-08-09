@@ -849,6 +849,23 @@ test("release validation rejects read-only pull-request lineage permissions", ()
 	expect(result.stderr.toString()).toContain("permissions must match the protected release contract")
 })
 
+test("release validation rejects extra protected release permissions", () => {
+	const temporaryRoot = copyRepository()
+	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+	writeFileSync(
+		workflowPath,
+		readFileSync(workflowPath, "utf8").replace(
+			"      pull-requests: write\n    steps:\n",
+			"      pull-requests: write\n      packages: write\n    steps:\n",
+		),
+	)
+
+	const result = validate(temporaryRoot)
+
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain("permissions must match the protected release contract")
+})
+
 test("AE3: publication binding agrees on candidate, immutable tag, package, release, and manifest", () => {
 	const candidate = admitPublicationCandidate(admissionInput())
 	expect(
