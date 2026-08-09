@@ -17,7 +17,6 @@
 * **release:** preserve historical proof policy ([#25](https://github.com/myagentdojo/agent-plugin-template/issues/25)) ([a6041c9](https://github.com/myagentdojo/agent-plugin-template/commit/a6041c9e1bb0c08231a07d38b7f0960393eec1db))
 * **release:** preserve historical repair policy ([#24](https://github.com/myagentdojo/agent-plugin-template/issues/24)) ([06f8454](https://github.com/myagentdojo/agent-plugin-template/commit/06f84548b219859427a44f6e19833752c66640b4))
 * **release:** recover squashed 0.2.0 candidate ([478dcc4](https://github.com/myagentdojo/agent-plugin-template/commit/478dcc4ddd70812dc8ee9a32077a6cafbcccc5b3))
-* **release:** recover squashed 0.2.0 candidate ([0b749b2](https://github.com/myagentdojo/agent-plugin-template/commit/0b749b23ea68ac99d31c499cfec78f094f91c69d))
 * **release:** support verified squash publication ([#33](https://github.com/myagentdojo/agent-plugin-template/issues/33)) ([60810cc](https://github.com/myagentdojo/agent-plugin-template/commit/60810cc0c7236404867ac0832ef91539c8dab5b4))
 
 ## [0.1.1](https://github.com/myagentdojo/agent-plugin-template/compare/v0.1.0...v0.1.1) (2026-08-07)
