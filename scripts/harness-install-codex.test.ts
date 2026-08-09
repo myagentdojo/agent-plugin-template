@@ -38,11 +38,11 @@ function installedState(
 ): CodexInstallState {
 	const installedPath = join(root, `${addVersion}-${listedVersion}-${runtime}`)
 	mkdirSync(join(installedPath, "runtime"), { recursive: true })
-	mkdirSync(join(installedPath, "hooks", "codex"), { recursive: true })
+	mkdirSync(join(installedPath, ".codex-plugin"), { recursive: true })
 	writeFileSync(join(installedPath, "runtime", "hello-world.js"), runtime)
 	writeFileSync(
-		join(installedPath, "hooks", "codex", "hooks.json"),
-		JSON.stringify({ command: `hello-world --plugin-version ${listedVersion}` }),
+		join(installedPath, ".codex-plugin", "plugin.json"),
+		JSON.stringify({ name: "plugin", version: listedVersion }),
 	)
 	return {
 		marketplaceAdd: { marketplaceName: "plugin", installedRoot: root, alreadyAdded: false },

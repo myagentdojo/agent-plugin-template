@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { validateBunOnlyPayload } from "./build"
 import { RELEASE_PROJECTION_PATH_SET } from "./release-projection"
 
 const root = resolve(import.meta.dir, "..")
@@ -105,6 +106,12 @@ export interface PublicationChecksumsBinding {
 	tag: string
 	/** Plugin manifest version. */
 	version: string
+	/** Canonical source runtime-lock digest. */
+	runtimeLockSha256: string
+	/** Installed bundle-inventory digest. */
+	bundleInventorySha256: string
+	/** Canonical path-and-byte digest of the complete plugin payload. */
+	payloadInventorySha256: string
 }
 
 /** Complete pre-publication equality proof. */
@@ -338,6 +345,15 @@ export function validatePublicationBinding(
 	) {
 		throw new Error("packaged GitHub repository does not match publication candidate")
 	}
+	for (const field of [
+		"runtimeLockSha256",
+		"bundleInventorySha256",
+		"payloadInventorySha256",
+	] as const) {
+		if (!/^[a-f0-9]{64}$/.test(checksums[field])) {
+			throw new Error(`packaged ${field} is not a SHA-256 closure binding`)
+		}
+	}
 	return candidate
 }
 
@@ -390,15 +406,14 @@ function readJson(repositoryRoot: string, path: string): Record<string, any> {
 }
 
 function validateRepository(repositoryRoot: string) {
+	validateBunOnlyPayload(repositoryRoot)
 	const packageJson = readJson(repositoryRoot, "package.json")
 	const pluginConfig = readJson(repositoryRoot, "plugin.config.json")
 	const claudeMarketplace = readJson(repositoryRoot, ".claude-plugin/marketplace.json")
 	const claudeManifest = readJson(repositoryRoot, "plugin/.claude-plugin/plugin.json")
 	const codexManifest = readJson(repositoryRoot, "plugin/.codex-plugin/plugin.json")
-	const codexHooks = readJson(repositoryRoot, "plugin/hooks/codex/hooks.json")
 	const releaseManifest = readJson(repositoryRoot, ".github/.release-please-manifest.json")
 	const releaseConfig = readJson(repositoryRoot, ".github/release-please-config.json")
-	const generatedRuntime = readFileSync(join(repositoryRoot, "plugin/runtime/hello-world.js"), "utf8")
 	const releaseWorkflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8")
 	const changelog = readFileSync(join(repositoryRoot, "CHANGELOG.md"), "utf8")
 
@@ -418,11 +433,8 @@ function validateRepository(repositoryRoot: string) {
 			throw new Error(`${name} version ${String(actual)} does not match plugin.config.json ${version}`)
 		}
 	}
-	for (const event of ["SessionStart", "Stop"]) {
-		const command = codexHooks.hooks?.[event]?.[0]?.hooks?.[0]?.command
-		if (!String(command).includes(`--plugin-version ${version}`)) {
-			throw new Error(`generated Codex ${event} hook does not bind plugin version ${version}`)
-		}
+	if (claudeManifest.hooks !== undefined || codexManifest.hooks !== undefined) {
+		throw new Error("runtime lifecycle hooks must not be active in native manifests")
 	}
 
 	if (releaseState === "bootstrap") {
@@ -473,8 +485,6 @@ function validateRepository(repositoryRoot: string) {
 		".claude-plugin/marketplace.json::$.metadata.version",
 		"plugin/.claude-plugin/plugin.json::$.version",
 		"plugin/.codex-plugin/plugin.json::$.version",
-		"plugin/hooks/codex/hooks.json::generic",
-		"plugin/runtime/hello-world.js::generic",
 	])
 	const configuredExtraFiles = new Set(
 		(packageRelease?.["extra-files"] ?? []).map((entry: Record<string, string>) =>
@@ -492,14 +502,6 @@ function validateRepository(repositoryRoot: string) {
 		if (!expectedExtraFiles.has(configured)) {
 			throw new Error(`release-please extra-files is unexpected: ${configured}`)
 		}
-	}
-
-	for (const marker of [
-		"x-release-please-start-version",
-		`const PLUGIN_VERSION = ${JSON.stringify(version)};`,
-		"x-release-please-end",
-	]) {
-		if (!generatedRuntime.includes(marker)) throw new Error(`generated runtime is missing ${marker}`)
 	}
 
 	const actionReferences = [...releaseWorkflow.matchAll(/uses: [^@\s]+@([^\s]+)/g)].map(
@@ -520,7 +522,7 @@ function validateRepository(repositoryRoot: string) {
 		"scripts/release-projection.ts",
 		'expectedTagState:"absent"',
 		"bun run prove:all",
-		"git diff --exit-code -- plugin/runtime/hello-world.js plugin/hooks/codex/hooks.json",
+		"git diff --exit-code -- plugin/",
 		"ubuntu-24.04-arm",
 		"macos-15-intel",
 		"SOURCE_COMMIT",
@@ -543,6 +545,10 @@ function validateRepository(repositoryRoot: string) {
 		"group: release-maintenance",
 		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
 		"release-candidate-${{ github.run_id }}",
+		"release-platform-candidate-${{ github.run_id }}",
+		"bun run prove:runtime-platform",
+		"--fixture-acknowledged",
+		'cmp --silent "$candidate_archive" "$rebuilt_archive"',
 		"overwrite: true",
 		"environment: release",
 		"gh attestation verify",
@@ -606,7 +612,6 @@ function validateRepository(repositoryRoot: string) {
 		npmPublicationRequired: false,
 		versionSurfaces: [
 			...versionSurfaces.map(([name]) => name),
-			"generated Codex hook definition",
 			...(releaseState === "released" ? ["release-please manifest"] : []),
 		],
 	}

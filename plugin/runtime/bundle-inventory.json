@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "bundles": {
+    "hello-world": {
+      "path": "runtime/hello-world.js",
+      "bytes": 995,
+      "sha256": "aedde54417e663d86bb183dda8115095c48e53a9e9fc91d8b0d4dec4b09e6202"
+    },
+    "skill-a": {
+      "path": "runtime/skill-a-27cb243179e5c93d.js",
+      "bytes": 7838,
+      "sha256": "27cb243179e5c93dc6d7c5730b483fcbf4adf82def672dddca476594a3e4bf80"
+    },
+    "skill-b": {
+      "path": "runtime/skill-b-535431fb5dd1ed0a.js",
+      "bytes": 6422,
+      "sha256": "535431fb5dd1ed0a30a02105818a77bcbcadfa4395b029f614fe4283a7346ec7"
+    }
+  },
+  "notices": {
+    "path": "THIRD-PARTY-NOTICES.md",
+    "bytes": 3494,
+    "sha256": "20b5719200371f8eae2220d821df7702ec2bc1902fedcde443eb7228a9388b45"
+  }
+}

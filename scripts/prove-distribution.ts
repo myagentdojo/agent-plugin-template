@@ -10,6 +10,7 @@ import { basename, join, resolve } from "node:path"
 import { assertDistributionChecksumIdentity } from "./distribution-checksums"
 import {
 	directoryArchiveEntries,
+	payloadInventorySha256,
 	PLUGIN_DIRECTORY,
 	pluginPayloadInventory,
 } from "./plugin-files"
@@ -42,7 +43,7 @@ function packagePlugin(): PackageResult {
 function runPackaged(
 	launcher: string,
 	arguments_: string[],
-	standardInput = "",
+	xdgCacheHome: string,
 ): { exitCode: number; stdout: string; stderr: string } {
 	const process_ = Bun.spawnSync({
 		cmd: [launcher, ...arguments_],
@@ -50,8 +51,9 @@ function runPackaged(
 			...process.env,
 			PATH: "/usr/bin:/bin",
 			HELLO_WORLD_RUN_ID: "packaged-offline-proof",
+			XDG_CACHE_HOME: xdgCacheHome,
 		},
-		stdin: Buffer.from(standardInput),
+		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
 	})
@@ -86,18 +88,24 @@ for (const required of [
 	`${packageName}/.claude-plugin/plugin.json`,
 	`${packageName}/.codex-plugin/plugin.json`,
 	`${packageName}/skills/hello-world/SKILL.md`,
-	`${packageName}/hooks/claude/hooks.json`,
-	`${packageName}/hooks/codex/hooks.json`,
+	`${packageName}/skills/runtime-custody/SKILL.md`,
+	`${packageName}/skills/skill-a/SKILL.md`,
+	`${packageName}/skills/skill-b/SKILL.md`,
 	`${packageName}/bin/hello-world`,
+	`${packageName}/bin/skill-a`,
+	`${packageName}/bin/skill-b`,
 	`${packageName}/runtime/hello-world.js`,
-	`${packageName}/runtime/qjs-darwin-arm64`,
-	`${packageName}/runtime/qjs-darwin-x86_64`,
-	`${packageName}/runtime/qjs-linux-aarch64`,
-	`${packageName}/runtime/qjs-linux-x86_64`,
-	`${packageName}/runtime/quickjs-assets.json`,
-	`${packageName}/QUICKJS-LICENSE`,
+	`${packageName}/runtime/runtime-exec`,
+	`${packageName}/runtime/runtime-lock.sh`,
+	`${packageName}/runtime/skill-catalog.sh`,
+	`${packageName}/runtime/bundle-inventory.json`,
+	`${packageName}/runtime/bundle-inventory.sh`,
+	`${packageName}/THIRD-PARTY-NOTICES.md`,
 ]) {
 	if (!entries.includes(required)) throw new Error(`package is missing ${required}`)
+}
+if (entries.some((entry) => /(?:^|\/)(?:hooks|qjs-|quickjs-assets\.json|QUICKJS-LICENSE)(?:\/|$)/i.test(entry))) {
+	throw new Error("package contains an active legacy runtime or hook surface")
 }
 const expectedEntries = directoryArchiveEntries(join(root, PLUGIN_DIRECTORY), packageName)
 if (JSON.stringify(entries) !== JSON.stringify(expectedEntries)) {
@@ -141,52 +149,35 @@ for (const relativePath of inventory) {
 	}
 }
 
-const launcher = join(installedRoot, "bin", "hello-world")
-const version = runPackaged(launcher, ["--version"])
-if (version.exitCode !== 0 || version.stdout.trim() !== pluginConfig.version) {
-	throw new Error("packaged launcher version does not match plugin.config.json")
-}
-const hello = runPackaged(launcher, ["hello", "--name", "packaged", "--json"])
-if (hello.exitCode !== 0) throw new Error(hello.stderr)
-const helloResult = JSON.parse(hello.stdout)
-if (
-	helloResult.message !== "Hello, packaged!" ||
-	helloResult.pluginVersion !== pluginConfig.version ||
-	helloResult.sideEffects !== "none"
-) {
-	throw new Error("packaged launcher returned the wrong hello contract")
-}
-
-for (const harness of ["claude", "codex"] as const) {
-	const hookArguments = ["hook", "--harness", harness, "--event", "SessionStart"]
-	if (harness === "codex") hookArguments.push("--plugin-version", pluginConfig.version)
-	const hook = runPackaged(
-		launcher,
-		hookArguments,
-		'{"session_id":"packaged-offline-proof"}\n',
-	)
-	if (hook.exitCode !== 0 || !hook.stderr.includes(`hello-world hook: ${harness} SessionStart`)) {
-		throw new Error(`packaged ${harness} hook contract failed`)
+const coldXdg = join(extractedRoot, "cold-xdg")
+for (const skillId of ["hello-world", "skill-a", "skill-b"]) {
+	const launcher = join(installedRoot, "bin", skillId)
+	const launcherText = readFileSync(launcher, "utf8")
+	if (!launcherText.includes(`runtime/runtime-exec\" run ${skillId} --`)) {
+		throw new Error(`packaged ${skillId} launcher is not bound to runtime custody`)
+	}
+	const missing = runPackaged(launcher, [], coldXdg)
+	if (missing.exitCode !== 20) throw new Error(`packaged ${skillId} did not return BUN_MISSING`)
+	const control = JSON.parse(missing.stdout)
+	if (control.code !== "BUN_MISSING" || !Array.isArray(control.sideEffects) || control.sideEffects.length !== 0) {
+		throw new Error(`packaged ${skillId} returned the wrong cold custody contract`)
 	}
 }
-
-const assetManifest = JSON.parse(
-	readFileSync(join(installedRoot, "runtime", "quickjs-assets.json"), "utf8"),
-)
-for (const asset of Object.values(assetManifest.assets) as Array<{
-	file: string
-	sha256: string
-	bytes: number
-}>) {
-	const assetPath = join(installedRoot, "runtime", asset.file)
-	if (statSync(assetPath).size !== asset.bytes) throw new Error(`${asset.file} size mismatch`)
-	const digest = new Bun.CryptoHasher("sha256")
-		.update(readFileSync(assetPath))
-		.digest("hex")
-	if (digest !== asset.sha256) throw new Error(`${asset.file} digest mismatch`)
+if (lstatSync(coldXdg, { throwIfNoEntry: false }) !== undefined) {
+	throw new Error("packaged cold run mutated XDG state")
 }
 
 const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
+const sha256 = (bytes: Uint8Array): string =>
+	new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+if (
+	checksums.runtimeLockSha256 !== sha256(readFileSync(join(root, "runtime", "runtime.lock.json"))) ||
+	checksums.bundleInventorySha256 !==
+		sha256(readFileSync(join(installedRoot, "runtime", "bundle-inventory.json"))) ||
+	checksums.payloadInventorySha256 !== payloadInventorySha256(installedRoot, inventory)
+) {
+	throw new Error("checksum metadata does not bind the runtime lock, bundle inventory, and payload inventory")
+}
 const sourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA ?? Bun.spawnSync({
 	cmd: ["git", "rev-parse", "HEAD"],
 	cwd: root,
@@ -212,7 +203,9 @@ console.log(
 		archiveSha256: second.archiveDigest,
 		entries: entries.length,
 		offlinePackageExecution: true,
-		bunRequiredAtRuntime: false,
+		bunRequiredAtRuntime: true,
+		userManagedBunRequired: false,
+		runtimeAcquisition: "agent-approved-repair",
 		npmPublicationRequired: false,
 		platforms: ["linux-x64", "linux-arm64", "darwin-arm64", "darwin-x64"],
 	}),

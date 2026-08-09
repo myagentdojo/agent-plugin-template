@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { copyPluginPayload, directoryArchiveEntries } from "./plugin-files"
+import { validateBunOnlyPayload } from "./build"
+import {
+	copyPluginPayload,
+	directoryArchiveEntries,
+	payloadInventorySha256,
+	pluginPayloadInventory,
+} from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
@@ -58,8 +64,23 @@ function validateSourceCommit(value: string, source: string): string {
 	return value
 }
 
+function sha256(bytes: Uint8Array | string): string {
+	return new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+}
+
+function payloadInventoryDigest(): string {
+	return payloadInventorySha256(join(root, "plugin"), pluginPayloadInventory(root))
+}
+
 try {
+	// Missing, stale, or orphaned bundle mappings fail before packaging.
+	validateBunOnlyPayload(root)
 	const sourceCommit = resolveSourceCommit()
+	const runtimeLockSha256 = sha256(readFileSync(join(root, "runtime", "runtime.lock.json")))
+	const bundleInventorySha256 = sha256(
+		readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json")),
+	)
+	const payloadInventorySha256 = payloadInventoryDigest()
 	mkdirSync(outputRoot, { recursive: true })
 	copyPluginPayload(root, packageRoot)
 
@@ -151,6 +172,9 @@ try {
 				archive: `${packageName}.tar.gz`,
 				archiveBytes,
 				archiveSha256: archiveDigest,
+				runtimeLockSha256,
+				bundleInventorySha256,
+				payloadInventorySha256,
 				evidence:
 					"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
 			},

@@ -40,14 +40,11 @@ const codexManifest = JSON.parse(
 if (claudeManifest.version !== codexManifest.version) {
 	throw new Error("native manifest versions do not match")
 }
-if (claudeManifest.hooks !== "./hooks/claude/hooks.json") {
-	throw new Error("Claude manifest does not own its explicit hook adapter")
+if (claudeManifest.hooks !== undefined || codexManifest.hooks !== undefined) {
+	throw new Error("runtime lifecycle hooks must not be active in native manifests")
 }
-if (codexManifest.hooks !== "./hooks/codex/hooks.json") {
-	throw new Error("Codex manifest does not own its explicit hook adapter")
-}
-if (existsSync(join(root, "plugin", "hooks", "hooks.json"))) {
-	throw new Error("default hooks/hooks.json would be auto-discovered by both hosts")
+if (existsSync(join(root, "plugin", "hooks"))) {
+	throw new Error("plugin payload must not carry runtime lifecycle hook definitions")
 }
 
 for (const marketplacePath of [
@@ -65,7 +62,7 @@ for (const required of [
 	"push:",
 	"main",
 	"bun run prove:distribution",
-	"git diff --exit-code -- plugin/runtime/hello-world.js",
+	"git diff --exit-code -- plugin/",
 ]) {
 	if (!mainWorkflow.includes(required)) throw new Error(`main workflow is missing ${required}`)
 }
