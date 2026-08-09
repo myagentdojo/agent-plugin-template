@@ -359,7 +359,7 @@ jobs:
 
   compatibility:
     name: Release compatibility (${{ matrix.target }})
-    if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
+    if: needs.resolve.outputs.mode == 'publish'
     needs:
       - resolve
       - candidate
@@ -406,7 +406,13 @@ jobs:
 
   package:
     name: Prove release candidate
-    if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.candidate.result == 'success' &&
+      (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair') &&
+      (needs.compatibility.result == 'success' ||
+        (needs.resolve.outputs.mode == 'repair' && needs.compatibility.result == 'skipped'))
     needs:
       - resolve
       - candidate
