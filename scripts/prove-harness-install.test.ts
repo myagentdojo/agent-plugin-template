@@ -20,8 +20,10 @@ import {
 	hostedMarketplaceSources,
 	nativeHarnessEnvironment,
 	proveHarnessInstall,
+	proveInstalledCapabilityEvidence,
 	redactTemporaryEvidencePath,
 	resolveCleanSourceCommit,
+	resolveCandidatePayloadCommit,
 	runtimeClosureEvidence,
 } from "./prove-harness-install"
 import {
@@ -45,18 +47,48 @@ test("source-bound native receipts reject dirty checkout bytes", () => {
 			GIT_COMMITTER_NAME: "Receipt Test",
 			GIT_COMMITTER_EMAIL: "receipt@example.invalid",
 		}
-		writeFileSync(join(fixtureRoot, "payload.txt"), "clean\n")
+		mkdirSync(join(fixtureRoot, "plugin"))
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "clean\n")
 		for (const command of [
 			["git", "init", "--quiet"],
-			["git", "add", "payload.txt"],
+			["git", "add", "plugin/payload.txt"],
 			["git", "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "fixture"],
 		]) {
 			const result = Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment })
 			expect(result.exitCode).toBe(0)
 		}
 		expect(resolveCleanSourceCommit(fixtureRoot)).toMatch(/^[a-f0-9]{40}$/)
-		writeFileSync(join(fixtureRoot, "payload.txt"), "dirty\n")
-		expect(() => resolveCleanSourceCommit(fixtureRoot)).toThrow(/requires a clean source checkout/)
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "dirty\n")
+		expect(() => resolveCleanSourceCommit(fixtureRoot)).toThrow(/requires clean candidate payload sources/)
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+	}
+})
+
+test("candidate payload binding permits tooling changes but rejects plugin drift", () => {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "candidate-payload-source-"))
+	try {
+		const environment = {
+			...process.env,
+			GIT_AUTHOR_NAME: "Candidate Test",
+			GIT_AUTHOR_EMAIL: "candidate@example.invalid",
+			GIT_COMMITTER_NAME: "Candidate Test",
+			GIT_COMMITTER_EMAIL: "candidate@example.invalid",
+		}
+		mkdirSync(join(fixtureRoot, "plugin"))
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "clean\n")
+		writeFileSync(join(fixtureRoot, "tooling.txt"), "clean\n")
+		for (const command of [
+			["git", "init", "--quiet"],
+			["git", "add", "plugin/payload.txt", "tooling.txt"],
+			["git", "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "fixture"],
+		]) {
+			expect(Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment }).exitCode).toBe(0)
+		}
+		writeFileSync(join(fixtureRoot, "tooling.txt"), "changed\n")
+		expect(resolveCandidatePayloadCommit(fixtureRoot)).toMatch(/^[a-f0-9]{40}$/)
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "changed\n")
+		expect(() => resolveCandidatePayloadCommit(fixtureRoot)).toThrow("plugin payload bytes")
 	} finally {
 		rmSync(fixtureRoot, { recursive: true, force: true })
 	}
@@ -103,6 +135,103 @@ test("both isolated harness installs report the tagged manifest version", () => 
 	expect(proof.targetPreflight.requestedRef).not.toBe(proof.preflight.requestedRef)
 	expect(proof.restorationPreflight).toEqual(proof.preflight)
 	expect(proof.versionAgreement).toBe(true)
+})
+
+test("automated install evidence binds bytes without claiming native activation", () => {
+	const head = Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD"], cwd: root, stdout: "pipe" })
+	expect(proof.capabilityEvidence.candidateCommit).toBe(head.stdout.toString().trim())
+	expect(proof.capabilityEvidence.fixtureCommit).toBe(proof.preflight.resolvedSha)
+	expect(proof.capabilityEvidence.candidatePayloadHash).toMatch(/^[a-f0-9]{64}$/)
+	for (const client of ["claude", "codex"] as const) {
+		expect(proof.capabilityEvidence.clients[client]).toEqual({
+			candidateCommit: proof.capabilityEvidence.candidateCommit,
+			candidatePayloadHash: proof.capabilityEvidence.candidatePayloadHash,
+			installedPayloadHash: proof.capabilityEvidence.candidatePayloadHash,
+			declarationHealth: "healthy",
+			directHandlerHealth: "healthy",
+			fixtureState: "matched",
+			currentSessionHook: "unknown",
+			nativeActivation: "not-proved",
+			externalCandidateQualification: "unknown",
+			nativeDelegation: "not-proved",
+			portableSkillsWithoutHooks: [
+				"hello-world",
+				"skill-a",
+				"skill-b",
+				"runtime-custody",
+				"capability-tour",
+			],
+		})
+	}
+	expect(proof.codex).not.toHaveProperty("activation")
+})
+
+test.each([
+	"assets/logo.svg",
+	"skills/capability-tour/references/capability-reviewer.md",
+	"hooks/claude/hooks.json",
+	"hooks/fixture/lifecycle-mechanics-proof.generated.json",
+] as const)("installed capability evidence rejects tampered %s bytes", (path) => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-tamper-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const candidatePayloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
+		const absolutePath = join(pluginRoot, path)
+		writeFileSync(absolutePath, Buffer.concat([readFileSync(absolutePath), Buffer.from("tampered\n")]))
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				"a".repeat(40),
+				candidatePayloadHash,
+			),
+		).toThrow()
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("installed capability evidence rejects a catalogued model-only tour", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-catalog-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const catalogPath = join(pluginRoot, "runtime", "skill-catalog.sh")
+		writeFileSync(catalogPath, `${readFileSync(catalogPath, "utf8")}\n\tcapability-tour)\n`)
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				"a".repeat(40),
+				runtimeClosureEvidence(pluginRoot).payloadHash,
+			),
+		).toThrow("installed runtime catalog includes capability-tour")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("installed capability evidence rejects a bundled model-only tour", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-bundle-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const inventoryPath = join(pluginRoot, "runtime", "bundle-inventory.json")
+		const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
+		inventory.bundles["capability-tour"] = inventory.bundles["hello-world"]
+		writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, "\t")}\n`)
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"codex",
+				"a".repeat(40),
+				runtimeClosureEvidence(pluginRoot).payloadHash,
+			),
+		).toThrow("installed bundle inventory differs")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
 })
 
 test("release proof requires both native harness CLIs", () => {
@@ -268,7 +397,13 @@ test("cleaned CLI proof reports that temporary evidence was removed", () => {
 		evidenceRetained: false,
 		codex: {
 			mode: "fixture-copy",
-			activation: null,
+			installedState: null,
+		},
+		capabilityEvidence: {
+			clients: {
+				claude: { nativeActivation: "not-proved" },
+				codex: { nativeActivation: "not-proved" },
+			},
 		},
 	})
 }, 60_000)
@@ -423,14 +558,13 @@ codexNativeTest("Codex local refresh changes bytes (Codex CLI required; fallback
 	expect(proof.codex.localRefresh.failureRestored).toBe(true)
 })
 
-test("Codex activation evidence matches the proof mode", () => {
+test("Codex installed state never claims native activation", () => {
 	if (proof.codex.mode === "fixture-copy") {
-		expect(proof.codex.activation).toBeNull()
+		expect(proof.codex.installedState).toBeNull()
 		return
 	}
-	expect(proof.codex.activation).toMatchObject({
+	expect(proof.codex.installedState).toMatchObject({
 		pluginEnabled: true,
-		lifecycleHookPresent: false,
 		executionEntry: "explicit skill launcher",
 		runtimeRepairOwner: "agent workflow with human approval",
 	})

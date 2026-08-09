@@ -202,6 +202,19 @@ test("release validation rejects a drifted version surface", () => {
 	expect(result.stderr.toString()).toContain("plugin.config.json")
 })
 
+test.each([
+	"plugin/hooks/claude/hooks.json",
+	"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+] as const)("release validation rejects stale generated capability bytes at %s", (path) => {
+	const temporaryRoot = copyRepository()
+	const absolutePath = join(temporaryRoot, path)
+	writeFileSync(absolutePath, Buffer.concat([readFileSync(absolutePath), Buffer.from("tampered\n")]))
+
+	const result = validate(temporaryRoot)
+	expect(result.exitCode).toBe(1)
+	expect(result.stderr.toString()).toContain(path)
+})
+
 test("release validation rejects unexpected release-please extra-files", () => {
 	const temporaryRoot = copyRepository()
 	const configPath = join(temporaryRoot, ".github", "release-please-config.json")

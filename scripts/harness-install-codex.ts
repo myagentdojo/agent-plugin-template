@@ -198,9 +198,8 @@ export function proveCodexNative(
 			enabledStateRestored: true,
 			failureRestored,
 		},
-		activation: {
+		installedState: {
 			pluginEnabled: restored.plugin.enabled,
-			lifecycleHookPresent: false,
 			executionEntry: "explicit skill launcher",
 			runtimeRepairOwner: "agent workflow with human approval",
 		},
@@ -246,6 +245,6 @@ export function proveCodexFixtureCopy(
 			enabledStateRestored: false,
 			failureRestored: false,
 		},
-		activation: null,
+		installedState: null,
 	}
 }

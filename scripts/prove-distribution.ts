@@ -15,6 +15,10 @@ import {
 	pluginPayloadInventory,
 } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
+import {
+	proveInstalledCapabilityEvidence,
+	resolveCandidatePayloadCommit,
+} from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
 const pluginConfig = loadPluginConfig(root)
@@ -87,6 +91,15 @@ const entries = directoryArchiveEntries(extractedRoot, "")
 for (const required of [
 	`${packageName}/.claude-plugin/plugin.json`,
 	`${packageName}/.codex-plugin/plugin.json`,
+	`${packageName}/assets/composer-icon.svg`,
+	`${packageName}/assets/logo.svg`,
+	`${packageName}/hooks/claude/hooks.json`,
+	`${packageName}/hooks/codex/hooks.json`,
+	`${packageName}/hooks/fixture/lifecycle-mechanics-proof.generated.json`,
+	`${packageName}/hooks/fixture/lifecycle-mechanics-proof.source.json`,
+	`${packageName}/hooks/native-capability-hook`,
+	`${packageName}/skills/capability-tour/SKILL.md`,
+	`${packageName}/skills/capability-tour/references/capability-reviewer.md`,
 	`${packageName}/skills/hello-world/SKILL.md`,
 	`${packageName}/skills/runtime-custody/SKILL.md`,
 	`${packageName}/skills/skill-a/SKILL.md`,
@@ -104,8 +117,8 @@ for (const required of [
 ]) {
 	if (!entries.includes(required)) throw new Error(`package is missing ${required}`)
 }
-if (entries.some((entry) => /(?:^|\/)(?:hooks|qjs-|quickjs-assets\.json|QUICKJS-LICENSE)(?:\/|$)/i.test(entry))) {
-	throw new Error("package contains an active legacy runtime or hook surface")
+if (entries.some((entry) => /(?:^|\/)(?:qjs-[^/]*|quickjs-assets\.json|QUICKJS-LICENSE)(?:\/|$)/i.test(entry))) {
+	throw new Error("package contains an active legacy runtime surface")
 }
 const expectedEntries = directoryArchiveEntries(join(root, PLUGIN_DIRECTORY), packageName)
 if (JSON.stringify(entries) !== JSON.stringify(expectedEntries)) {
@@ -149,6 +162,34 @@ for (const relativePath of inventory) {
 	}
 }
 
+const packagedSkills = entries
+	.filter((entry) => entry.startsWith(`${packageName}/skills/`) && entry.endsWith("/SKILL.md"))
+	.map((entry) => entry.slice(`${packageName}/skills/`.length, -"/SKILL.md".length))
+if (JSON.stringify(packagedSkills) !== JSON.stringify([
+	"capability-tour",
+	"hello-world",
+	"runtime-custody",
+	"skill-a",
+	"skill-b",
+])) {
+	throw new Error("package skill inventory does not preserve the exact portable and model-only closure")
+}
+const packagedLaunchers = entries
+	.filter((entry) => entry.startsWith(`${packageName}/bin/`) && !entry.endsWith("/"))
+	.map((entry) => entry.slice(`${packageName}/bin/`.length))
+if (JSON.stringify(packagedLaunchers) !== JSON.stringify(["hello-world", "skill-a", "skill-b"])) {
+	throw new Error("package launcher inventory does not preserve the v0.2.0 closure")
+}
+const catalog = JSON.parse(readFileSync(join(root, "runtime", "skill-catalog.json"), "utf8"))
+const bundles = JSON.parse(
+	readFileSync(join(installedRoot, "runtime", "bundle-inventory.json"), "utf8"),
+)
+for (const surface of [catalog.skills, bundles.bundles]) {
+	if (JSON.stringify(Object.keys(surface).sort()) !== JSON.stringify(["hello-world", "skill-a", "skill-b"])) {
+		throw new Error("capability-tour entered the executable runtime closure")
+	}
+}
+
 const coldXdg = join(extractedRoot, "cold-xdg")
 for (const skillId of ["hello-world", "skill-a", "skill-b"]) {
 	const launcher = join(installedRoot, "bin", skillId)
@@ -170,20 +211,22 @@ if (lstatSync(coldXdg, { throwIfNoEntry: false }) !== undefined) {
 const checksums = JSON.parse(readFileSync(second.checksums, "utf8"))
 const sha256 = (bytes: Uint8Array): string =>
 	new Bun.CryptoHasher("sha256").update(bytes).digest("hex")
+const sourcePayloadHash = payloadInventorySha256(join(root, PLUGIN_DIRECTORY), inventory)
+const installedPayloadHash = payloadInventorySha256(installedRoot, inventory)
 if (
 	checksums.runtimeLockSha256 !== sha256(readFileSync(join(root, "runtime", "runtime.lock.json"))) ||
 	checksums.bundleInventorySha256 !==
 		sha256(readFileSync(join(installedRoot, "runtime", "bundle-inventory.json"))) ||
-	checksums.payloadInventorySha256 !== payloadInventorySha256(installedRoot, inventory)
+	checksums.payloadInventorySha256 !== sourcePayloadHash ||
+	installedPayloadHash !== sourcePayloadHash
 ) {
 	throw new Error("checksum metadata does not bind the runtime lock, bundle inventory, and payload inventory")
 }
-const sourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA ?? Bun.spawnSync({
-	cmd: ["git", "rev-parse", "HEAD"],
-	cwd: root,
-	stdout: "pipe",
-	stderr: "inherit",
-}).stdout.toString().trim()
+const sourceCommit = resolveCandidatePayloadCommit(root)
+const configuredSourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA
+if (configuredSourceCommit !== undefined && configuredSourceCommit !== sourceCommit) {
+	throw new Error("distribution proof source commit does not match Git HEAD")
+}
 assertDistributionChecksumIdentity(checksums, {
 	repository: pluginConfig.repository,
 	sourceCommit,
@@ -193,7 +236,22 @@ assertDistributionChecksumIdentity(checksums, {
 	archive: basename(second.archive),
 	archiveBytes: second.archiveBytes,
 	archiveSha256: second.archiveDigest,
+	payloadInventorySha256: sourcePayloadHash,
 })
+const capabilityEvidence = {
+	claude: proveInstalledCapabilityEvidence(
+		installedRoot,
+		"claude",
+		sourceCommit,
+		sourcePayloadHash,
+	),
+	codex: proveInstalledCapabilityEvidence(
+		installedRoot,
+		"codex",
+		sourceCommit,
+		sourcePayloadHash,
+	),
+}
 
 console.log(
 	JSON.stringify({
@@ -201,6 +259,20 @@ console.log(
 		deterministic: true,
 		archiveBytes: second.archiveBytes,
 		archiveSha256: second.archiveDigest,
+		candidateCommit: sourceCommit,
+		payloadHash: sourcePayloadHash,
+		installedPayloadHash,
+		capabilityEvidence,
+		nativeActivation: "not-proved",
+		nativeDelegation: "not-proved",
+		qualificationReceiptsIngested: false,
+		hookIndependentSkills: [
+			"hello-world",
+			"skill-a",
+			"skill-b",
+			"runtime-custody",
+			"capability-tour",
+		],
 		entries: entries.length,
 		offlinePackageExecution: true,
 		bunRequiredAtRuntime: true,

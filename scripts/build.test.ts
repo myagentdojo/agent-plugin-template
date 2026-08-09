@@ -1459,14 +1459,39 @@ function runRepositoryBuild(): {
 	return { bundles: inventory.bundles, notices: inventory.notices }
 }
 
-test("workspace bundles build, relocate, and execute without workspaces or node_modules", () => {
+test("workspace bundles build, relocate, and execute without hooks, workspaces, or node_modules", () => {
 	const result = runRepositoryBuild()
 	expect(Object.keys(result.bundles)).toEqual(["hello-world", "skill-a", "skill-b"])
 	validateBundleClosure(root)
 
 	const installedRoot = temporaryDirectory("relocated-plugin-")
 	copyPluginPayload(root, installedRoot)
+	rmSync(join(installedRoot, "hooks"), { recursive: true })
+	expect(readFileSync(join(installedRoot, "skills", "capability-tour", "SKILL.md"), "utf8")).toContain(
+		"capability tour",
+	)
 	const environment = { PATH: "/usr/bin:/bin", HOME: installedRoot }
+	const helloWorld = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			join(installedRoot, result.bundles["hello-world"].path),
+			"hello",
+			"--json",
+		],
+		cwd: installedRoot,
+		env: { ...environment, HELLO_WORLD_RUN_ID: "relocated-offline-proof" },
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	expect(helloWorld.stderr.toString()).toBe("")
+	expect(helloWorld.exitCode).toBe(0)
+	expect(JSON.parse(helloWorld.stdout.toString())).toEqual({
+		ok: true,
+		command: "hello",
+		message: "Hello, world!",
+		sideEffects: "none",
+		runId: "relocated-offline-proof",
+	})
 
 	const skillA = Bun.spawnSync({
 		cmd: [process.execPath, join(installedRoot, result.bundles["skill-a"].path)],
@@ -1546,6 +1571,27 @@ test("Bun-only release admission rejects an arbitrary executable sidecar", () =>
 	writeFileSync(join(fixtureRoot, "plugin", "hooks", "unexpected-handler"), "#!/bin/sh\n")
 	chmodSync(join(fixtureRoot, "plugin", "hooks", "unexpected-handler"), 0o755)
 	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/hook sidecar inventory/)
+})
+
+test.each([
+	"hooks/native-capability-hook",
+	"assets/logo.svg",
+	"skills/capability-tour/references/capability-reviewer.md",
+] as const)("Bun-only release admission rejects missing capability sidecar %s", (path) => {
+	const fixtureRoot = bunPayloadFixture()
+	rmSync(join(fixtureRoot, "plugin", path))
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		/Bun payload closure|unsafe plugin payload entry/,
+	)
+})
+
+test.each([
+	"assets/orphan.svg",
+	"skills/capability-tour/references/orphan.md",
+] as const)("Bun-only release admission rejects orphaned capability sidecar %s", (path) => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", path), "orphan\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/sidecar inventory/)
 })
 
 test("Bun-only release admission rejects an unsupported component surface", () => {

@@ -217,12 +217,25 @@ export interface CodexProof {
 		enabledStateRestored: boolean
 		failureRestored: boolean
 	}
-	activation: {
+	installedState: {
 		pluginEnabled: boolean
-		lifecycleHookPresent: false
 		executionEntry: "explicit skill launcher"
 		runtimeRepairOwner: "agent workflow with human approval"
 	} | null
+}
+
+export interface InstalledCapabilityEvidence {
+	candidateCommit: string
+	candidatePayloadHash: string
+	installedPayloadHash: string
+	declarationHealth: "healthy"
+	directHandlerHealth: "healthy"
+	fixtureState: "matched"
+	currentSessionHook: "unknown"
+	nativeActivation: "not-proved"
+	externalCandidateQualification: "unknown"
+	nativeDelegation: "not-proved"
+	portableSkillsWithoutHooks: ["hello-world", "skill-a", "skill-b", "runtime-custody", "capability-tour"]
 }
 
 interface HarnessInstallProof {
@@ -235,6 +248,15 @@ interface HarnessInstallProof {
 	restorationPreflight: TaggedCheckout
 	claude: ClaudeProof
 	codex: CodexProof
+	capabilityEvidence: {
+		candidateCommit: string
+		fixtureCommit: string
+		candidatePayloadHash: string
+		clients: {
+			claude: InstalledCapabilityEvidence
+			codex: InstalledCapabilityEvidence
+		}
+	}
 	runtimeJourneys?: {
 		claude: NativeRuntimeJourney
 		codex: NativeRuntimeJourney
@@ -1111,6 +1133,147 @@ export function runtimeClosureEvidence(pluginRoot: string): {
 	}
 }
 
+function expectedHookDeclaration(client: "claude" | "codex"): Record<string, unknown> {
+	const rootVariable = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "CODEX_PLUGIN_ROOT"
+	const command = (event: "SessionStart" | "Stop") =>
+		`"\${${rootVariable}}/hooks/native-capability-hook" ${event} ${client}`
+	return {
+		hooks: {
+			SessionStart: [{ hooks: [{ type: "command", command: command("SessionStart") }] }],
+			Stop: [{ hooks: [{ type: "command", command: command("Stop") }] }],
+		},
+	}
+}
+
+/** Inspect installed bytes and direct handler mechanics without making a native claim. */
+export function proveInstalledCapabilityEvidence(
+	pluginRoot: string,
+	client: "claude" | "codex",
+	candidateCommit: string,
+	candidatePayloadHash: string,
+): InstalledCapabilityEvidence {
+	if (!/^[a-f0-9]{40}$/.test(candidateCommit) || !/^[a-f0-9]{64}$/.test(candidatePayloadHash)) {
+		throw new Error("installed capability evidence requires a candidate commit and payload hash")
+	}
+	const manifest = JSON.parse(
+		readFileSync(join(pluginRoot, `.${client}-plugin`, "plugin.json"), "utf8"),
+	) as { version?: unknown; hooks?: unknown }
+	const declarationPath = `./hooks/${client}/hooks.json`
+	if (manifest.hooks !== declarationPath) {
+		throw new Error(`${client} installed declaration path is invalid`)
+	}
+	const declaration = JSON.parse(
+		readFileSync(join(pluginRoot, declarationPath), "utf8"),
+	) as Record<string, unknown>
+	if (JSON.stringify(declaration) !== JSON.stringify(expectedHookDeclaration(client))) {
+		throw new Error(`${client} installed declaration bytes do not match the capability contract`)
+	}
+	const fixtureSource = readFileSync(
+		join(pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.source.json"),
+	)
+	const fixtureProjection = readFileSync(
+		join(pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+	)
+	if (!fixtureSource.equals(fixtureProjection)) {
+		throw new Error(`${client} installed lifecycle mechanics proof fixture differs`)
+	}
+	const installedInventory = regularFiles(pluginRoot)
+	const installedSkills = installedInventory
+		.filter((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path))
+		.map((path) => path.slice("skills/".length, -"/SKILL.md".length))
+	const portableSkills = [
+		"capability-tour",
+		"hello-world",
+		"runtime-custody",
+		"skill-a",
+		"skill-b",
+	]
+	if (JSON.stringify(installedSkills) !== JSON.stringify(portableSkills)) {
+		throw new Error(`${client} installed portable skill inventory differs`)
+	}
+	const executableSkills = ["hello-world", "skill-a", "skill-b"]
+	const launchers = installedInventory
+		.filter((path) => path.startsWith("bin/"))
+		.map((path) => path.slice("bin/".length))
+	const catalogProjection = readFileSync(
+		join(pluginRoot, "runtime", "skill-catalog.sh"),
+		"utf8",
+	)
+	if (JSON.stringify(launchers) !== JSON.stringify(executableSkills)) {
+		throw new Error(`${client} installed launcher inventory differs`)
+	}
+	for (const skillId of executableSkills) {
+		if (!catalogProjection.includes(`\n\t${skillId})`)) {
+			throw new Error(`${client} installed runtime catalog omits ${skillId}`)
+		}
+		const launcher = readFileSync(join(pluginRoot, "bin", skillId), "utf8")
+		if (!launcher.includes(`runtime/runtime-exec\" run ${skillId} --`) || launcher.includes("hooks/")) {
+			throw new Error(`${client} installed ${skillId} launcher is not hook-independent`)
+		}
+	}
+	if (catalogProjection.includes("capability-tour")) {
+		throw new Error(`${client} installed runtime catalog includes capability-tour`)
+	}
+	const bundleInventory = JSON.parse(
+		readFileSync(join(pluginRoot, "runtime", "bundle-inventory.json"), "utf8"),
+	) as { bundles?: Record<string, unknown> }
+	if (
+		JSON.stringify(Object.keys(bundleInventory.bundles ?? {}).sort()) !==
+		JSON.stringify(executableSkills)
+	) {
+		throw new Error(`${client} installed bundle inventory differs`)
+	}
+	if (typeof manifest.version !== "string") throw new Error(`${client} installed version is invalid`)
+	const handler = join(pluginRoot, "hooks", "native-capability-hook")
+	const runHandler = (event: "SessionStart" | "Stop", input: string) =>
+		Bun.spawnSync({
+			cmd: [handler, event, client],
+			cwd: pluginRoot,
+			env: { PATH: "/usr/bin:/bin" },
+			stdin: Buffer.from(input),
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+	const start = runHandler("SessionStart", '{"source":"startup"}')
+	const expectedContext = `Harness Plugin Prototype v${manifest.version} | ${client} | SessionStart:startup`
+	let startContext: unknown
+	try {
+		startContext = JSON.parse(start.stdout.toString()).hookSpecificOutput?.additionalContext
+	} catch {
+		startContext = undefined
+	}
+	if (start.exitCode !== 0 || start.stderr.toString() !== "" || startContext !== expectedContext) {
+		throw new Error(`${client} installed direct SessionStart handler check failed`)
+	}
+	const stop = runHandler("Stop", '{"stop_hook_active":false}')
+	if (stop.exitCode !== 0 || stop.stdout.toString() !== "" || stop.stderr.toString() !== "") {
+		throw new Error(`${client} installed direct Stop handler check failed`)
+	}
+	const installed = runtimeClosureEvidence(pluginRoot)
+	if (installed.payloadHash !== candidatePayloadHash) {
+		throw new Error(`${client} installed payload hash differs from the candidate payload`)
+	}
+	return {
+		candidateCommit,
+		candidatePayloadHash,
+		installedPayloadHash: installed.payloadHash,
+		declarationHealth: "healthy",
+		directHandlerHealth: "healthy",
+		fixtureState: "matched",
+		currentSessionHook: "unknown",
+		nativeActivation: "not-proved",
+		externalCandidateQualification: "unknown",
+		nativeDelegation: "not-proved",
+		portableSkillsWithoutHooks: [
+			"hello-world",
+			"skill-a",
+			"skill-b",
+			"runtime-custody",
+			"capability-tour",
+		],
+	}
+}
+
 function nativeRuntimeTarget(): string {
 	const target = currentRuntimeTarget()
 	if (!target) {
@@ -1244,17 +1407,30 @@ function proveNativeRuntimeJourney(
 /** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
 export function resolveCleanSourceCommit(repositoryRoot: string): string {
 	const sourceStatus = Bun.spawnSync({
-		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+		cmd: [
+			"git",
+			"status",
+			"--porcelain=v1",
+			"--untracked-files=all",
+			"--",
+			"plugin",
+			"runtime",
+			"packages",
+			"package.json",
+			"bun.lock",
+			"bunfig.toml",
+			"plugin.config.json",
+		],
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
 	if (sourceStatus.exitCode !== 0) {
-		throw new Error("native receipt could not verify source checkout cleanliness")
+		throw new Error("native receipt could not verify candidate payload source cleanliness")
 	}
 	if (sourceStatus.stdout.toString().trim() !== "") {
 		throw new Error(
-			"native runtime qualification requires a clean source checkout so sourceCommit matches the installed payload bytes",
+			"native runtime qualification requires clean candidate payload sources so sourceCommit matches the installed payload bytes",
 		)
 	}
 	const sourceCommitResult = Bun.spawnSync({
@@ -1273,6 +1449,31 @@ export function resolveCleanSourceCommit(repositoryRoot: string): string {
 	return sourceCommit
 }
 
+/** Bind automated payload evidence to Git HEAD while allowing tooling-only worktree changes. */
+export function resolveCandidatePayloadCommit(repositoryRoot: string): string {
+	const status = Bun.spawnSync({
+		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "plugin"],
+		cwd: repositoryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (status.exitCode !== 0) throw new Error("candidate proof could not inspect plugin payload status")
+	if (status.stdout.toString().trim() !== "") {
+		throw new Error("candidate proof requires plugin payload bytes to match the candidate commit")
+	}
+	const head = Bun.spawnSync({
+		cmd: ["git", "rev-parse", "HEAD"],
+		cwd: repositoryRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	const sourceCommit = head.stdout.toString().trim()
+	if (head.exitCode !== 0 || !/^[a-f0-9]{40}$/.test(sourceCommit)) {
+		throw new Error("candidate proof could not resolve the source commit")
+	}
+	return sourceCommit
+}
+
 function runHarnessInstallProof(
 	repositoryRoot: string,
 	temporaryRoot: string,
@@ -1281,7 +1482,11 @@ function runHarnessInstallProof(
 ): HarnessInstallProof {
 	const sourceCommit = qualifyRuntimeJourney
 		? resolveCleanSourceCommit(repositoryRoot)
-		: undefined
+		: resolveCandidatePayloadCommit(repositoryRoot)
+	const configuredSourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA
+	if (configuredSourceCommit !== undefined && configuredSourceCommit !== sourceCommit) {
+		throw new Error("candidate proof source commit does not match Git HEAD")
+	}
 	const fixture = createFixtureRelease(repositoryRoot, temporaryRoot)
 	admitGitTransport({
 		source: fixture.repositoryRoot,
@@ -1297,7 +1502,7 @@ function runHarnessInstallProof(
 	const pluginConfig = loadPluginConfig(repositoryRoot)
 	const nativeIdentity = {
 		repository: pluginConfig.repository,
-		sourceCommit: sourceCommit ?? fixture.base.resolvedSha,
+		sourceCommit,
 		runtimeLockSha256: createHash("sha256")
 			.update(readFileSync(join(repositoryRoot, "runtime", "runtime.lock.json")))
 			.digest("hex"),
@@ -1343,15 +1548,37 @@ function runHarnessInstallProof(
 	}
 	const trustBase = runtimeClosureEvidence(join(fixture.base.checkoutRoot, "plugin"))
 	const trustTarget = runtimeClosureEvidence(join(fixture.target.checkoutRoot, "plugin"))
+	const sourceCandidate = runtimeClosureEvidence(join(repositoryRoot, "plugin"))
 	if (
 		trustBase.inventoryHash !== trustTarget.inventoryHash ||
-		trustBase.payloadHash === trustTarget.payloadHash
+		trustBase.payloadHash === trustTarget.payloadHash ||
+		trustBase.payloadHash !== sourceCandidate.payloadHash
 	) {
 		throw new Error("release change did not preserve inventory while changing exact payload bytes")
 	}
 	const versionAgreement =
 		claude.version === fixture.base.manifestVersion && codex.version === fixture.base.manifestVersion
 	if (!versionAgreement) throw new Error("Claude and Codex installed versions do not agree with the tag")
+	const candidatePayloadHash = sourceCandidate.payloadHash
+	const capabilityEvidence = {
+		candidateCommit: sourceCommit,
+		fixtureCommit: fixture.base.resolvedSha,
+		candidatePayloadHash,
+		clients: {
+			claude: proveInstalledCapabilityEvidence(
+				claude.activeCachePath,
+				"claude",
+				sourceCommit,
+				candidatePayloadHash,
+			),
+			codex: proveInstalledCapabilityEvidence(
+				codex.installedPath,
+				"codex",
+				sourceCommit,
+				candidatePayloadHash,
+			),
+		},
+	}
 	const runtimeJourneys = qualifyRuntimeJourney
 		? {
 				claude: proveNativeRuntimeJourney(
@@ -1380,11 +1607,12 @@ function runHarnessInstallProof(
 		restorationPreflight: fixture.base,
 		claude,
 		codex,
+		capabilityEvidence,
 		runtimeJourneys,
 		versionAgreement,
 		payloadClosureChanged: true,
 		skips,
-		nextAction: "Review the installed-payload mechanics evidence. Before release, capture candidate-bound Claude task, Codex task, and Codex Desktop human-approval receipts; this fixture does not claim agent workflow proof.",
+		nextAction: "Review the candidate-bound package, declaration, direct-handler, and installed-payload evidence. Fresh-client receipts separately own native activation, trust, UI, and delegation; this automated proof claims none of them.",
 	}
 }
 
