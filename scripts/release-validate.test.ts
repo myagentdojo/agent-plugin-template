@@ -290,7 +290,7 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("admitted_automation_identity")
 	expect(workflow).toContain('--expected-automation-login "$admitted_automation_identity"')
 	expect(workflow).toContain("scripts/release-projection.ts")
-	const historicalPolicyCheckout = repairValidationStep.indexOf('git checkout --detach "$candidate_sha"')
+	const historicalPolicyCheckout = repairValidationStep.indexOf('git checkout --detach "$base_parent"')
 	const historicalPolicyExecution = repairValidationStep.indexOf("bun run scripts/release-projection.ts")
 	const provenanceGuard = repairValidationStep.indexOf('if [[ -z "$merged_at"')
 	const parentCountGuard = repairValidationStep.indexOf('if [[ "$parent_count" != "2" ]]')

@@ -65,13 +65,12 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 	const workflow = Bun.YAML.parse(source)
 
 	expect(workflow).toMatchObject({
-		on: {
-			pull_request_target: {
-				types: ["opened", "reopened", "synchronize"],
+			on: {
+				pull_request_target: {
+					types: ["opened", "reopened", "synchronize"],
+				},
+				issue_comment: { types: ["created"] },
 			},
-			issue_comment: { types: ["created"] },
-			pull_request_review: { types: ["submitted"] },
-		},
 		permissions: {
 			contents: "read",
 			"pull-requests": "read",
@@ -80,7 +79,7 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 		env: { STATUS_CONTEXT: "Codex review gate" },
 	})
 
-	expect(source.match(/--raw-field state=success/g)).toHaveLength(3)
+	expect(source.match(/--raw-field state=success/g)).toHaveLength(2)
 	expect(source.match(/--raw-field state=pending/g)).toHaveLength(1)
 	expect(source).toContain("collaborators/${COMMENTER}/permission")
 	expect(source).toContain("admin|maintain|write")
@@ -88,7 +87,7 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 	expect(source).toContain("github.event.comment.user.login == 'chatgpt-codex-connector[bot]'")
 	expect(source).toContain("reviewed_prefix=")
 	expect(source).toContain('"${HEAD_SHA}" != "${reviewed_prefix}"*')
-	expect(source).toContain('"${REVIEW_SHA}" != "${HEAD_SHA}"')
+	expect(source).not.toContain("github.event.review")
 	expect(source).not.toContain("actions/checkout")
 })
 
