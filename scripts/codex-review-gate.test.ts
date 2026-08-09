@@ -60,6 +60,12 @@ ${script}`,
 	}
 }
 
+const aboutCodexDetails = `
+
+<details> <summary>ℹ️ About Codex in GitHub</summary>
+Informational boilerplate may mention reviews and suggestions.
+</details>`
+
 test("Codex review gate is opt-in and fail-closed after a request", async () => {
 	const source = await Bun.file(workflowUrl).text()
 	const workflow = Bun.YAML.parse(source)
@@ -93,7 +99,7 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 
 test("clean Codex comment releases the gate from its stable verdict sentence", async () => {
 	const calls = await runCleanReviewComment(
-		"Codex Review: Didn't find any major issues. Another round soon, please!\n\n**Reviewed commit:** `38d88841ee8`",
+		`Codex Review: Didn't find any major issues. You're on a roll.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
 	)
 
 	expect(calls).toContain("--raw-field state=success")
@@ -101,7 +107,7 @@ test("clean Codex comment releases the gate from its stable verdict sentence", a
 
 test("Codex comment without a clean marker leaves the gate unchanged", async () => {
 	const calls = await runCleanReviewComment(
-		"Codex Review: Found a major issue.\n\n**Reviewed commit:** `38d88841ee8`",
+		`Codex Review: Found a major issue.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
 	)
 
 	expect(calls).toBe("")
@@ -109,7 +115,15 @@ test("Codex comment without a clean marker leaves the gate unchanged", async () 
 
 test("Codex comment with findings after the clean marker leaves the gate unchanged", async () => {
 	const calls = await runCleanReviewComment(
-		"Codex Review: Didn't find any major issues. Findings follow.\n\n**Reviewed commit:** `38d88841ee8`",
+		`Codex Review: Didn't find any major issues. Findings follow.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
+	)
+
+	expect(calls).toBe("")
+})
+
+test("Codex comment with a separate finding paragraph leaves the gate unchanged", async () => {
+	const calls = await runCleanReviewComment(
+		`Codex Review: Didn't find any major issues. Bravo.\n\nFinding: a major defect remains.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
 	)
 
 	expect(calls).toBe("")
