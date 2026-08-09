@@ -92,9 +92,9 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 	expect(source).not.toContain("actions/checkout")
 })
 
-test("clean Codex comment releases the gate only with the exact clean marker", async () => {
+test("clean Codex comment releases the gate from its stable verdict sentence", async () => {
 	const calls = await runCleanReviewComment(
-		"Codex Review: Didn't find any major issues. Keep it up!\n\n**Reviewed commit:** `38d88841ee8`",
+		"Codex Review: Didn't find any major issues. Bravo.\n\n**Reviewed commit:** `38d88841ee8`",
 	)
 
 	expect(calls).toContain("--raw-field state=success")
@@ -108,9 +108,9 @@ test("Codex comment without a clean marker leaves the gate unchanged", async () 
 	expect(calls).toBe("")
 })
 
-test("Codex comment with an invalid clean marker leaves the gate unchanged", async () => {
+test("Codex comment with a lookalike clean marker leaves the gate unchanged", async () => {
 	const calls = await runCleanReviewComment(
-		"Codex Review: Didn't find any major issues. Findings follow.\n\n**Reviewed commit:** `38d88841ee8`",
+		"Codex Review: Didn't find a major issue. Bravo.\n\n**Reviewed commit:** `38d88841ee8`",
 	)
 
 	expect(calls).toBe("")
