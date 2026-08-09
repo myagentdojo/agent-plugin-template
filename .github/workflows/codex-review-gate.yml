@@ -82,15 +82,22 @@ jobs:
       COMMENT_BODY: ${{ github.event.comment.body }}
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.issue.number }}
-      CLEAN_REVIEW_MARKER: '^Codex Review: Didn''t find any major issues\.([[:space:]]+Keep it up!|[[:space:]]+Bravo\.|[[:space:]]+:\+1:)?[[:space:]]*$'
+      CLEAN_REVIEW_MARKER: '^Codex Review: Didn''t find any major issues\.([^[:cntrl:]]*)$'
+      CONCERNING_REVIEW_SUFFIX: '(^|[^[:alnum:]_])(but|concerns?|findings?|issues?|problems?|regressions?|risks?|suggestions?|p[0-3])([^[:alnum:]_]|$)'
       REVIEW_MARKER: '^\*\*Reviewed commit:\*\* `([0-9a-f]{10,40})`[[:space:]]*$'
     steps:
       - name: Mark the reviewed PR commit successful
         shell: bash
         run: |
+          shopt -s nocasematch
           clean_marker_count=0
           while IFS= read -r line; do
             if [[ "${line}" =~ ${CLEAN_REVIEW_MARKER} ]]; then
+              review_suffix="${BASH_REMATCH[1]}"
+              if [[ "${review_suffix}" =~ ${CONCERNING_REVIEW_SUFFIX} ]]; then
+                echo "Ignoring a Codex clean marker with a concerning suffix."
+                exit 0
+              fi
               clean_marker_count=$((clean_marker_count + 1))
             fi
           done <<< "${COMMENT_BODY}"

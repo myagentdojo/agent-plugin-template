@@ -42,6 +42,7 @@ ${script}`,
 				...process.env,
 				COMMENT_BODY: commentBody,
 				CLEAN_REVIEW_MARKER: job.env.CLEAN_REVIEW_MARKER ?? "",
+				CONCERNING_REVIEW_SUFFIX: job.env.CONCERNING_REVIEW_SUFFIX ?? "",
 				GH_CALLS: callsPath,
 				GH_TOKEN: "test-token",
 				GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
@@ -93,7 +94,7 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 
 test("clean Codex comment releases the gate from its stable verdict sentence", async () => {
 	const calls = await runCleanReviewComment(
-		"Codex Review: Didn't find any major issues. Bravo.\n\n**Reviewed commit:** `38d88841ee8`",
+		"Codex Review: Didn't find any major issues. Another round soon, please!\n\n**Reviewed commit:** `38d88841ee8`",
 	)
 
 	expect(calls).toContain("--raw-field state=success")
