@@ -25,6 +25,7 @@ import {
 import { copyPluginPayload, payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
+	hookDeclarationBody,
 	loadPluginConfig,
 	type PluginConfig,
 	writeGeneratedFiles,
@@ -1303,7 +1304,10 @@ export function assertReplacementAdmission(
  * const evidence = runtimeClosureEvidence(installedPath)
  * ```
  */
-export function runtimeClosureEvidence(pluginRoot: string): {
+export function runtimeClosureEvidence(
+	pluginRoot: string,
+	inventory: string[] = regularFiles(pluginRoot),
+): {
 	version: string
 	inventoryHash: string
 	payloadHash: string
@@ -1311,23 +1315,10 @@ export function runtimeClosureEvidence(pluginRoot: string): {
 	const manifest = JSON.parse(
 		readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 	)
-	const inventory = regularFiles(pluginRoot)
 	return {
 		version: manifest.version,
 		inventoryHash: createHash("sha256").update(inventory.join("\0")).digest("hex"),
 		payloadHash: payloadInventorySha256(pluginRoot, inventory),
-	}
-}
-
-function expectedHookDeclaration(client: "claude" | "codex"): Record<string, unknown> {
-	const rootVariable = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "CODEX_PLUGIN_ROOT"
-	const command = (event: "SessionStart" | "Stop") =>
-		`"\${${rootVariable}}/hooks/native-capability-hook" ${event} ${client}`
-	return {
-		hooks: {
-			SessionStart: [{ hooks: [{ type: "command", command: command("SessionStart") }] }],
-			Stop: [{ hooks: [{ type: "command", command: command("Stop") }] }],
-		},
 	}
 }
 
@@ -1352,7 +1343,7 @@ export function proveInstalledCapabilityEvidence(
 	const declaration = JSON.parse(
 		readFileSync(join(pluginRoot, declarationPath), "utf8"),
 	) as Record<string, unknown>
-	if (JSON.stringify(declaration) !== JSON.stringify(expectedHookDeclaration(client))) {
+	if (JSON.stringify(declaration) !== JSON.stringify(hookDeclarationBody(client))) {
 		throw new Error(`${client} installed declaration bytes do not match the capability contract`)
 	}
 	const fixtureSource = readFileSync(
@@ -1436,7 +1427,7 @@ export function proveInstalledCapabilityEvidence(
 	if (stop.exitCode !== 0 || stop.stdout.toString() !== "" || stop.stderr.toString() !== "") {
 		throw new Error(`${client} installed direct Stop handler check failed`)
 	}
-	const installed = runtimeClosureEvidence(pluginRoot)
+	const installed = runtimeClosureEvidence(pluginRoot, installedInventory)
 	if (installed.payloadHash !== candidatePayloadHash) {
 		throw new Error(`${client} installed payload hash differs from the candidate payload`)
 	}
@@ -1614,74 +1605,53 @@ function proveNativeRuntimeJourney(
 	}
 }
 
-/** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
-export function resolveCleanSourceCommit(repositoryRoot: string): string {
-	const sourceStatus = Bun.spawnSync({
-		cmd: [
-			"git",
-			"status",
-			"--porcelain=v1",
-			"--untracked-files=all",
-			"--",
-			"plugin",
-			"runtime",
-			"packages",
-			"package.json",
-			"bun.lock",
-			"bunfig.toml",
-			"plugin.config.json",
-		],
-		cwd: repositoryRoot,
-		stdout: "pipe",
-		stderr: "pipe",
-	})
-	if (sourceStatus.exitCode !== 0) {
-		throw new Error("native receipt could not verify candidate payload source cleanliness")
-	}
-	if (sourceStatus.stdout.toString().trim() !== "") {
-		throw new Error(
-			"native runtime qualification requires clean candidate payload sources so sourceCommit matches the installed payload bytes",
-		)
-	}
-	const sourceCommitResult = Bun.spawnSync({
-		cmd: ["git", "rev-parse", "HEAD"],
-		cwd: repositoryRoot,
-		stdout: "pipe",
-		stderr: "pipe",
-	})
-	if (sourceCommitResult.exitCode !== 0) {
-		throw new Error("native receipt could not resolve source commit")
-	}
-	const sourceCommit = sourceCommitResult.stdout.toString().trim()
-	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) {
-		throw new Error("native receipt source commit is invalid")
-	}
-	return sourceCommit
-}
-
-/** Bind automated payload evidence to Git HEAD while allowing tooling-only worktree changes. */
-export function resolveCandidatePayloadCommit(repositoryRoot: string): string {
+function resolveCleanPathsCommit(
+	repositoryRoot: string,
+	paths: string[],
+	errors: { status: string; dirty: string; resolve: string; invalid?: string },
+): string {
 	const status = Bun.spawnSync({
-		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "plugin"],
+		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", ...paths],
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
-	if (status.exitCode !== 0) throw new Error("candidate proof could not inspect plugin payload status")
-	if (status.stdout.toString().trim() !== "") {
-		throw new Error("candidate proof requires plugin payload bytes to match the candidate commit")
-	}
+	if (status.exitCode !== 0) throw new Error(errors.status)
+	if (status.stdout.toString().trim() !== "") throw new Error(errors.dirty)
 	const head = Bun.spawnSync({
 		cmd: ["git", "rev-parse", "HEAD"],
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
+	if (head.exitCode !== 0) throw new Error(errors.resolve)
 	const sourceCommit = head.stdout.toString().trim()
-	if (head.exitCode !== 0 || !/^[a-f0-9]{40}$/.test(sourceCommit)) {
-		throw new Error("candidate proof could not resolve the source commit")
-	}
+	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error(errors.invalid ?? errors.resolve)
 	return sourceCommit
+}
+
+/** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
+export function resolveCleanSourceCommit(repositoryRoot: string): string {
+	return resolveCleanPathsCommit(
+		repositoryRoot,
+		["plugin", "runtime", "packages", "package.json", "bun.lock", "bunfig.toml", "plugin.config.json"],
+		{
+			status: "native receipt could not verify candidate payload source cleanliness",
+			dirty:
+				"native runtime qualification requires clean candidate payload sources so sourceCommit matches the installed payload bytes",
+			resolve: "native receipt could not resolve source commit",
+			invalid: "native receipt source commit is invalid",
+		},
+	)
+}
+
+/** Bind automated payload evidence to Git HEAD while allowing tooling-only worktree changes. */
+export function resolveCandidatePayloadCommit(repositoryRoot: string): string {
+	return resolveCleanPathsCommit(repositoryRoot, ["plugin"], {
+		status: "candidate proof could not inspect plugin payload status",
+		dirty: "candidate proof requires plugin payload bytes to match the candidate commit",
+		resolve: "candidate proof could not resolve the source commit",
+	})
 }
 
 function runHarnessInstallProof(

@@ -438,18 +438,23 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 	}
 }
 
-function hookDeclaration(client: "claude" | "codex"): GeneratedFile {
+/** Build one client's hook declaration object; proofs reuse this as the comparison contract. */
+export function hookDeclarationBody(client: "claude" | "codex"): Record<string, unknown> {
 	const pluginRoot = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "CODEX_PLUGIN_ROOT"
 	const command = (event: "SessionStart" | "Stop") =>
 		`"\${${pluginRoot}}/hooks/native-capability-hook" ${event} ${client}`
 	return {
+		hooks: {
+			SessionStart: [{ hooks: [{ type: "command", command: command("SessionStart") }] }],
+			Stop: [{ hooks: [{ type: "command", command: command("Stop") }] }],
+		},
+	}
+}
+
+function hookDeclaration(client: "claude" | "codex"): GeneratedFile {
+	return {
 		path: `plugin/hooks/${client}/hooks.json`,
-		contents: serialize({
-			hooks: {
-				SessionStart: [{ hooks: [{ type: "command", command: command("SessionStart") }] }],
-				Stop: [{ hooks: [{ type: "command", command: command("Stop") }] }],
-			},
-		}),
+		contents: serialize(hookDeclarationBody(client)),
 	}
 }
 /** Render native Claude and Codex files from canonical metadata. */
