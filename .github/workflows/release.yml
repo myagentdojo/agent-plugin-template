@@ -486,7 +486,11 @@ jobs:
 
   release:
     name: Publish or repair immutable release
-    if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.package.result == 'success' &&
+      (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair')
     needs:
       - resolve
       - package
@@ -763,5 +767,60 @@ jobs:
           current_labels=$(gh api "$labels_endpoint" --jq '.[].name')
           if ! grep -Fxq 'autorelease: tagged' <<< "$current_labels" || grep -Fxq 'autorelease: pending' <<< "$current_labels"; then
             echo "Release Please lineage did not converge for PR ${pr_number}." >&2
+            exit 1
+          fi
+
+  converge:
+    name: Require release operation convergence
+    if: always()
+    needs:
+      - resolve
+      - maintain
+      - candidate
+      - compatibility
+      - package
+      - release
+    permissions: {}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the requested release operation to complete
+        env:
+          MODE: ${{ needs.resolve.outputs.mode }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          MAINTAIN_RESULT: ${{ needs.maintain.result }}
+          CANDIDATE_RESULT: ${{ needs.candidate.result }}
+          COMPATIBILITY_RESULT: ${{ needs.compatibility.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+        run: |
+          set -euo pipefail
+          converged=false
+          if [[ "$RESOLVE_RESULT" == "success" ]]; then
+            case "$MODE" in
+              maintenance)
+                [[ "$MAINTAIN_RESULT" == "success" &&
+                  "$CANDIDATE_RESULT" == "skipped" &&
+                  "$COMPATIBILITY_RESULT" == "skipped" &&
+                  "$PACKAGE_RESULT" == "skipped" &&
+                  "$RELEASE_RESULT" == "skipped" ]] && converged=true
+                ;;
+              publish)
+                [[ "$MAINTAIN_RESULT" == "skipped" &&
+                  "$CANDIDATE_RESULT" == "success" &&
+                  "$COMPATIBILITY_RESULT" == "success" &&
+                  "$PACKAGE_RESULT" == "success" &&
+                  "$RELEASE_RESULT" == "success" ]] && converged=true
+                ;;
+              repair)
+                [[ "$MAINTAIN_RESULT" == "skipped" &&
+                  "$CANDIDATE_RESULT" == "success" &&
+                  "$COMPATIBILITY_RESULT" == "skipped" &&
+                  "$PACKAGE_RESULT" == "success" &&
+                  "$RELEASE_RESULT" == "success" ]] && converged=true
+                ;;
+            esac
+          fi
+          if [[ "$converged" != "true" ]]; then
+            echo "Release operation did not converge: mode=${MODE:-unset} resolve=$RESOLVE_RESULT maintain=$MAINTAIN_RESULT candidate=$CANDIDATE_RESULT compatibility=$COMPATIBILITY_RESULT package=$PACKAGE_RESULT release=$RELEASE_RESULT." >&2
             exit 1
           fi
