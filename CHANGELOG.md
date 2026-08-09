@@ -1,22 +1,5 @@
 # Changelog
 
-## [0.2.0](https://github.com/myagentdojo/agent-plugin-template/compare/v0.1.1...v0.2.0) (2026-08-09)
-
-
-### Features
-
-* **runtime:** complete Bun-only runtime custody ([#22](https://github.com/myagentdojo/agent-plugin-template/issues/22)) ([e927c24](https://github.com/myagentdojo/agent-plugin-template/commit/e927c24e5f7cf270b7b10179e15495984d36cd4d))
-
-
-### Bug Fixes
-
-* **ci:** ignore remapped stale Codex findings ([#28](https://github.com/myagentdojo/agent-plugin-template/issues/28)) ([fbdd5d8](https://github.com/myagentdojo/agent-plugin-template/commit/fbdd5d8a6179dfe24b95b5c0cc6ee45fc1b72a45))
-* **release:** allow lineage label reconciliation ([#27](https://github.com/myagentdojo/agent-plugin-template/issues/27)) ([7b81d73](https://github.com/myagentdojo/agent-plugin-template/commit/7b81d732ab303e683c4abec6361dbff94be04658))
-* **release:** fail closed on skipped publication ([#26](https://github.com/myagentdojo/agent-plugin-template/issues/26)) ([c9067f6](https://github.com/myagentdojo/agent-plugin-template/commit/c9067f6156d239fa2524e9dd6966403e512e9a96))
-* **release:** keep Release Please lineage current ([#23](https://github.com/myagentdojo/agent-plugin-template/issues/23)) ([d3f9bc7](https://github.com/myagentdojo/agent-plugin-template/commit/d3f9bc7b33a52bb0cab3f1e9f09b3958e8d3d9aa))
-* **release:** preserve historical proof policy ([#25](https://github.com/myagentdojo/agent-plugin-template/issues/25)) ([a6041c9](https://github.com/myagentdojo/agent-plugin-template/commit/a6041c9e1bb0c08231a07d38b7f0960393eec1db))
-* **release:** preserve historical repair policy ([#24](https://github.com/myagentdojo/agent-plugin-template/issues/24)) ([06f8454](https://github.com/myagentdojo/agent-plugin-template/commit/06f84548b219859427a44f6e19833752c66640b4))
-
 ## [0.1.1](https://github.com/myagentdojo/agent-plugin-template/compare/v0.1.0...v0.1.1) (2026-08-07)
 
 
