@@ -122,7 +122,7 @@ jobs:
           codex_inline_count="$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" |
               jq -s --arg head "${HEAD_SHA}" \
-                '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and (.commit_id == $head or .original_commit_id == $head))] | length'
+                '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and .original_commit_id == $head)] | length'
           )"
           if (( codex_review_count != 0 || codex_inline_count != 0 )); then
             echo "Ignoring an attestation because the reviewed commit has Codex finding objects."
