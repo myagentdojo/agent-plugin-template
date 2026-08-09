@@ -606,8 +606,17 @@ function validateRepository(repositoryRoot: string) {
 	if (!releaseJob.includes("group: release-publication-${{ needs.resolve.outputs.release_tag }}")) {
 		throw new Error("release workflow publish mutation must serialize by resolved immutable tag")
 	}
-	if (!releaseJob.includes("    permissions:\n      actions: read\n")) {
-		throw new Error("release workflow publish job must grant actions: read")
+	const requiredReleasePermissionsBlock =
+		"    permissions:\n" +
+		"      actions: read\n" +
+		"      contents: write\n" +
+		"      id-token: write\n" +
+		"      attestations: write\n" +
+		"      issues: write\n" +
+		"      pull-requests: write\n" +
+		"    steps:\n"
+	if (!releaseJob.includes(requiredReleasePermissionsBlock)) {
+		throw new Error("release workflow publish job permissions must match the protected release contract")
 	}
 
 	return {
