@@ -121,8 +121,9 @@ test("projection CLI executes the same policy against Git refs", () => {
 	const repository = mkdtempSync(join(tmpdir(), "release-projection-cli-"))
 	const run = (arguments_: string[]) =>
 		Bun.spawnSync({ cmd: arguments_, cwd: repository, stdout: "pipe", stderr: "pipe" })
+	const unreviewedPath = "unreviewed-☃\nfile.txt"
 	let result: ReturnType<typeof Bun.spawnSync> | undefined
-	let newlinePathResult: ReturnType<typeof Bun.spawnSync> | undefined
+	let unsupportedPathResult: ReturnType<typeof Bun.spawnSync> | undefined
 	try {
 		for (const command of [
 			["git", "init", "--quiet"],
@@ -160,12 +161,24 @@ test("projection CLI executes the same policy against Git refs", () => {
 			projection,
 			"--json",
 		])
-		const unreviewedPath = "unreviewed-☃\nfile.txt"
 		writeFileSync(join(repository, unreviewedPath), "unreviewed\n")
 		expect(run(["git", "add", "--", unreviewedPath]).exitCode).toBe(0)
 		expect(run(["git", "commit", "--quiet", "-m", "unreviewed path"]).exitCode).toBe(0)
 		const headWithUnreviewedPath = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
-		newlinePathResult = run([
+		const unreviewedBlob = run([
+			"git",
+			"rev-parse",
+			`${headWithUnreviewedPath}:${unreviewedPath}`,
+		]).stdout.toString().trim()
+		const projectionWithUnreviewedPath = join(repository, "projection-with-unreviewed-path.json")
+		writeFileSync(
+			projectionWithUnreviewedPath,
+			`${JSON.stringify([
+				{ filename: "plugin.config.json", status: "modified", sha: headBlob },
+				{ filename: unreviewedPath, status: "modified", sha: unreviewedBlob },
+			])}\n`,
+		)
+		unsupportedPathResult = run([
 			process.execPath,
 			"run",
 			join(import.meta.dir, "release-projection.ts"),
@@ -174,7 +187,7 @@ test("projection CLI executes the same policy against Git refs", () => {
 			"--head",
 			headWithUnreviewedPath,
 			"--projection",
-			projection,
+			projectionWithUnreviewedPath,
 			"--json",
 		])
 	} finally {
@@ -189,9 +202,9 @@ test("projection CLI executes the same policy against Git refs", () => {
 		ok: true,
 		changedFiles: ["plugin.config.json"],
 	})
-	expect(newlinePathResult).toBeDefined()
-	if (!newlinePathResult) throw new Error("newline-path projection fixture did not run")
-	expect(newlinePathResult.exitCode).toBe(1)
-	expect(newlinePathResult.stderr.toString()).toContain("candidate changed-file set")
+	expect(unsupportedPathResult).toBeDefined()
+	if (!unsupportedPathResult) throw new Error("newline-path projection fixture did not run")
+	expect(unsupportedPathResult.exitCode).toBe(1)
+	expect(unsupportedPathResult.stderr.toString()).toContain(`unsupported path: ${unreviewedPath}`)
 	expect(RELEASE_PROJECTION_PATHS).not.toContain("plugin/runtime/hello-world.js")
 })

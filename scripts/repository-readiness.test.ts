@@ -111,6 +111,8 @@ describe("default branch direct-push protection", () => {
 		["all branches", ["~ALL"]],
 		["bare default branch", ["main"]],
 		["full default branch ref", ["refs/heads/main"]],
+		["single-segment branch wildcard", ["refs/heads/*"]],
+		["recursive branch wildcard", ["refs/heads/**"]],
 	] as const)("accepts %s targeting", (_description, include) => {
 		expect(
 			classifyDirectPushProtection(
@@ -138,6 +140,10 @@ describe("default branch direct-push protection", () => {
 		[
 			"excluded default branch",
 			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["~ALL"], exclude: ["main"] } } })],
+		],
+		[
+			"wildcard-excluded default branch",
+			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["~ALL"], exclude: ["refs/heads/*"] } } })],
 		],
 		[
 			"without pull-request rule",

@@ -153,9 +153,21 @@ function matchesDefaultBranch(rule: Record<string, unknown>, defaultBranch: stri
 	) {
 		return undefined
 	}
-	const matchesBranch = (pattern: string) =>
-		["~ALL", "~DEFAULT_BRANCH", defaultBranch, `refs/heads/${defaultBranch}`].includes(pattern)
-	return include.some(matchesBranch) && !exclude.some(matchesBranch)
+	const matchesBranch = (pattern: string): boolean | undefined => {
+		if (["~ALL", "~DEFAULT_BRANCH", defaultBranch, `refs/heads/${defaultBranch}`].includes(pattern)) {
+			return true
+		}
+		try {
+			const glob = new Bun.Glob(pattern)
+			return glob.match(defaultBranch) || glob.match(`refs/heads/${defaultBranch}`)
+		} catch {
+			return undefined
+		}
+	}
+	const included = include.map(matchesBranch)
+	const excluded = exclude.map(matchesBranch)
+	if (included.includes(undefined) || excluded.includes(undefined)) return undefined
+	return included.includes(true) && !excluded.includes(true)
 }
 
 /**
