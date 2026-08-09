@@ -84,10 +84,11 @@ jobs:
       - name: Mark the attested PR commit successful
         shell: bash
         run: |
-          if [[ ! "${COMMENT_BODY}" =~ ^[[:space:]]*@codex-gate[[:space:]]+approve[[:space:]]+([0-9a-f]{10,40})[[:space:]]*$ ]]; then
+          if [[ ! "${COMMENT_BODY}" =~ ^[[:space:]]*@codex-gate[[:space:]]+approve[[:space:]]+([0-9a-f]{10,40})[[:space:]]+([0-9]+)[[:space:]]*$ ]]; then
             exit 0
           fi
           approved_prefix="${BASH_REMATCH[1]}"
+          review_comment_id="${BASH_REMATCH[2]}"
 
           permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${COMMENTER}/permission" --jq .permission)"
           case "${permission}" in
@@ -104,17 +105,12 @@ jobs:
             exit 0
           fi
 
-          clean_marker_count="$(
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" |
-              jq -s --arg prefix "${approved_prefix}" \
-                '[.[][] | select(
-                  .user.login == "chatgpt-codex-connector[bot]" and
-                  (.body | startswith("Codex Review: Didn\u0027t find any major issues.")) and
-                  (.body | contains("**Reviewed commit:** `" + $prefix))
-                )] | length'
-          )"
-          if (( clean_marker_count == 0 )); then
-            echo "Ignoring an attestation without a current-commit Codex clean marker."
+          review_receipt="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${review_comment_id}")"
+          receipt_author="$(jq -r '.user.login // ""' <<< "${review_receipt}")"
+          receipt_body="$(jq -r '.body // ""' <<< "${review_receipt}")"
+          if [[ "${receipt_author}" != "chatgpt-codex-connector[bot]" ]] ||
+            [[ "${receipt_body}" != *"**Reviewed commit:** \`${approved_prefix}"* ]]; then
+            echo "Ignoring an attestation without an exact bot-authored current-commit receipt."
             exit 0
           fi
 

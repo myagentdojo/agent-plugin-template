@@ -14,9 +14,10 @@ type WorkflowJob = {
 
 type ApprovalOptions = {
 	approvedPrefix?: string
-	cleanComment?: boolean
 	findingSurface?: "review" | "inline" | null
 	permission?: string
+	receiptAuthor?: string
+	receiptBody?: string
 }
 
 const headSha = "38d88841ee82cf88b52b9d27f08dd29347869581"
@@ -32,14 +33,12 @@ async function runApproval(options: ApprovalOptions = {}): Promise<string> {
 	if (!script) throw new Error("approve success script is missing")
 
 	const approvedPrefix = options.approvedPrefix ?? headSha.slice(0, 10)
-	const cleanComments = options.cleanComment === false
-		? []
-		: [
-				{
-					user: { login: "chatgpt-codex-connector[bot]" },
-					body: `Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`${approvedPrefix}\``,
-				},
-			]
+	const receipt = {
+		user: { login: options.receiptAuthor ?? "chatgpt-codex-connector[bot]" },
+		body:
+			options.receiptBody ??
+			`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`${approvedPrefix}\``,
+	}
 
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "codex-review-gate-"))
 	const callsPath = join(temporaryRoot, "gh-calls")
@@ -51,8 +50,8 @@ async function runApproval(options: ApprovalOptions = {}): Promise<string> {
 				`gh() {
 	if [[ "$*" == *"collaborators/maintainer/permission"* ]]; then
 		printf '%s\\n' "$CODEX_PERMISSION"
-	elif [[ "$*" == *"issues/13/comments"* ]]; then
-		printf '%s\\n' "$CODEX_CLEAN_COMMENTS"
+	elif [[ "$*" == *"issues/comments/4242"* ]]; then
+		printf '%s\\n' "$CODEX_RECEIPT"
 	elif [[ "$*" == *"pulls/13/reviews"* ]]; then
 		if [[ "$CODEX_FINDING_SURFACE" == "review" ]]; then
 			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"${headSha}"}]'
@@ -76,10 +75,10 @@ ${script}`,
 			],
 			env: {
 				...process.env,
-				CODEX_CLEAN_COMMENTS: JSON.stringify(cleanComments),
 				CODEX_FINDING_SURFACE: options.findingSurface ?? "",
 				CODEX_PERMISSION: options.permission ?? "write",
-				COMMENT_BODY: `@codex-gate approve ${approvedPrefix}`,
+				CODEX_RECEIPT: JSON.stringify(receipt),
+				COMMENT_BODY: `@codex-gate approve ${approvedPrefix} 4242`,
 				COMMENTER: "maintainer",
 				GH_CALLS: callsPath,
 				GH_TOKEN: "test-token",
@@ -137,8 +136,16 @@ test("stale attestation leaves the gate unchanged", async () => {
 	expect(calls).toBe("")
 })
 
-test("attestation without a clean Codex marker leaves the gate unchanged", async () => {
-	const calls = await runApproval({ cleanComment: false })
+test("attestation with a receipt for another commit leaves the gate unchanged", async () => {
+	const calls = await runApproval({
+		receiptBody:
+			"Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `deadbeef00`",
+	})
+	expect(calls).toBe("")
+})
+
+test("attestation with a non-Codex receipt leaves the gate unchanged", async () => {
+	const calls = await runApproval({ receiptAuthor: "untrusted-bot" })
 	expect(calls).toBe("")
 })
 
