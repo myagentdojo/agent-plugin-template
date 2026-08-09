@@ -78,10 +78,19 @@ function releasePullRequest(overrides: Record<string, unknown> = {}) {
 		baseBranch: "main",
 		automationIdentity: "github-actions[bot]",
 		mergeCommit: "a".repeat(40),
-		mergeMode: "merge" as const,
 		changedFiles: allowedProjection,
 		changedFileStatuses: allowedProjection.map(() => "modified"),
 		projectionDigest: "b".repeat(64),
+		...overrides,
+	}
+}
+
+function candidateTopology(overrides: Record<string, unknown> = {}) {
+	return {
+		candidateParentShas: ["c".repeat(40), "d".repeat(40)],
+		trustedBaseSha: "c".repeat(40),
+		mergedPrBaseSha: "c".repeat(40),
+		reviewedPrHeadSha: "d".repeat(40),
 		...overrides,
 	}
 }
@@ -92,6 +101,7 @@ function admissionInput(candidates = [releasePullRequest()]) {
 		expectedBaseBranch: "main",
 		expectedAutomationIdentities: ["github-actions[bot]"],
 		githubSha: "a".repeat(40),
+		...candidateTopology(),
 		manifestVersion: "0.1.0",
 		tagExists: false,
 		candidates,
@@ -271,6 +281,25 @@ test("release workflow is pinned and publishes proven assets after validation", 
 		workflow.indexOf("      - name: Resolve unique candidate or immutable repair tag\n"),
 		workflow.indexOf("\n\n          associated_prs="),
 	)
+	const publishResolutionStep = workflow.slice(
+		workflow.indexOf("          associated_prs="),
+		workflow.indexOf("      - name: Persist publication candidate before proof\n"),
+	)
+	const finalProvenanceStep = finalReleaseJob.slice(
+		finalReleaseJob.indexOf("      - name: Create missing GitHub Release and validate target\n"),
+		finalReleaseJob.indexOf("      - name: Compare release assets before mutation\n"),
+	)
+	const replayStepStart = finalReleaseJob.indexOf(
+		"      - name: Replay current publication admission before mutation\n",
+	)
+	const immutableTagStepStart = finalReleaseJob.indexOf(
+		"      - name: Create or verify immutable tag\n",
+	)
+	const replayStep = finalReleaseJob.slice(replayStepStart, immutableTagStepStart)
+	const replayPublicationAdmission = replayStep.indexOf("admitPublicationCandidate")
+	const replayRepairAdmission = replayStep.indexOf("validateRepairCandidateBinding")
+	const tagPush = finalReleaseJob.indexOf('git push origin "refs/tags/${RELEASE_TAG}"')
+	const releaseCreate = finalReleaseJob.indexOf("gh release create")
 	const persistedCandidateStep = finalReleaseJob.slice(
 		finalReleaseJob.indexOf("      - name: Download persisted publication candidate\n"),
 		finalReleaseJob.indexOf("      - name: Create or verify immutable tag\n"),
@@ -284,7 +313,6 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("skip-github-release")
 	expect(workflow).toContain("publication-candidate-${GITHUB_SHA}")
 	expect(workflow).toContain("operation:")
-	expect(workflow).toContain("PUBLICATION_CANDIDATE_PATH")
 	expect(workflow).toContain("publication-candidate-${CANDIDATE_SHA}")
 	expect(workflow).toContain("tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json")
 	expect(workflow).toContain("git for-each-ref --format='%(contents)'")
@@ -292,24 +320,77 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("merge_commit_sha")
 	expect(workflow).toContain("EXPECTED_RELEASE_PLEASE_LOGIN")
 	expect(workflow).toContain("admitted_automation_identity")
-	expect(workflow).toContain('--expected-automation-login "$admitted_automation_identity"')
+	expect(workflow).not.toContain('--expected-automation-login "$admitted_automation_identity"')
 	expect(workflow).toContain("scripts/release-projection.ts")
-	const historicalPolicyCheckout = repairValidationStep.indexOf('git checkout --detach "$base_parent"')
+	const historicalPolicyCheckout = repairValidationStep.indexOf(
+		'git checkout --detach "$trusted_base_sha"',
+	)
 	const historicalPolicyExecution = repairValidationStep.indexOf("bun run scripts/release-projection.ts")
+	const currentAdmissionCheckout = repairValidationStep.indexOf(
+		'git checkout --detach "$workflow_policy_sha"',
+	)
+	const currentAdmissionExecution = repairValidationStep.indexOf("validateRepairCandidateBinding")
 	const provenanceGuard = repairValidationStep.indexOf('if [[ -z "$merged_at"')
-	const parentCountGuard = repairValidationStep.indexOf('if [[ "$parent_count" != "2" ]]')
+	const dispatchBaseGuard = repairValidationStep.indexOf(
+		'if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]',
+	)
+	const maintenanceDispatch = repairValidationStep.indexOf('if [[ "$OPERATION" == "maintenance" ]]')
+	expect(dispatchBaseGuard).toBeGreaterThanOrEqual(0)
+	expect(dispatchBaseGuard).toBeLessThan(maintenanceDispatch)
 	expect(historicalPolicyCheckout).toBeGreaterThanOrEqual(0)
 	expect(historicalPolicyExecution).toBeGreaterThanOrEqual(0)
 	expect(provenanceGuard).toBeGreaterThanOrEqual(0)
-	expect(parentCountGuard).toBeGreaterThanOrEqual(0)
 	expect(historicalPolicyCheckout).toBeGreaterThan(provenanceGuard)
-	expect(historicalPolicyCheckout).toBeGreaterThan(parentCountGuard)
 	expect(historicalPolicyExecution).toBeGreaterThan(historicalPolicyCheckout)
+	expect(currentAdmissionCheckout).toBeGreaterThan(historicalPolicyExecution)
+	expect(currentAdmissionExecution).toBeGreaterThan(currentAdmissionCheckout)
 	expect(workflow).not.toContain("ALLOWED_RELEASE_PATHS")
 	expect(workflow).not.toContain("missing_paths")
-	expect(workflow).toContain("parent_count")
+	expect(workflow).not.toContain("parent_count")
+	expect(workflow).not.toContain("mergeMode")
 	expect(workflow).not.toContain("compare_json_except_version")
-	expect(workflow).toContain('expectedTagState:"absent"')
+	expect(workflow).toContain("admitPublicationCandidate")
+	expect(workflow).toContain("PUSH_BEFORE_SHA: ${{ github.event.before }}")
+	expect(workflow).toContain("PUSH_FORCED: ${{ github.event.forced }}")
+	expect(workflow).toContain('if [[ "$PUSH_FORCED" != "false" ]]')
+	expect(workflow.match(/candidate_parent_shas=/g)).toHaveLength(3)
+	expect(publishResolutionStep).toContain('trusted_base_sha="$PUSH_BEFORE_SHA"')
+	expect(publishResolutionStep).toContain('merged_pr_base_sha=$(jq -r .base.sha <<< "$release_pr")')
+	expect(publishResolutionStep).toContain('reviewed_pr_head_sha=$(jq -r .head.sha <<< "$release_pr")')
+	expect(publishResolutionStep).toContain('--base "$trusted_base_sha"')
+	expect(publishResolutionStep).toContain("admitPublicationCandidate")
+	expect(repairValidationStep).toContain(
+		'if [[ "$admitted_automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" ]]',
+	)
+	expect(repairValidationStep).toContain("workflow_policy_sha=$(git rev-parse HEAD)")
+	expect(repairValidationStep).toContain(
+		'if [[ "$automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" ]]',
+	)
+	expect(repairValidationStep).toContain('trusted_base_sha=$(git rev-parse "${candidate_sha}^1")')
+	expect(repairValidationStep).not.toContain('trusted_base_sha="$merged_pr_base_sha"')
+	expect(repairValidationStep).toContain('--base "$trusted_base_sha"')
+	expect(repairValidationStep).toContain('REPAIR_AUTOMATION_LOGIN="$EXPECTED_RELEASE_PLEASE_LOGIN"')
+	expect(finalProvenanceStep).not.toContain("validateRepairCandidateBinding")
+	expect(finalProvenanceStep).toContain('if [[ "$remote_tag_sha" != "$CANDIDATE_SHA" ]]')
+	expect(finalProvenanceStep).toContain('if [[ "$release_target_sha" != "$CANDIDATE_SHA" ]]')
+	expect(replayStepStart).toBeGreaterThanOrEqual(0)
+	expect(replayStep).toContain('git checkout --detach "$trusted_base_sha"')
+	expect(replayStep).toContain('git fetch --no-tags origin "$CURRENT_WORKFLOW_SHA"')
+	expect(replayStep).toContain('git checkout --detach "$CURRENT_WORKFLOW_SHA"')
+	expect(replayStep).toContain('trusted_base_sha="$TRUSTED_BASE_SHA"')
+	expect(replayStep).toContain(
+		'if [[ "$merged_pr_base_sha" != "$ADMITTED_MERGED_PR_BASE_SHA" || "$reviewed_pr_head_sha" != "$ADMITTED_REVIEWED_PR_HEAD_SHA" ]]',
+	)
+	expect(replayStep).toContain('replayed_first_parent=$(git rev-parse "${CANDIDATE_SHA}^1")')
+	expect(replayStep).toContain('git checkout --detach "$CANDIDATE_SHA"')
+	expect(replayStep).toContain('if [[ "$(git rev-parse HEAD)" != "$CANDIDATE_SHA" ]]')
+	expect(replayStep).toContain('priorRecord: JSON.parse(readFileSync("persisted-candidate.json"')
+	expect(replayPublicationAdmission).toBeGreaterThanOrEqual(0)
+	expect(replayRepairAdmission).toBeGreaterThanOrEqual(0)
+	expect(tagPush).toBeGreaterThan(replayStepStart + replayPublicationAdmission)
+	expect(tagPush).toBeGreaterThan(replayStepStart + replayRepairAdmission)
+	expect(releaseCreate).toBeGreaterThan(replayStepStart + replayPublicationAdmission)
+	expect(releaseCreate).toBeGreaterThan(replayStepStart + replayRepairAdmission)
 	expect(workflow).toContain("bun run prove:all")
 	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
 	expect(workflow).toContain("@openai/codex@0.146.1")
@@ -332,7 +413,6 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow.match(/release-candidate-\$\{\{ github\.run_id \}\}/g)).toHaveLength(2)
 	expect(workflow).toContain("overwrite: true")
 	expect(workflow).not.toContain("github.run_attempt")
-	expect(workflow).toContain("bun run release:validate -- --repair")
 	const maintainJob = workflow.slice(
 		workflow.indexOf("\n  maintain:\n"),
 		workflow.indexOf("\n  compatibility:\n"),
@@ -380,8 +460,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
 	)
 	expect(finalReleaseJob).toContain("    permissions:\n      actions: read\n")
-	expect(finalReleaseJob).toContain("PUBLICATION_CANDIDATE_PATH=persisted-candidate.json")
-	expect(finalReleaseJob).toContain('--repository "$GITHUB_REPOSITORY"')
+	expect(repairValidationStep).toContain("candidate: JSON.parse(readFileSync(\"persisted-candidate.json\"")
+	expect(repairValidationStep).toContain("repository: process.env.REPAIR_REPOSITORY")
 	expect(compareStepStart).toBeGreaterThan(-1)
 	expect(uploadStepStart).toBeGreaterThan(compareStepStart)
 	expect(attestationStepStart).toBeGreaterThan(uploadStepStart)
@@ -691,7 +771,7 @@ test("immutable tag creation is retry-safe and rejects a rebound candidate", () 
 	expect(rebound.stderr.toString()).toContain("Immutable remote tag")
 })
 
-test("publication candidate admission binds one merged Release Please PR to github.sha", () => {
+test("publication candidate admission accepts a verified two-parent candidate", () => {
 	const candidate = admitPublicationCandidate(admissionInput())
 	expect(candidate).toMatchObject({
 		repository: "myagentdojo/agent-plugin-template",
@@ -704,6 +784,32 @@ test("publication candidate admission binds one merged Release Please PR to gith
 		expectedTagState: "absent",
 		projectionDigest: "b".repeat(64),
 	})
+})
+
+test("publication candidate admission accepts a verified one-parent candidate", () => {
+	const candidate = admitPublicationCandidate({
+		...admissionInput(),
+		candidateParentShas: ["c".repeat(40)],
+	})
+
+	expect(candidate).toMatchObject({
+		pullRequest: 42,
+		mergeCommit: "a".repeat(40),
+		expectedTagState: "absent",
+	})
+	expect(Object.keys(candidate).sort()).toEqual(
+		[
+			"automationIdentity",
+			"baseBranch",
+			"expectedTagState",
+			"mergeCommit",
+			"projectionDigest",
+			"pullRequest",
+			"repository",
+			"tag",
+			"version",
+		].sort(),
+	)
 })
 
 test("publication candidate admission rejects zero matching PRs", () => {
@@ -734,10 +840,73 @@ test("AE2: publication candidate admission rejects a merge commit unequal to git
 	).toThrow("github.sha")
 })
 
-test("publication candidate admission rejects unsupported merge modes", () => {
+test("publication candidate admission rejects a candidate with no parents", () => {
 	expect(() =>
-		admitPublicationCandidate(admissionInput([releasePullRequest({ mergeMode: "squash" })])),
-	).toThrow("merge mode")
+		admitPublicationCandidate({ ...admissionInput(), candidateParentShas: [] }),
+	).toThrow("exactly one or two parents")
+})
+
+test("publication candidate admission rejects a candidate with three parents", () => {
+	expect(() =>
+		admitPublicationCandidate({
+			...admissionInput(),
+			candidateParentShas: ["c".repeat(40), "d".repeat(40), "e".repeat(40)],
+		}),
+	).toThrow("exactly one or two parents")
+})
+
+test("publication candidate admission rejects empty or malformed topology commit SHAs", () => {
+	for (const topology of [
+		{ candidateParentShas: [""] },
+		{ candidateParentShas: ["c".repeat(40), "D".repeat(40)] },
+		{ trustedBaseSha: "" },
+		{ mergedPrBaseSha: "e".repeat(39) },
+		{ reviewedPrHeadSha: "D".repeat(40) },
+	]) {
+		expect(() =>
+			admitPublicationCandidate({
+				...admissionInput(),
+				...topology,
+			}),
+		).toThrow("topology contains an invalid commit SHA")
+	}
+})
+
+test("publication candidate admission rejects a candidate parent outside the trusted base", () => {
+	expect(() =>
+		admitPublicationCandidate({
+			...admissionInput(),
+			candidateParentShas: ["e".repeat(40)],
+		}),
+	).toThrow("first parent does not match the trusted base")
+})
+
+test("publication candidate admission rejects disagreement between trusted base authorities", () => {
+	expect(() =>
+		admitPublicationCandidate({
+			...admissionInput(),
+			mergedPrBaseSha: "e".repeat(40),
+		}),
+	).toThrow("first parent does not match the merged PR base")
+})
+
+test("publication candidate admission rejects a two-parent candidate with the wrong reviewed head", () => {
+	expect(() =>
+		admitPublicationCandidate({
+			...admissionInput(),
+			candidateParentShas: ["c".repeat(40), "e".repeat(40)],
+		}),
+	).toThrow("second parent does not match the reviewed PR head")
+})
+
+test("publication candidate admission rejects a multi-commit rebase hidden behind an allowed final projection", () => {
+	expect(() =>
+		admitPublicationCandidate({
+			...admissionInput(),
+			candidateParentShas: ["e".repeat(40)],
+			candidates: [releasePullRequest()],
+		}),
+	).toThrow("first parent does not match the trusted base")
 })
 
 test("publication candidate admission rejects an existing version tag", () => {
@@ -942,6 +1111,7 @@ test("manual repair requires the original publication candidate record", () => {
 			expectedBaseBranch: "main",
 			expectedAutomationIdentities: ["github-actions[bot]"],
 			trustedCandidate: releasePullRequest(),
+			...candidateTopology(),
 			tag: "v0.1.0",
 			checkoutSha: "a".repeat(40),
 			tagSha: "a".repeat(40),
@@ -957,12 +1127,57 @@ test("manual repair requires the original publication candidate record", () => {
 			expectedBaseBranch: "main",
 			expectedAutomationIdentities: ["github-actions[bot]"],
 			trustedCandidate: releasePullRequest(),
+			...candidateTopology(),
 			tag: "v0.1.0",
 			checkoutSha: "c".repeat(40),
 			tagSha: "c".repeat(40),
 			manifestVersion: "0.1.0",
 		}),
 	).toThrow("publication candidate")
+})
+
+test("manual repair reuses topology commit SHA validation", () => {
+	const candidate = admitPublicationCandidate(admissionInput())
+
+	expect(() =>
+		validateRepairCandidateBinding({
+			candidate,
+			repository: "myagentdojo/agent-plugin-template",
+			expectedBaseBranch: "main",
+			expectedAutomationIdentities: ["github-actions[bot]"],
+			trustedCandidate: releasePullRequest(),
+			...candidateTopology({ reviewedPrHeadSha: "" }),
+			tag: "v0.1.0",
+			checkoutSha: "a".repeat(40),
+			tagSha: "a".repeat(40),
+			manifestVersion: "0.1.0",
+		}),
+	).toThrow("topology contains an invalid commit SHA")
+})
+
+test("manual repair preserves a historical projection path after the current allowlist removes it", () => {
+	const historicalPath = "plugin/legacy-release-metadata.json"
+	const candidate = admitPublicationCandidate(admissionInput())
+	expect(allowedProjection).not.toContain(historicalPath)
+
+	expect(() =>
+		validateRepairCandidateBinding({
+			candidate: { ...candidate, projectionDigest: "c".repeat(64) },
+			repository: "myagentdojo/agent-plugin-template",
+			expectedBaseBranch: "main",
+			expectedAutomationIdentities: ["github-actions[bot]"],
+			trustedCandidate: releasePullRequest({
+				changedFiles: [...allowedProjection, historicalPath],
+				changedFileStatuses: [...allowedProjection.map(() => "modified"), "modified"],
+				projectionDigest: "c".repeat(64),
+			}),
+			...candidateTopology(),
+			tag: "v0.1.0",
+			checkoutSha: "a".repeat(40),
+			tagSha: "a".repeat(40),
+			manifestVersion: "0.1.0",
+		}),
+	).not.toThrow()
 })
 
 test("manual repair rejects a forged tag record against GitHub-derived provenance", () => {
@@ -978,6 +1193,7 @@ test("manual repair rejects a forged tag record against GitHub-derived provenanc
 			expectedBaseBranch: "main",
 			expectedAutomationIdentities: ["github-actions[bot]"],
 			trustedCandidate: releasePullRequest(),
+			...candidateTopology(),
 			tag: "v0.1.0",
 			checkoutSha: "a".repeat(40),
 			tagSha: "a".repeat(40),
@@ -1048,7 +1264,10 @@ test("manual repair CLI emits one bound JSON result", () => {
 	const candidatePath = join(temporaryRoot, "candidate.json")
 	const trustedCandidatePath = join(temporaryRoot, "trusted-candidate.json")
 	writeFileSync(candidatePath, `${JSON.stringify(admitPublicationCandidate(admissionInput()))}\n`)
-	writeFileSync(trustedCandidatePath, `${JSON.stringify(releasePullRequest())}\n`)
+	writeFileSync(
+		trustedCandidatePath,
+		`${JSON.stringify({ ...releasePullRequest(), ...candidateTopology() })}\n`,
+	)
 	const result = validateWithArguments(temporaryRoot, [
 		"--repair",
 		"--candidate",

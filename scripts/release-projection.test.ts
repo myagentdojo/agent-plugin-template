@@ -40,6 +40,38 @@ test("runtime hook files are outside the release projection", () => {
 	).toThrow("unsupported path")
 })
 
+test("projection binds every changed candidate blob to the reviewed pull-request head", () => {
+	const file = { filename: "plugin.config.json", status: "modified", sha: "reviewed-blob" }
+	const versions = {
+		before: '{"version":"0.1.0","name":"x"}',
+		after: '{"version":"0.2.0","name":"x"}',
+		afterSha: "reviewed-blob",
+	}
+
+	expect(validateReleaseProjection([file], () => versions).changedFiles).toEqual([
+		"plugin.config.json",
+	])
+	expect(() =>
+		validateReleaseProjection([{ ...file, sha: "different-blob" }], () => versions),
+	).toThrow("reviewed head blob")
+})
+
+test("projection binds the complete candidate changed-file set to the reviewed pull request", () => {
+	const file = { filename: "plugin.config.json", status: "modified", sha: "reviewed-blob" }
+	const versions = {
+		before: '{"version":"0.1.0","name":"x"}',
+		after: '{"version":"0.2.0","name":"x"}',
+		afterSha: "reviewed-blob",
+	}
+
+	expect(validateReleaseProjection([file], () => versions, [file.filename]).changedFiles).toEqual([
+		file.filename,
+	])
+	expect(() =>
+		validateReleaseProjection([file], () => versions, [file.filename, "plugin/runtime/extra.js"]),
+	).toThrow("candidate changed-file set")
+})
+
 test("changelog projection prepends exactly one current-version section", () => {
 	const manifest = {
 		before: '{".":"0.1.0"}',
@@ -89,7 +121,9 @@ test("projection CLI executes the same policy against Git refs", () => {
 	const repository = mkdtempSync(join(tmpdir(), "release-projection-cli-"))
 	const run = (arguments_: string[]) =>
 		Bun.spawnSync({ cmd: arguments_, cwd: repository, stdout: "pipe", stderr: "pipe" })
+	const unreviewedPath = "unreviewed-☃\nfile.txt"
 	let result: ReturnType<typeof Bun.spawnSync> | undefined
+	let unsupportedPathResult: ReturnType<typeof Bun.spawnSync> | undefined
 	try {
 		for (const command of [
 			["git", "init", "--quiet"],
@@ -108,8 +142,12 @@ test("projection CLI executes the same policy against Git refs", () => {
 		expect(run(["git", "add", "plugin.config.json"]).exitCode).toBe(0)
 		expect(run(["git", "commit", "--quiet", "-m", "version"]).exitCode).toBe(0)
 		const head = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		const headBlob = run(["git", "rev-parse", `${head}:plugin.config.json`]).stdout.toString().trim()
 		const projection = join(repository, "projection.json")
-		writeFileSync(projection, '[{"filename":"plugin.config.json","status":"modified","sha":"1"}]\n')
+		writeFileSync(
+			projection,
+			`${JSON.stringify([{ filename: "plugin.config.json", status: "modified", sha: headBlob }])}\n`,
+		)
 
 		result = run([
 			process.execPath,
@@ -121,6 +159,35 @@ test("projection CLI executes the same policy against Git refs", () => {
 			head,
 			"--projection",
 			projection,
+			"--json",
+		])
+		writeFileSync(join(repository, unreviewedPath), "unreviewed\n")
+		expect(run(["git", "add", "--", unreviewedPath]).exitCode).toBe(0)
+		expect(run(["git", "commit", "--quiet", "-m", "unreviewed path"]).exitCode).toBe(0)
+		const headWithUnreviewedPath = run(["git", "rev-parse", "HEAD"]).stdout.toString().trim()
+		const unreviewedBlob = run([
+			"git",
+			"rev-parse",
+			`${headWithUnreviewedPath}:${unreviewedPath}`,
+		]).stdout.toString().trim()
+		const projectionWithUnreviewedPath = join(repository, "projection-with-unreviewed-path.json")
+		writeFileSync(
+			projectionWithUnreviewedPath,
+			`${JSON.stringify([
+				{ filename: "plugin.config.json", status: "modified", sha: headBlob },
+				{ filename: unreviewedPath, status: "modified", sha: unreviewedBlob },
+			])}\n`,
+		)
+		unsupportedPathResult = run([
+			process.execPath,
+			"run",
+			join(import.meta.dir, "release-projection.ts"),
+			"--base",
+			base,
+			"--head",
+			headWithUnreviewedPath,
+			"--projection",
+			projectionWithUnreviewedPath,
 			"--json",
 		])
 	} finally {
@@ -135,5 +202,9 @@ test("projection CLI executes the same policy against Git refs", () => {
 		ok: true,
 		changedFiles: ["plugin.config.json"],
 	})
+	expect(unsupportedPathResult).toBeDefined()
+	if (!unsupportedPathResult) throw new Error("newline-path projection fixture did not run")
+	expect(unsupportedPathResult.exitCode).toBe(1)
+	expect(unsupportedPathResult.stderr.toString()).toContain(`unsupported path: ${unreviewedPath}`)
 	expect(RELEASE_PROJECTION_PATHS).not.toContain("plugin/runtime/hello-world.js")
 })

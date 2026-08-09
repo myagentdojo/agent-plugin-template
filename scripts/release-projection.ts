@@ -82,9 +82,17 @@ export interface ReleaseProjectionFile {
 /** Validate the exact changed-file set, statuses, and version-only bytes. */
 export function validateReleaseProjection(
 	files: ReleaseProjectionFile[],
-	readVersions: (path: string) => { before: string; after: string },
+	readVersions: (path: string) => { before: string; after: string; afterSha?: string },
+	actualChangedFiles?: string[],
 ): { changedFiles: string[]; projectionDigest: string } {
 	const sorted = [...files].sort((left, right) => compareCodeUnits(left.filename, right.filename))
+	const changedFiles = sorted.map((file) => file.filename)
+	if (actualChangedFiles !== undefined) {
+		const actual = [...actualChangedFiles].sort(compareCodeUnits)
+		if (JSON.stringify(actual) !== JSON.stringify(changedFiles)) {
+			throw new Error("release projection does not match the candidate changed-file set")
+		}
+	}
 	let expectedVersion: string | undefined
 	if (sorted.some((file) => file.filename === "CHANGELOG.md")) {
 		try {
@@ -109,13 +117,16 @@ export function validateReleaseProjection(
 			throw new Error(`release projection contains unsupported status: ${file.filename} ${file.status}`)
 		}
 		const versions = readVersions(file.filename)
+		if (versions.afterSha !== undefined && file.sha !== versions.afterSha) {
+			throw new Error(`release projection does not match the reviewed head blob: ${file.filename}`)
+		}
 		if (!isReleaseProjectionVersionOnlyChange(file.filename, versions.before, versions.after, expectedVersion)) {
 			throw new Error(`release projection changed non-version behavior: ${file.filename}`)
 		}
 	}
 	const canonical = JSON.stringify(sorted)
 	return {
-		changedFiles: sorted.map((file) => file.filename),
+		changedFiles,
 		projectionDigest: createHash("sha256").update(canonical).digest("hex"),
 	}
 }
@@ -131,6 +142,32 @@ function gitFile(ref: string, path: string): string {
 		throw new Error(`cannot read ${path} at ${ref}: ${result.stderr.toString().trim()}`)
 	}
 	return result.stdout.toString()
+}
+
+function gitObjectId(ref: string, path: string): string {
+	const result = Bun.spawnSync({
+		cmd: ["git", "rev-parse", "--verify", `${ref}:${path}`],
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (result.exitCode !== 0) {
+		throw new Error(`cannot resolve ${path} at ${ref}: ${result.stderr.toString().trim()}`)
+	}
+	return result.stdout.toString().trim()
+}
+
+function gitChangedFiles(base: string, head: string): string[] {
+	const result = Bun.spawnSync({
+		cmd: ["git", "diff", "--name-only", "-z", base, head, "--"],
+		cwd: process.cwd(),
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	if (result.exitCode !== 0) {
+		throw new Error(`cannot resolve candidate changed files: ${result.stderr.toString().trim()}`)
+	}
+	return result.stdout.toString().split("\0").filter((path) => path.length > 0)
 }
 
 if (import.meta.main) {
@@ -149,7 +186,8 @@ if (import.meta.main) {
 		const result = validateReleaseProjection(files, (path) => ({
 			before: gitFile(base, path),
 			after: gitFile(head, path),
-		}))
+			afterSha: gitObjectId(head, path),
+		}), gitChangedFiles(base, head))
 		console.log(JSON.stringify({ ok: true, ...result }))
 	} catch (error) {
 		console.error(`release:projection: ${error instanceof Error ? error.message : String(error)}`)

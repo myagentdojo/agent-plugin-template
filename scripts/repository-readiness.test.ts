@@ -9,6 +9,7 @@ import {
 	actionReferencesFromWorkflows,
 	classifyActionsPermissions,
 	classifyApiFailure,
+	classifyDirectPushProtection,
 	classifyHostedCanaryConfiguration,
 	classifyMergeHistoryPolicy,
 	classifyRepositorySettings,
@@ -42,11 +43,34 @@ function immutableTagRuleset(overrides: Record<string, unknown> = {}): Record<st
 	}
 }
 
+function reviewedDefaultBranchRuleset(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+	return {
+		id: 18,
+		name: "Require pull requests for main",
+		target: "branch",
+		enforcement: "active",
+		bypass_actors: [],
+		conditions: {
+			ref_name: {
+				include: ["~DEFAULT_BRANCH"],
+				exclude: [],
+			},
+		},
+		rules: [{ type: "pull_request" }, { type: "non_fast_forward" }],
+		...overrides,
+	}
+}
+
 test("reports ready when every publication safeguard is proven", () => {
 	const checks = [
 		classifyTagRuleset([immutableTagRuleset()]),
-		classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }]),
-		...classifyRepositorySettings({ default_branch: "main", allow_merge_commit: true }),
+		classifyDirectPushProtection([reviewedDefaultBranchRuleset()], "main"),
+		classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }], true),
+		...classifyRepositorySettings({
+			default_branch: "main",
+			allow_squash_merge: true,
+			allow_merge_commit: false,
+		}),
 		classifyActionsPermissions({ enabled: true, allowed_actions: "all" }),
 		classifyReleaseAutomationConfiguration(
 			{ secrets: [{ name: "RELEASE_PLEASE_TOKEN" }] },
@@ -74,28 +98,171 @@ test("reports ready when every publication safeguard is proven", () => {
 	expect(checks.every((check) => check.status === "ready")).toBe(true)
 })
 
+describe("default branch direct-push protection", () => {
+	test("accepts an active no-bypass pull-request and force-push-blocking ruleset targeting the default branch", () => {
+		expect(classifyDirectPushProtection([reviewedDefaultBranchRuleset()], "main")).toMatchObject({
+			name: "direct-push-protection",
+			status: "ready",
+			repair: "",
+		})
+	})
+
+	test.each([
+		["all branches", ["~ALL"]],
+		["bare default branch", ["main"]],
+		["full default branch ref", ["refs/heads/main"]],
+		["single-segment branch wildcard", ["refs/heads/*"]],
+		["recursive branch wildcard", ["refs/heads/**"]],
+	] as const)("accepts %s targeting", (_description, include) => {
+		expect(
+			classifyDirectPushProtection(
+				[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include, exclude: [] } } })],
+				"main",
+			),
+		).toMatchObject({ status: "ready" })
+	})
+
+	test.each([
+		["absent", []],
+		["disabled", [reviewedDefaultBranchRuleset({ enforcement: "disabled" })]],
+		[
+			"bypassable",
+			[
+				reviewedDefaultBranchRuleset({
+					bypass_actors: [{ actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always" }],
+				}),
+			],
+		],
+		[
+			"non-default branch",
+			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["release"], exclude: [] } } })],
+		],
+		[
+			"excluded default branch",
+			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["~ALL"], exclude: ["main"] } } })],
+		],
+		[
+			"wildcard-excluded default branch",
+			[reviewedDefaultBranchRuleset({ conditions: { ref_name: { include: ["~ALL"], exclude: ["refs/heads/*"] } } })],
+		],
+		[
+			"without pull-request rule",
+			[reviewedDefaultBranchRuleset({ rules: [{ type: "non_fast_forward" }] })],
+		],
+		[
+			"without force-push block",
+			[reviewedDefaultBranchRuleset({ rules: [{ type: "pull_request" }] })],
+		],
+	] as const)("reports the settings repair when the ruleset is %s", (_condition, rulesets) => {
+		const check = classifyDirectPushProtection(rulesets, "main")
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.repair).toContain("Block force pushes")
+	})
+
+	test.each([
+		["ruleset response", undefined, "main"],
+		["empty default branch", [reviewedDefaultBranchRuleset()], ""],
+		["ruleset", [{}], "main"],
+		["non-record ruleset", ["not-a-ruleset"], "main"],
+		["bypass actors", [reviewedDefaultBranchRuleset({ bypass_actors: {} })], "main"],
+		["conditions", [reviewedDefaultBranchRuleset({ conditions: {} })], "main"],
+		["rule", [reviewedDefaultBranchRuleset({ rules: [{}] })], "main"],
+	] as const)("fails closed for unreadable %s", (_condition, rulesets, defaultBranch) => {
+		expect(classifyDirectPushProtection(rulesets, defaultBranch)).toMatchObject({
+			name: "direct-push-protection",
+			status: "unavailable",
+		})
+	})
+
+	test("skips well-formed non-branch rulesets", () => {
+		expect(
+			classifyDirectPushProtection([immutableTagRuleset(), reviewedDefaultBranchRuleset()], "main"),
+		).toMatchObject({ status: "ready" })
+	})
+})
+
+describe("release merge methods", () => {
+	test("accepts squash-only repositories", () => {
+		expect(
+			classifyRepositorySettings({
+				default_branch: "main",
+				allow_squash_merge: true,
+				allow_merge_commit: false,
+			}),
+		).toContainEqual(expect.objectContaining({ name: "squash-merge", status: "ready", repair: "" }))
+	})
+
+	test("rejects merge-commit-only repositories because ordinary pull requests must remain squashable", () => {
+		expect(
+			classifyRepositorySettings({
+				default_branch: "main",
+				allow_squash_merge: false,
+				allow_merge_commit: true,
+			}),
+		).toContainEqual(
+			expect.objectContaining({
+				name: "squash-merge",
+				status: "missing",
+				repair: expect.stringContaining("Allow squash merging"),
+			}),
+		)
+	})
+
+	test("rejects repositories without squash merging", () => {
+		const check = classifyRepositorySettings({
+			default_branch: "main",
+			allow_squash_merge: false,
+			allow_merge_commit: false,
+		}).find(({ name }) => name === "squash-merge")
+
+		expect(check).toMatchObject({ name: "squash-merge", status: "missing" })
+		expect(check?.repair).toContain("Allow squash merging")
+	})
+
+	test.each([
+		["missing squash setting", { default_branch: "main", allow_merge_commit: true }],
+		[
+			"non-boolean setting",
+			{ default_branch: "main", allow_squash_merge: "yes", allow_merge_commit: false },
+		],
+	] as const)("fails closed for %s", (_condition, repository) => {
+		expect(classifyRepositorySettings(repository)).toContainEqual(
+			expect.objectContaining({ name: "squash-merge", status: "unavailable" }),
+		)
+	})
+})
+
 describe("main merge-history policy", () => {
 	test("accepts absent classic protection and effective rules without linear history", () => {
-		expect(classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }])).toMatchObject({
+		expect(classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }], false)).toMatchObject({
 			name: "merge-history-policy",
 			status: "ready",
 			repair: "",
 		})
 	})
 
-	test("rejects classic branch protection requiring linear history", () => {
+	test("accepts classic branch protection requiring linear history when squash is enabled", () => {
 		expect(
 			classifyMergeHistoryPolicy(
 				{ required_linear_history: { enabled: true } },
 				[{ type: "required_status_checks" }],
+				true,
 			),
-		).toMatchObject({ status: "missing" })
+		).toMatchObject({ status: "ready", repair: "" })
 	})
 
-	test("rejects an effective ruleset requiring linear history", () => {
+	test("accepts an effective ruleset requiring linear history when squash is enabled", () => {
 		expect(
-			classifyMergeHistoryPolicy(null, [{ type: "required_linear_history" }]),
-		).toMatchObject({ status: "missing" })
+			classifyMergeHistoryPolicy(null, [{ type: "required_linear_history" }], true),
+		).toMatchObject({ status: "ready", repair: "" })
+	})
+
+	test("rejects required linear history when only merge commits are enabled", () => {
+		const check = classifyMergeHistoryPolicy(null, [{ type: "required_linear_history" }], false)
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.repair).toContain("Allow squash merging")
 	})
 
 	test("accepts explicitly disabled classic linear-history protection", () => {
@@ -103,6 +270,7 @@ describe("main merge-history policy", () => {
 			classifyMergeHistoryPolicy(
 				{ required_linear_history: { enabled: false } },
 				[{ type: "pull_request" }],
+				false,
 			),
 		).toMatchObject({ status: "ready" })
 	})
@@ -112,8 +280,16 @@ describe("main merge-history policy", () => {
 		["classic linear-history rule", { required_linear_history: {} }, []],
 		["effective rules", null, undefined],
 		["malformed effective rule", null, [{}]],
+		["malformed effective rule with classic linear history", { required_linear_history: { enabled: true } }, [{}]],
 	] as const)("fails closed for unreadable %s", (_condition, protection, rules) => {
-		expect(classifyMergeHistoryPolicy(protection, rules)).toMatchObject({
+		expect(classifyMergeHistoryPolicy(protection, rules, true)).toMatchObject({
+			name: "merge-history-policy",
+			status: "unavailable",
+		})
+	})
+
+	test("fails closed when squash capability is unreadable", () => {
+		expect(classifyMergeHistoryPolicy(null, [], undefined)).toMatchObject({
 			name: "merge-history-policy",
 			status: "unavailable",
 		})

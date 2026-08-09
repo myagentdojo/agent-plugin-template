@@ -5,9 +5,12 @@ const root = resolve(import.meta.dir, "..")
 const tagRulesetRepair =
 	"Settings > Rules > Rulesets > New tag ruleset: target tags matching v*, enable Restrict deletions and Restrict updates, no bypass actors"
 const defaultBranchRepair = "Settings > Branches > Default branch: change the default branch to main"
-const mergeCommitRepair = "Settings > General > Pull Requests: enable Allow merge commits"
+const directPushRepair =
+	"Settings > Rules > Rulesets > Edit the default-branch ruleset: enable Require a pull request before merging and Block force pushes, then remove all bypass actors"
+const squashMergeRepair =
+	"Settings > General > Pull Requests: enable Allow squash merging"
 const mergeHistoryRepair =
-	"Settings > Rules: remove Require linear history from every rule protecting main; release pull requests require two-parent merge commits"
+	"Settings > General > Pull Requests: enable Allow squash merging"
 const actionsRepair =
 	"Settings > Actions > General > Actions permissions: enable the actions and reusable workflows used by this repository"
 const requiredChecksRepair =
@@ -138,6 +141,35 @@ function matchesVersionTags(rule: Record<string, unknown>): boolean {
 	return include.some((pattern) => ["v*", "refs/tags/v*", "~ALL"].includes(pattern))
 }
 
+function matchesDefaultBranch(rule: Record<string, unknown>, defaultBranch: string): boolean | undefined {
+	if (!isRecord(rule.conditions) || !isRecord(rule.conditions.ref_name)) return undefined
+	const include = rule.conditions.ref_name.include
+	const exclude = rule.conditions.ref_name.exclude
+	if (
+		!Array.isArray(include) ||
+		!include.every((pattern) => typeof pattern === "string") ||
+		!Array.isArray(exclude) ||
+		!exclude.every((pattern) => typeof pattern === "string")
+	) {
+		return undefined
+	}
+	const matchesBranch = (pattern: string): boolean | undefined => {
+		if (["~ALL", "~DEFAULT_BRANCH", defaultBranch, `refs/heads/${defaultBranch}`].includes(pattern)) {
+			return true
+		}
+		try {
+			const glob = new Bun.Glob(pattern)
+			return glob.match(defaultBranch) || glob.match(`refs/heads/${defaultBranch}`)
+		} catch {
+			return undefined
+		}
+	}
+	const included = include.map(matchesBranch)
+	const excluded = exclude.map(matchesBranch)
+	if (included.includes(undefined) || excluded.includes(undefined)) return undefined
+	return included.includes(true) && !excluded.includes(true)
+}
+
 /**
  * Prove one active, non-bypassable ruleset makes every v* tag immutable.
  *
@@ -187,14 +219,98 @@ export function classifyTagRuleset(rulesets: unknown): ReadinessCheck {
 }
 
 /**
- * Classify repository metadata needed by the two-parent release design.
+ * Prove main cannot receive an unreviewed direct push or a force push.
  *
- * @param repository - GitHub repository API response
- * @returns Default-branch and merge-mode checks
+ * @param rulesets - Detailed branch rulesets from the GitHub API
+ * @param defaultBranch - Repository default branch
+ * @returns Direct-push safeguard classification
  *
  * @example
  * ```typescript
- * classifyRepositorySettings({ default_branch: "main", allow_merge_commit: true })
+ * classifyDirectPushProtection([{ target: "branch", enforcement: "active", bypass_actors: [], conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [{ type: "pull_request" }, { type: "non_fast_forward" }] }], "main")
+ * ```
+ */
+export function classifyDirectPushProtection(
+	rulesets: unknown,
+	defaultBranch: unknown,
+): ReadinessCheck {
+	if (!Array.isArray(rulesets) || typeof defaultBranch !== "string" || defaultBranch.length === 0) {
+		return {
+			name: "direct-push-protection",
+			status: "unavailable",
+			detail: "GitHub returned unreadable branch rulesets or default-branch metadata; direct-push protection is unproven",
+			repair: directPushRepair,
+		}
+	}
+	for (const value of rulesets) {
+		if (!isRecord(value)) {
+			return {
+				name: "direct-push-protection",
+				status: "unavailable",
+				detail: "GitHub returned an unreadable branch ruleset; direct-push protection is unproven",
+				repair: directPushRepair,
+			}
+		}
+		if (typeof value.target !== "string") {
+			return {
+				name: "direct-push-protection",
+				status: "unavailable",
+				detail: "GitHub returned an unreadable branch ruleset; direct-push protection is unproven",
+				repair: directPushRepair,
+			}
+		}
+		if (value.target !== "branch") continue
+		if (value.enforcement !== "active") continue
+		if (!Array.isArray(value.bypass_actors) || !Array.isArray(value.rules)) {
+			return {
+				name: "direct-push-protection",
+				status: "unavailable",
+				detail: "GitHub returned an unreadable active branch ruleset; direct-push protection is unproven",
+				repair: directPushRepair,
+			}
+		}
+		const coversDefaultBranch = matchesDefaultBranch(value, defaultBranch)
+		if (coversDefaultBranch === undefined) {
+			return {
+				name: "direct-push-protection",
+				status: "unavailable",
+				detail: "GitHub returned unreadable active branch ruleset conditions; direct-push protection is unproven",
+				repair: directPushRepair,
+			}
+		}
+		if (!coversDefaultBranch || value.bypass_actors.length > 0) continue
+		if (value.rules.some((rule) => !isRecord(rule) || typeof rule.type !== "string")) {
+			return {
+				name: "direct-push-protection",
+				status: "unavailable",
+				detail: "GitHub returned an unreadable branch rule; direct-push protection is unproven",
+				repair: directPushRepair,
+			}
+		}
+		const ruleTypes = new Set(value.rules.map((rule) => rule.type))
+		if (ruleTypes.has("pull_request") && ruleTypes.has("non_fast_forward")) {
+			return ready(
+				"direct-push-protection",
+				`Active ${defaultBranch} branch ruleset requires pull requests and blocks force pushes with no bypass actors`,
+			)
+		}
+	}
+	return missing(
+		"direct-push-protection",
+		`No active, no-bypass branch ruleset requires pull requests and blocks force pushes for ${defaultBranch}`,
+		directPushRepair,
+	)
+}
+
+/**
+ * Classify repository metadata needed by the verified one-parent or two-parent release design.
+ *
+ * @param repository - GitHub repository API response
+ * @returns Default-branch and squash-merge checks
+ *
+ * @example
+ * ```typescript
+ * classifyRepositorySettings({ default_branch: "main", allow_squash_merge: true, allow_merge_commit: false })
  * ```
  */
 export function classifyRepositorySettings(repository: unknown): ReadinessCheck[] {
@@ -207,12 +323,33 @@ export function classifyRepositorySettings(repository: unknown): ReadinessCheck[
 				repair: defaultBranchRepair,
 			},
 			{
-				name: "merge-commits",
+				name: "squash-merge",
 				status: "unavailable",
-				detail: "GitHub returned unreadable repository metadata; merge mode is unproven",
-				repair: mergeCommitRepair,
+				detail: "GitHub returned unreadable repository metadata; squash merging is unproven",
+				repair: squashMergeRepair,
 			},
 		]
+	}
+	const mergeMethodsReadable = typeof repository.allow_squash_merge === "boolean"
+	let mergeMethodCheck: ReadinessCheck
+	if (!mergeMethodsReadable) {
+		mergeMethodCheck = {
+			name: "squash-merge",
+			status: "unavailable",
+			detail: "GitHub returned an unreadable squash-merge setting; the required release path is unproven",
+			repair: squashMergeRepair,
+		}
+	} else if (repository.allow_squash_merge) {
+		mergeMethodCheck = ready(
+			"squash-merge",
+			"Squash merging is allowed for verified one-parent release candidates",
+		)
+	} else {
+		mergeMethodCheck = missing(
+			"squash-merge",
+			"Squash merging is disabled; ordinary pull requests and release candidates cannot use the required squash path",
+			squashMergeRepair,
+		)
 	}
 	return [
 		repository.default_branch === "main"
@@ -222,32 +359,36 @@ export function classifyRepositorySettings(repository: unknown): ReadinessCheck[
 					`Default branch is ${String(repository.default_branch ?? "unset")}; expected main`,
 					defaultBranchRepair,
 				),
-		repository.allow_merge_commit === true
-			? ready("merge-commits", "Merge commits are allowed for two-parent release candidates")
-			: missing(
-					"merge-commits",
-					"Merge commits are disabled; release publication requires a two-parent merge commit",
-					mergeCommitRepair,
-				),
+		mergeMethodCheck,
 	]
 }
 
 /**
- * Reject branch policies that prohibit the release design's two-parent merge commit.
+ * Accept readable linear-history policy only when squash merging provides a compatible release path.
  *
  * @param branchProtection - Full main branch-protection response, or null when no classic protection exists
  * @param effectiveRules - Effective GitHub ruleset rules for main
+ * @param squashMergeEnabled - Readable repository squash-merge capability
  * @returns Merge-history policy classification
  *
  * @example
  * ```typescript
- * classifyMergeHistoryPolicy(null, [{ type: "required_status_checks" }])
+ * classifyMergeHistoryPolicy(null, [{ type: "required_linear_history" }], true)
  * ```
  */
 export function classifyMergeHistoryPolicy(
 	branchProtection: unknown,
 	effectiveRules: unknown,
+	squashMergeEnabled: unknown,
 ): ReadinessCheck {
+	if (typeof squashMergeEnabled !== "boolean") {
+		return {
+			name: "merge-history-policy",
+			status: "unavailable",
+			detail: "GitHub returned unreadable squash-merge capability; merge history compatibility is unproven",
+			repair: mergeHistoryRepair,
+		}
+	}
 	if (branchProtection !== null && !isRecord(branchProtection)) {
 		return {
 			name: "merge-history-policy",
@@ -256,6 +397,7 @@ export function classifyMergeHistoryPolicy(
 			repair: mergeHistoryRepair,
 		}
 	}
+	let classicRequiresLinearHistory = false
 	if (isRecord(branchProtection) && branchProtection.required_linear_history !== undefined) {
 		const linearHistory = branchProtection.required_linear_history
 		if (!isRecord(linearHistory) || typeof linearHistory.enabled !== "boolean") {
@@ -266,13 +408,7 @@ export function classifyMergeHistoryPolicy(
 				repair: mergeHistoryRepair,
 			}
 		}
-		if (linearHistory.enabled) {
-			return missing(
-				"merge-history-policy",
-				"Classic branch protection requires linear history on main, which prohibits two-parent release merges",
-				mergeHistoryRepair,
-			)
-		}
+		classicRequiresLinearHistory = linearHistory.enabled
 	}
 	if (
 		!Array.isArray(effectiveRules) ||
@@ -285,12 +421,20 @@ export function classifyMergeHistoryPolicy(
 			repair: mergeHistoryRepair,
 		}
 	}
-	if (effectiveRules.some((rule) => rule.type === "required_linear_history")) {
-		return missing(
-			"merge-history-policy",
-			"An active ruleset requires linear history on main, which prohibits two-parent release merges",
-			mergeHistoryRepair,
-		)
+	const rulesetRequiresLinearHistory = effectiveRules.some(
+		(rule) => rule.type === "required_linear_history",
+	)
+	if (classicRequiresLinearHistory || rulesetRequiresLinearHistory) {
+		return squashMergeEnabled
+			? ready(
+					"merge-history-policy",
+					"Main requires linear history; squash merging provides a compatible one-parent release path",
+				)
+			: missing(
+					"merge-history-policy",
+					"Main requires linear history, but squash merging is disabled",
+					mergeHistoryRepair,
+				)
 	}
 	return ready(
 		"merge-history-policy",
@@ -817,7 +961,39 @@ function checkTagRuleset(repository: string): ReadinessCheck {
 	return classifyTagRuleset(details)
 }
 
-function checkMergeHistoryPolicy(repository: string): ReadinessCheck {
+function checkDirectPushProtection(repository: string, defaultBranch: unknown): ReadinessCheck {
+	const listed = readApi(`repos/${repository}/rulesets?includes_parents=true&per_page=100`, true)
+	if (!listed.ok) return apiFailure("direct-push-protection", listed, directPushRepair)
+	const summaries = flattenPages(listed.data)
+	if (!Array.isArray(summaries)) return classifyDirectPushProtection(summaries, defaultBranch)
+	if (summaries.some((value) => !isRecord(value) || typeof value.target !== "string")) {
+		return {
+			name: "direct-push-protection",
+			status: "unavailable",
+			detail: "GitHub returned an unreadable ruleset summary; direct-push protection is unproven",
+			repair: directPushRepair,
+		}
+	}
+	const branchSummaries = summaries.filter((value) => isRecord(value) && value.target === "branch")
+	if (branchSummaries.length === 0) return classifyDirectPushProtection([], defaultBranch)
+	const details: unknown[] = []
+	for (const summary of branchSummaries) {
+		if (!isRecord(summary) || typeof summary.id !== "number") {
+			return {
+				name: "direct-push-protection",
+				status: "unavailable",
+				detail: "GitHub returned a branch ruleset without a readable id; direct-push protection is unproven",
+				repair: directPushRepair,
+			}
+		}
+		const detailed = readApi(`repos/${repository}/rulesets/${summary.id}?includes_parents=true`)
+		if (!detailed.ok) return apiFailure("direct-push-protection", detailed, directPushRepair)
+		details.push(detailed.data)
+	}
+	return classifyDirectPushProtection(details, defaultBranch)
+}
+
+function checkMergeHistoryPolicy(repository: string, squashMergeEnabled: unknown): ReadinessCheck {
 	const protection = readApi(`repos/${repository}/branches/main/protection`)
 	if (!protection.ok && !isNotFoundApiFailure(protection)) {
 		return apiFailure("merge-history-policy", protection, mergeHistoryRepair)
@@ -826,7 +1002,11 @@ function checkMergeHistoryPolicy(repository: string): ReadinessCheck {
 	if (!effectiveRules.ok) {
 		return apiFailure("merge-history-policy", effectiveRules, mergeHistoryRepair)
 	}
-	return classifyMergeHistoryPolicy(protection.ok ? protection.data : null, effectiveRules.data)
+	return classifyMergeHistoryPolicy(
+		protection.ok ? protection.data : null,
+		effectiveRules.data,
+		squashMergeEnabled,
+	)
 }
 
 function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
@@ -887,13 +1067,21 @@ function localActionReferences(): string[] {
 }
 
 function runChecks(repository: string): ReadinessCheck[] {
-	const checks: ReadinessCheck[] = [checkTagRuleset(repository), checkMergeHistoryPolicy(repository)]
 	const repositoryResponse = readApi(`repos/${repository}`)
+	const repositoryData = repositoryResponse.ok && isRecord(repositoryResponse.data)
+		? repositoryResponse.data
+		: undefined
+	const squashMergeEnabled = repositoryData?.allow_squash_merge
+	const checks: ReadinessCheck[] = [
+		checkTagRuleset(repository),
+		checkDirectPushProtection(repository, repositoryData?.default_branch),
+		checkMergeHistoryPolicy(repository, squashMergeEnabled),
+	]
 	if (repositoryResponse.ok) checks.push(...classifyRepositorySettings(repositoryResponse.data))
 	else {
 		checks.push(
 			apiFailure("default-branch", repositoryResponse, defaultBranchRepair),
-			apiFailure("merge-commits", repositoryResponse, mergeCommitRepair),
+			apiFailure("squash-merge", repositoryResponse, squashMergeRepair),
 		)
 	}
 	const actions = readApi(`repos/${repository}/actions/permissions`)
