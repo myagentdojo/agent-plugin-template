@@ -1,0 +1,302 @@
+#!/bin/sh
+set -u
+
+PATH=/usr/bin:/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
+warning='Harness Plugin Prototype lifecycle mechanics proof could not run; continuing without blocking.'
+
+warn() {
+	printf '%s\n' "$warning" >&2
+	exit 0
+}
+
+case "$0" in
+/*/hooks/native-capability-hook) plugin_root=${0%/hooks/native-capability-hook} ;;
+*) warn ;;
+esac
+
+event=${1-}
+client=${2-}
+[ "$#" -eq 2 ] || warn
+case "$event:$client" in
+SessionStart:claude|SessionStart:codex|Stop:claude|Stop:codex) ;;
+*) warn ;;
+esac
+
+for required_tool in awk dd mktemp rm wc; do
+	command -v "$required_tool" >/dev/null 2>&1 || warn
+done
+temporary_directory=$(mktemp -d /tmp/harness-native-capability-hook.XXXXXX 2>/dev/null) || warn
+case "$temporary_directory" in
+/tmp/harness-native-capability-hook.*) ;;
+*) warn ;;
+esac
+trap 'rm -rf "$temporary_directory" >/dev/null 2>&1' 0 1 2 3 15
+input_file=$temporary_directory/input.json
+: >"$input_file" || warn
+input_size=0
+while [ "$input_size" -lt 1048577 ]; do
+	previous_size=$input_size
+	remaining_bytes=$((1048577 - input_size))
+	dd bs="$remaining_bytes" count=1 >>"$input_file" 2>/dev/null || warn
+	input_size=$(wc -c <"$input_file" 2>/dev/null) || warn
+	[ "$input_size" -gt "$previous_size" ] || break
+done
+[ "$input_size" -le 1048576 ] || warn
+
+# Extract one unescaped top-level string without evaluating JSON or inspecting
+# nested values. The lexical scan rejects unbalanced input and ambiguous keys.
+top_level_string() {
+	awk -v target="$2" '
+	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
+	function parse_string(start,    i,c,e,k) {
+		parsed_raw = ""
+		parsed_plain = 1
+		for (i = start + 1; i <= length(document); i++) {
+			c = substr(document, i, 1)
+			if (c == "\"") { parsed_end = i; return 1 }
+			if (c == "\\") {
+				parsed_plain = 0
+				i++
+				if (i > length(document)) return 0
+				e = substr(document, i, 1)
+				if (e == "u") {
+					for (k = 1; k <= 4; k++) {
+						i++
+						if (substr(document, i, 1) !~ /^[0-9A-Fa-f]$/) return 0
+					}
+				} else if (e !~ /^["\\\/bfnrt]$/) return 0
+				parsed_raw = parsed_raw "\\" e
+				continue
+			}
+			if (c ~ /[[:cntrl:]]/) return 0
+			parsed_raw = parsed_raw c
+		}
+		return 0
+	}
+	{
+		if (NR > 1) document = document "\n"
+		document = document $0
+	}
+	END {
+		n = length(document)
+		for (i = 1; i <= n && whitespace(substr(document, i, 1)); i++) {}
+		if (substr(document, i, 1) != "{") exit 2
+		depth = 0
+		closed = 0
+		for (; i <= n; i++) {
+			c = substr(document, i, 1)
+			if (closed) {
+				if (!whitespace(c)) exit 2
+				continue
+			}
+			if (c == "{") { depth++; stack[depth] = c; continue }
+			if (c == "[") { depth++; stack[depth] = c; continue }
+			if (c == "}" || c == "]") {
+				if (depth < 1) exit 2
+				if ((c == "}" && stack[depth] != "{") || (c == "]" && stack[depth] != "[")) exit 2
+				depth--
+				if (depth == 0) closed = 1
+				continue
+			}
+			if (c != "\"") continue
+			string_depth = depth
+			if (!parse_string(i)) exit 2
+			key = parsed_raw
+			key_plain = parsed_plain
+			key_end = parsed_end
+			if (string_depth == 1 && stack[1] == "{") {
+				j = key_end + 1
+				while (j <= n && whitespace(substr(document, j, 1))) j++
+				if (substr(document, j, 1) == ":" && key_plain && key == target) {
+					matches++
+					j++
+					while (j <= n && whitespace(substr(document, j, 1))) j++
+					if (substr(document, j, 1) != "\"") exit 2
+					if (!parse_string(j) || !parsed_plain) exit 2
+					value = parsed_raw
+					value_end = parsed_end + 1
+					while (value_end <= n && whitespace(substr(document, value_end, 1))) value_end++
+					if (substr(document, value_end, 1) != "," && substr(document, value_end, 1) != "}") exit 2
+				}
+			}
+			i = key_end
+		}
+		if (!closed || depth != 0 || matches > 1) exit 2
+		if (matches == 0) print "__MISSING__"
+		else print value
+	}
+	' "$1"
+}
+
+valid_semver() {
+	awk -v value="$1" '
+	function numeric(value) { return value ~ /^(0|[1-9][0-9]*)$/ }
+	function identifiers(value, prerelease,    count,parts,part_index,item) {
+		if (value == "") return 0
+		count = split(value, parts, ".")
+		for (part_index = 1; part_index <= count; part_index++) {
+			item = parts[part_index]
+			if (item == "" || item !~ /^[0-9A-Za-z-]+$/) return 0
+			if (prerelease && item ~ /^[0-9]+$/ && !numeric(item)) return 0
+		}
+		return 1
+	}
+	BEGIN {
+		if (value == "" || value ~ /[[:space:]]/) exit 1
+		main = value
+		if (index(main, "+")) {
+			if (gsub(/\+/, "+", main) != 1) exit 1
+			split(main, build_parts, "+")
+			main = build_parts[1]
+			if (!identifiers(build_parts[2], 0)) exit 1
+		}
+		if (index(main, "-")) {
+			dash = index(main, "-")
+			prerelease = substr(main, dash + 1)
+			main = substr(main, 1, dash - 1)
+			if (!identifiers(prerelease, 1)) exit 1
+		}
+		if (split(main, core, ".") != 3) exit 1
+		for (part_index = 1; part_index <= 3; part_index++) if (!numeric(core[part_index])) exit 1
+		exit 0
+	}
+	' </dev/null
+}
+
+manifest_version() {
+	case "$client" in
+	claude) manifest=$plugin_root/.claude-plugin/plugin.json ;;
+	codex) manifest=$plugin_root/.codex-plugin/plugin.json ;;
+	esac
+	[ -f "$manifest" ] && [ -r "$manifest" ] || return 1
+	version=$(top_level_string "$manifest" version) || return 1
+	[ "$version" != __MISSING__ ] || return 1
+	valid_semver "$version" || return 1
+	printf '%s\n' "$version"
+}
+
+# Recognize only one top-level stop_hook_active member whose value is the JSON
+# boolean true or false. Strings and nested members remain lexical decoys.
+top_level_stop_guard() {
+	awk '
+	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
+	function boundary(c) { return c == "" || c == "," || c == "}" || whitespace(c) }
+	function parse_string(start,    i,c,e,k) {
+		parsed_raw = ""
+		parsed_plain = 1
+		for (i = start + 1; i <= length(document); i++) {
+			c = substr(document, i, 1)
+			if (c == "\"") { parsed_end = i; return 1 }
+			if (c == "\\") {
+				parsed_plain = 0
+				i++
+				if (i > length(document)) return 0
+				e = substr(document, i, 1)
+				if (e == "u") {
+					for (k = 1; k <= 4; k++) {
+						i++
+						if (substr(document, i, 1) !~ /^[0-9A-Fa-f]$/) return 0
+					}
+				} else if (e !~ /^["\\\/bfnrt]$/) return 0
+				parsed_raw = parsed_raw "\\" e
+				continue
+			}
+			if (c ~ /[[:cntrl:]]/) return 0
+			parsed_raw = parsed_raw c
+		}
+		return 0
+	}
+	{
+		if (NR > 1) document = document "\n"
+		document = document $0
+	}
+	END {
+		n = length(document)
+		for (i = 1; i <= n && whitespace(substr(document, i, 1)); i++) {}
+		if (substr(document, i, 1) != "{") exit 2
+		depth = 0
+		closed = 0
+		for (; i <= n; i++) {
+			c = substr(document, i, 1)
+			if (closed) {
+				if (!whitespace(c)) exit 2
+				continue
+			}
+			if (c == "{") { depth++; stack[depth] = c; continue }
+			if (c == "[") { depth++; stack[depth] = c; continue }
+			if (c == "}" || c == "]") {
+				if (depth < 1) exit 2
+				if ((c == "}" && stack[depth] != "{") || (c == "]" && stack[depth] != "[")) exit 2
+				depth--
+				if (depth == 0) closed = 1
+				continue
+			}
+			if (c != "\"") continue
+			string_depth = depth
+			if (!parse_string(i)) exit 2
+			key = parsed_raw
+			key_plain = parsed_plain
+			key_end = parsed_end
+			if (string_depth == 1 && stack[1] == "{") {
+				j = key_end + 1
+				while (j <= n && whitespace(substr(document, j, 1))) j++
+				if (substr(document, j, 1) == ":" && key_plain && key == "stop_hook_active") {
+					matches++
+					j++
+					while (j <= n && whitespace(substr(document, j, 1))) j++
+					if (substr(document, j, 4) == "true" && boundary(substr(document, j + 4, 1))) {
+						value = "true"
+						value_end = j + 4
+					} else if (substr(document, j, 5) == "false" && boundary(substr(document, j + 5, 1))) {
+						value = "false"
+						value_end = j + 5
+					} else exit 2
+					while (value_end <= n && whitespace(substr(document, value_end, 1))) value_end++
+					if (substr(document, value_end, 1) != "," && substr(document, value_end, 1) != "}") exit 2
+				}
+			}
+			i = key_end
+		}
+		if (!closed || depth != 0 || matches != 1) exit 2
+		print value
+	}
+	' "$1"
+}
+
+if [ "$event" = SessionStart ]; then
+	source=$(top_level_string "$input_file" source) || warn
+	case "$source" in
+	startup|resume) ;;
+	*) exit 0 ;;
+	esac
+	version=$(manifest_version) || warn
+	printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Harness Plugin Prototype v%s | %s | SessionStart:%s"}}\n' \
+		"$version" "$client" "$source"
+	exit 0
+fi
+
+stop_hook_active=$(top_level_stop_guard "$input_file") || warn
+[ "$stop_hook_active" = true ] && exit 0
+
+version=$(manifest_version) || warn
+fixture_source=$plugin_root/hooks/fixture/lifecycle-mechanics-proof.source.json
+fixture_projection=$plugin_root/hooks/fixture/lifecycle-mechanics-proof.generated.json
+[ -f "$fixture_source" ] && [ -r "$fixture_source" ] || warn
+[ -f "$fixture_projection" ] && [ -r "$fixture_projection" ] || warn
+command -v cmp >/dev/null 2>&1 || warn
+cmp "$fixture_source" "$fixture_projection" >/dev/null 2>&1
+comparison_status=$?
+case "$comparison_status" in
+0) exit 0 ;;
+1)
+	printf '{"decision":"block","reason":"Harness Plugin Prototype v%s found a mismatch in its packaged lifecycle proof files. Do not modify the workspace. Continue once to explain how to reinstall this plugin from its trusted source; if the mismatch remains, report this plugin version."}\n' "$version"
+	exit 0
+	;;
+*) warn ;;
+esac
+
+exit 0

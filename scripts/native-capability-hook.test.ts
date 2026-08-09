@@ -1,0 +1,468 @@
+import {
+	chmodSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import { afterEach, expect, test } from "bun:test"
+
+const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "")
+const temporaryRoots: string[] = []
+const warning =
+	"Harness Plugin Prototype lifecycle mechanics proof could not run; continuing without blocking.\n"
+
+afterEach(() => {
+	for (const temporaryRoot of temporaryRoots.splice(0)) {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+function installedPlugin(): { handler: string; pluginRoot: string } {
+	const installationRoot = mkdtempSync(join(tmpdir(), "native-capability-hook-"))
+	temporaryRoots.push(installationRoot)
+	const pluginRoot = join(installationRoot, "plugin")
+	mkdirSync(join(pluginRoot, "hooks", "fixture"), { recursive: true })
+	cpSync(
+		join(root, "plugin", "hooks", "native-capability-hook"),
+		join(pluginRoot, "hooks", "native-capability-hook"),
+	)
+	cpSync(
+		join(root, "plugin", "hooks", "fixture"),
+		join(pluginRoot, "hooks", "fixture"),
+		{ recursive: true },
+	)
+	mkdirSync(join(pluginRoot, ".claude-plugin"))
+	mkdirSync(join(pluginRoot, ".codex-plugin"))
+	for (const harness of ["claude", "codex"]) {
+		writeFileSync(
+			join(pluginRoot, `.${harness}-plugin`, "plugin.json"),
+			'{"name":"fixture","version":"0.3.0"}\n',
+		)
+	}
+	const handler = join(pluginRoot, "hooks", "native-capability-hook")
+	chmodSync(handler, 0o755)
+	return { handler, pluginRoot }
+}
+
+function runHook(
+	handler: string,
+	event: "SessionStart" | "Stop",
+	client: "claude" | "codex",
+	input: string,
+	options: { cwd?: string; env?: Record<string, string> } = {},
+) {
+	return Bun.spawnSync({
+		cmd: [handler, event, client],
+		stdin: Buffer.from(input),
+		stdout: "pipe",
+		stderr: "pipe",
+		...options,
+	})
+}
+
+function treeSnapshot(directory: string): string[] {
+	const entries: string[] = []
+	function visit(current: string, relative: string): void {
+		const status = statSync(current)
+		if (status.isDirectory()) {
+			entries.push(`d ${relative} ${status.mode & 0o7777} ${status.mtimeMs}`)
+			for (const name of readdirSync(current).sort()) {
+				visit(join(current, name), relative ? `${relative}/${name}` : name)
+			}
+			return
+		}
+		const digest = new Bun.CryptoHasher("sha256").update(readFileSync(current)).digest("hex")
+		entries.push(`f ${relative} ${status.mode & 0o7777} ${status.mtimeMs} ${digest}`)
+	}
+	visit(directory, ".")
+	return entries
+}
+
+function runGenerateCheck(): ReturnType<typeof Bun.spawnSync> {
+	return Bun.spawnSync({
+		cmd: [process.execPath, "run", "generate:check"],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+}
+
+test("a clean Stop lifecycle mechanics proof is silent", () => {
+	const fixture = installedPlugin()
+	const before = readFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+	)
+
+	const result = runHook(
+		fixture.handler,
+		"Stop",
+		"claude",
+		'{"stop_hook_active":false}',
+	)
+
+	expect(result.exitCode).toBe(0)
+	expect(result.stdout.toString()).toBe("")
+	expect(result.stderr.toString()).toBe("")
+	expect(
+		readFileSync(
+			join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		),
+	).toEqual(before)
+})
+
+test("SessionStart emits one versioned receipt only for startup and resume", () => {
+	const fixture = installedPlugin()
+	for (const client of ["claude", "codex"] as const) {
+		for (const source of ["startup", "resume"] as const) {
+			const result = runHook(
+				fixture.handler,
+				"SessionStart",
+				client,
+				JSON.stringify({ source }),
+			)
+			expect(result.exitCode).toBe(0)
+			expect(result.stderr.toString()).toBe("")
+			expect(JSON.parse(result.stdout.toString())).toEqual({
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext: `Harness Plugin Prototype v0.3.0 | ${client} | SessionStart:${source}`,
+				},
+			})
+		}
+		for (const source of ["clear", "compact", "fork", "future", ""] as const) {
+			const result = runHook(
+				fixture.handler,
+				"SessionStart",
+				client,
+				JSON.stringify(source ? { source } : {}),
+			)
+			expect(result.exitCode).toBe(0)
+			expect(result.stdout.toString()).toBe("")
+			expect(result.stderr.toString()).toBe("")
+		}
+	}
+})
+
+test("a proven fixture mismatch returns the common versioned block envelope", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+
+	const result = runHook(
+		fixture.handler,
+		"Stop",
+		"codex",
+		'{"stop_hook_active":false}',
+	)
+
+	expect(result.exitCode).toBe(0)
+	expect(result.stderr.toString()).toBe("")
+	expect(JSON.parse(result.stdout.toString())).toEqual({
+		decision: "block",
+		reason:
+			"Harness Plugin Prototype v0.3.0 found a mismatch in its packaged lifecycle proof files. Do not modify the workspace. Continue once to explain how to reinstall this plugin from its trusted source; if the mismatch remains, report this plugin version.",
+	})
+})
+
+test("an active Stop re-entry exits silently before fixture and version checks", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+	writeFileSync(join(fixture.pluginRoot, ".claude-plugin", "plugin.json"), "not-json\n")
+
+	const result = runHook(
+		fixture.handler,
+		"Stop",
+		"claude",
+		'{"stop_hook_active":true}',
+	)
+
+	expect(result.exitCode).toBe(0)
+	expect(result.stdout.toString()).toBe("")
+	expect(result.stderr.toString()).toBe("")
+})
+
+test("Stop guard parsing accepts reordered whitespace and ignores string and nested decoys", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+	const input = `{
+		"message": "a string with \\\"stop_hook_active\\\": true",
+		"nested": { "stop_hook_active": true },
+		"other": [1, { "stop_hook_active": true }],
+		"stop_hook_active" : false
+	}`
+
+	const result = runHook(fixture.handler, "Stop", "claude", input)
+
+	expect(result.exitCode).toBe(0)
+	expect(result.stderr.toString()).toBe("")
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({ decision: "block" })
+})
+
+test("ambiguous Stop guards fail open with one bounded warning", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+	const inputs = [
+		"{}",
+		'{"stop_hook_active":"true"}',
+		'{"stop_hook_active":null}',
+		'{"stop_hook_active":1}',
+		'{"stop_hook_active":false,"stop_hook_active":true}',
+		'{"nested":{"stop_hook_active":false}}',
+		'{"stop_hook_active":false',
+		'{"stop_hook_active":false "other":1}',
+		'{"stop_hook_active":false} trailing',
+		'[false]',
+		'not json',
+	]
+
+	for (const input of inputs) {
+		const result = runHook(fixture.handler, "Stop", "claude", input)
+		expect(result.exitCode).toBe(0)
+		expect(result.stdout.toString()).toBe("")
+		expect(result.stderr.toString()).toBe(warning)
+	}
+})
+
+test("oversized input fails open after reading only 1 MiB plus one overflow byte", () => {
+	const fixture = installedPlugin()
+	const overflowInput = "x".repeat(1024 * 1024 + 1)
+	expect(Buffer.byteLength(overflowInput)).toBe(1024 * 1024 + 1)
+
+	const overflow = runHook(fixture.handler, "Stop", "claude", overflowInput)
+	expect(overflow.exitCode).toBe(0)
+	expect(overflow.stdout.toString()).toBe("")
+	expect(overflow.stderr.toString()).toBe(warning)
+})
+
+test("malformed SessionStart input fails open without a context marker", () => {
+	const fixture = installedPlugin()
+	for (const input of [
+		'{"source":"startup"',
+		'{"source":"startup","source":"resume"}',
+		'{"source":true}',
+	]) {
+		const result = runHook(fixture.handler, "SessionStart", "codex", input)
+		expect(result.exitCode).toBe(0)
+		expect(result.stdout.toString()).toBe("")
+		expect(result.stderr.toString()).toBe(warning)
+	}
+})
+
+test("version metadata requires exactly one top-level strict semver", () => {
+	const invalidManifests = [
+		"{}\n",
+		'{"version":"v0.3.0"}\n',
+		'{"version":"01.2.3"}\n',
+		'{"version":"1.2"}\n',
+		'{"version":"1.2.3-01"}\n',
+		'{"version":"1.2.3+"}\n',
+		'{"version":"0.3.0","version":"0.3.1"}\n',
+		'{"nested":{"version":"0.3.0"}}\n',
+		'{"version":"0.3.0"\n',
+	]
+	for (const manifest of invalidManifests) {
+		const fixture = installedPlugin()
+		writeFileSync(join(fixture.pluginRoot, ".claude-plugin", "plugin.json"), manifest)
+		const result = runHook(
+			fixture.handler,
+			"SessionStart",
+			"claude",
+			'{"source":"startup"}',
+		)
+		expect(result.exitCode).toBe(0)
+		expect(result.stdout.toString()).toBe("")
+		expect(result.stderr.toString()).toBe(warning)
+	}
+
+	const valid = installedPlugin()
+	writeFileSync(
+		join(valid.pluginRoot, ".codex-plugin", "plugin.json"),
+		'{"version":"1.2.3-rc.1+build.7"}\n',
+	)
+	const result = runHook(
+		valid.handler,
+		"SessionStart",
+		"codex",
+		'{"source":"resume"}',
+	)
+	expect(result.stderr.toString()).toBe("")
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		hookSpecificOutput: {
+			additionalContext:
+				"Harness Plugin Prototype v1.2.3-rc.1+build.7 | codex | SessionStart:resume",
+		},
+	})
+})
+
+test("missing or unreadable proof files and unavailable comparison fail open", () => {
+	const missing = installedPlugin()
+	rmSync(
+		join(missing.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.source.json"),
+	)
+
+	const unreadable = installedPlugin()
+	chmodSync(
+		join(
+			unreadable.pluginRoot,
+			"hooks",
+			"fixture",
+			"lifecycle-mechanics-proof.generated.json",
+		),
+		0o000,
+	)
+
+	const noComparison = installedPlugin()
+	const systemPath = mkdtempSync(join(tmpdir(), "native-capability-system-path-"))
+	temporaryRoots.push(systemPath)
+	for (const tool of ["awk", "dd", "mktemp", "rm", "wc"]) {
+		const path = Bun.which(tool)
+		if (!path) throw new Error(`required test tool unavailable: ${tool}`)
+		symlinkSync(path, join(systemPath, tool))
+	}
+	writeFileSync(
+		noComparison.handler,
+		readFileSync(noComparison.handler, "utf8").replace(
+			"PATH=/usr/bin:/bin",
+			`PATH=${systemPath}`,
+		),
+	)
+
+	for (const fixture of [missing, unreadable, noComparison]) {
+		const result = runHook(
+			fixture.handler,
+			"Stop",
+			"claude",
+			'{"stop_hook_active":false}',
+		)
+		expect(result.exitCode).toBe(0)
+		expect(result.stdout.toString()).toBe("")
+		expect(result.stderr.toString()).toBe(warning)
+	}
+})
+
+test("hostile cwd and PATH cannot execute workspace or user-selected tools or mutate files", () => {
+	const fixture = installedPlugin()
+	const hostileRoot = mkdtempSync(join(tmpdir(), "native-capability-hostile-"))
+	temporaryRoots.push(hostileRoot)
+	const hostileBin = join(hostileRoot, "bin")
+	mkdirSync(hostileBin)
+	const marker = join(hostileRoot, "unexpected-execution")
+	for (const tool of [
+		"awk",
+		"bun",
+		"cmp",
+		"curl",
+		"dd",
+		"git",
+		"jq",
+		"mktemp",
+		"node",
+		"npm",
+		"python",
+		"python3",
+		"rm",
+		"sh",
+		"wc",
+		"wget",
+	]) {
+		const executable = join(hostileBin, tool)
+		writeFileSync(executable, `#!/bin/sh\nprintf touched >'${marker}'\nexit 97\n`)
+		chmodSync(executable, 0o755)
+	}
+	writeFileSync(
+		join(hostileRoot, "package.json"),
+		'{"scripts":{"stop":"touch unexpected-workspace-script"}}\n',
+	)
+	writeFileSync(join(hostileRoot, "stop_hook_active"), "workspace decoy\n")
+	const pluginBefore = treeSnapshot(fixture.pluginRoot)
+	const workspaceBefore = treeSnapshot(hostileRoot)
+
+	const result = runHook(
+		fixture.handler,
+		"Stop",
+		"codex",
+		'{"stop_hook_active":false}',
+		{
+			cwd: hostileRoot,
+			env: {
+				PATH: hostileBin,
+				SECRET_VALUE: "must-not-appear",
+				TMPDIR: join(hostileRoot, "user-selected-temp"),
+			},
+		},
+	)
+
+	expect(result.exitCode).toBe(0)
+	expect(result.stdout.toString()).toBe("")
+	expect(result.stderr.toString()).toBe("")
+	expect(existsSync(marker)).toBe(false)
+	expect(treeSnapshot(fixture.pluginRoot)).toEqual(pluginBefore)
+	expect(treeSnapshot(hostileRoot)).toEqual(workspaceBefore)
+})
+
+test("generation owns one deterministic LF fixture projection", () => {
+	const sourcePath = join(
+		root,
+		"plugin",
+		"hooks",
+		"fixture",
+		"lifecycle-mechanics-proof.source.json",
+	)
+	const projectionPath = join(
+		root,
+		"plugin",
+		"hooks",
+		"fixture",
+		"lifecycle-mechanics-proof.generated.json",
+	)
+	const expected =
+		'{\n  "schemaVersion": 1,\n  "purpose": "Harness Plugin Prototype lifecycle mechanics proof"\n}\n'
+	expect(readFileSync(sourcePath, "utf8")).toBe(expected)
+	expect(readFileSync(projectionPath, "utf8")).toBe(expected)
+	expect(runGenerateCheck().exitCode).toBe(0)
+
+	const originalProjection = readFileSync(projectionPath)
+	try {
+		writeFileSync(projectionPath, "drifted\r\n")
+		const drift = runGenerateCheck()
+		expect(drift.exitCode).toBe(1)
+		expect(drift.stderr.toString()).toContain(
+			"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+		)
+	} finally {
+		writeFileSync(projectionPath, originalProjection)
+	}
+
+	const originalSource = readFileSync(sourcePath)
+	try {
+		writeFileSync(sourcePath, expected.replaceAll("\n", "\r\n"))
+		const nonCanonicalSource = runGenerateCheck()
+		expect(nonCanonicalSource.exitCode).toBe(1)
+		expect(nonCanonicalSource.stderr.toString()).toContain(
+			"lifecycle mechanics proof source must use fixed field order and LF line endings",
+		)
+	} finally {
+		writeFileSync(sourcePath, originalSource)
+	}
+})

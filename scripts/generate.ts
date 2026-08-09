@@ -1,5 +1,9 @@
 import { resolve } from "node:path"
 
+import {
+	checkNativeCapabilityFixture,
+	writeNativeCapabilityFixture,
+} from "./native-capability-fixture"
 import { checkGeneratedFiles, loadPluginConfig, writeGeneratedFiles } from "./plugin-config"
 import {
 	checkRuntimeCustodyFiles,
@@ -12,7 +16,7 @@ const check = arguments_.includes("--check")
 const json = arguments_.includes("--json")
 
 if (arguments_.includes("--help") || arguments_.includes("-h")) {
-	console.log(`Generate native manifests and runtime-custody projections from canonical sources.
+	console.log(`Generate native manifests, lifecycle proof fixture, and runtime-custody projections from canonical sources.
 
 Usage:
   bun run generate
@@ -36,6 +40,7 @@ const config = loadPluginConfig(root)
 if (check) {
 	const drifted = [
 		...checkGeneratedFiles(root, config),
+		...checkNativeCapabilityFixture(root),
 		...checkRuntimeCustodyFiles(root),
 	]
 	if (drifted.length > 0) {
@@ -48,6 +53,7 @@ const files = check
 	? []
 	: [
 			...writeGeneratedFiles(root, config),
+			...writeNativeCapabilityFixture(root),
 			...writeRuntimeCustodyFiles(root),
 		]
 const result = {
