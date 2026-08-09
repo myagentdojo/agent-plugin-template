@@ -414,9 +414,6 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "$GH_FAKE_LOG"
 [[ "$*" == *"repos/myagentdojo/agent-plugin-template/issues/18/labels"* ]]
 if [[ "$*" == *"--method POST"* ]]; then
-	if [[ "\${GH_FAKE_MODE:-}" == "stale_labels" ]]; then
-		exit 0
-	fi
 	label=""
 	for argument in "$@"; do
 		case "$argument" in
