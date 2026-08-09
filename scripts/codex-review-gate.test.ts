@@ -9,20 +9,37 @@ const workflowUrl = new URL(
 )
 
 type WorkflowJob = {
-	env: Record<string, string>
 	steps: Array<{ name?: string; run?: string }>
 }
 
-async function runCleanReviewComment(
-	commentBody: string,
-	findingSurface: "review" | "inline" | null = null,
-): Promise<string> {
+type ApprovalOptions = {
+	approvedPrefix?: string
+	cleanComment?: boolean
+	findingSurface?: "review" | "inline" | null
+	permission?: string
+}
+
+const headSha = "38d88841ee82cf88b52b9d27f08dd29347869581"
+
+async function runApproval(options: ApprovalOptions = {}): Promise<string> {
 	const workflow = Bun.YAML.parse(await Bun.file(workflowUrl).text()) as {
 		jobs: Record<string, WorkflowJob>
 	}
-	const job = workflow.jobs["complete-comment"]
-	const script = job.steps.find((step) => step.name === "Mark the reviewed PR commit successful")?.run
-	if (!script) throw new Error("complete-comment success script is missing")
+	const job = workflow.jobs.approve
+	const script = job.steps.find(
+		(step) => step.name === "Mark the attested PR commit successful",
+	)?.run
+	if (!script) throw new Error("approve success script is missing")
+
+	const approvedPrefix = options.approvedPrefix ?? headSha.slice(0, 10)
+	const cleanComments = options.cleanComment === false
+		? []
+		: [
+				{
+					user: { login: "chatgpt-codex-connector[bot]" },
+					body: `Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`${approvedPrefix}\``,
+				},
+			]
 
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "codex-review-gate-"))
 	const callsPath = join(temporaryRoot, "gh-calls")
@@ -32,20 +49,24 @@ async function runCleanReviewComment(
 				"bash",
 				"-c",
 				`gh() {
-	if [[ "$*" == *"pulls/13/reviews"* ]]; then
+	if [[ "$*" == *"collaborators/maintainer/permission"* ]]; then
+		printf '%s\\n' "$CODEX_PERMISSION"
+	elif [[ "$*" == *"issues/13/comments"* ]]; then
+		printf '%s\\n' "$CODEX_CLEAN_COMMENTS"
+	elif [[ "$*" == *"pulls/13/reviews"* ]]; then
 		if [[ "$CODEX_FINDING_SURFACE" == "review" ]]; then
-			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"38d88841ee82cf88b52b9d27f08dd29347869581"}]'
+			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"${headSha}"}]'
 		else
 			printf '%s\\n' '[]'
 		fi
 	elif [[ "$*" == *"pulls/13/comments"* ]]; then
 		if [[ "$CODEX_FINDING_SURFACE" == "inline" ]]; then
-			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"38d88841ee82cf88b52b9d27f08dd29347869581"}]'
+			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"${headSha}"}]'
 		else
 			printf '%s\\n' '[]'
 		fi
 	elif [[ "$*" == *"pulls/13"* ]]; then
-		printf '%s\\n' '38d88841ee82cf88b52b9d27f08dd29347869581'
+		printf '%s\\n' '${headSha}'
 	else
 		printf '%s\\n' "$*" >> "$GH_CALLS"
 	fi
@@ -53,18 +74,18 @@ async function runCleanReviewComment(
 export -f gh
 ${script}`,
 			],
-				env: {
-					...process.env,
-					CODEX_FINDING_SURFACE: findingSurface ?? "",
-					COMMENT_BODY: commentBody,
-					CLEAN_REVIEW_MARKER: job.env.CLEAN_REVIEW_MARKER ?? "",
-					CONCERNING_REVIEW_SUFFIX: job.env.CONCERNING_REVIEW_SUFFIX ?? "",
+			env: {
+				...process.env,
+				CODEX_CLEAN_COMMENTS: JSON.stringify(cleanComments),
+				CODEX_FINDING_SURFACE: options.findingSurface ?? "",
+				CODEX_PERMISSION: options.permission ?? "write",
+				COMMENT_BODY: `@codex-gate approve ${approvedPrefix}`,
+				COMMENTER: "maintainer",
 				GH_CALLS: callsPath,
 				GH_TOKEN: "test-token",
 				GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
 				GITHUB_SERVER_URL: "https://github.com",
 				PR_NUMBER: "13",
-				REVIEW_MARKER: job.env.REVIEW_MARKER,
 				STATUS_CONTEXT: "Codex review gate",
 			},
 			stdout: "pipe",
@@ -77,23 +98,17 @@ ${script}`,
 	}
 }
 
-const aboutCodexDetails = `
-
-<details> <summary>ℹ️ About Codex in GitHub</summary>
-Informational boilerplate may mention reviews and suggestions.
-</details>`
-
-test("Codex review gate is opt-in and fail-closed after a request", async () => {
+test("Codex review gate is opt-in and requires an authorized attestation", async () => {
 	const source = await Bun.file(workflowUrl).text()
 	const workflow = Bun.YAML.parse(source)
 
 	expect(workflow).toMatchObject({
-			on: {
-				pull_request_target: {
-					types: ["opened", "reopened", "synchronize"],
-				},
-				issue_comment: { types: ["created"] },
+		on: {
+			pull_request_target: {
+				types: ["opened", "reopened", "synchronize"],
 			},
+			issue_comment: { types: ["created"] },
+		},
 		permissions: {
 			contents: "read",
 			"pull-requests": "read",
@@ -104,62 +119,40 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 
 	expect(source.match(/--raw-field state=success/g)).toHaveLength(2)
 	expect(source.match(/--raw-field state=pending/g)).toHaveLength(1)
-	expect(source).toContain("collaborators/${COMMENTER}/permission")
+	expect(source.match(/collaborators\/\$\{COMMENTER\}\/permission/g)).toHaveLength(2)
+	expect(source).toContain("@codex-gate")
 	expect(source).toContain("admin|maintain|write")
 	expect(source).toContain("chatgpt-codex-connector[bot]")
-	expect(source).toContain("github.event.comment.user.login == 'chatgpt-codex-connector[bot]'")
-	expect(source).toContain("reviewed_prefix=")
-	expect(source).toContain('"${HEAD_SHA}" != "${reviewed_prefix}"*')
 	expect(source).not.toContain("github.event.review")
 	expect(source).not.toContain("actions/checkout")
 })
 
-test("clean Codex comment releases the gate from its stable verdict sentence", async () => {
-	const calls = await runCleanReviewComment(
-		`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
-	)
-
+test("authorized current-head attestation releases a clean Codex review", async () => {
+	const calls = await runApproval()
 	expect(calls).toContain("--raw-field state=success")
 })
 
-test("Codex comment without a clean marker leaves the gate unchanged", async () => {
-	const calls = await runCleanReviewComment(
-		`Codex Review: Found a major issue.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
-	)
-
+test("stale attestation leaves the gate unchanged", async () => {
+	const calls = await runApproval({ approvedPrefix: "deadbeef00" })
 	expect(calls).toBe("")
 })
 
-test("Codex comment with findings after the clean marker leaves the gate unchanged", async () => {
-	const calls = await runCleanReviewComment(
-		`Codex Review: Didn't find any major issues. Findings follow.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
-	)
-
+test("attestation without a clean Codex marker leaves the gate unchanged", async () => {
+	const calls = await runApproval({ cleanComment: false })
 	expect(calls).toBe("")
 })
 
-test("Codex comment with a separate finding paragraph leaves the gate unchanged", async () => {
-	const calls = await runCleanReviewComment(
-		`Codex Review: Didn't find any major issues. Bravo.\n\nFinding: a major defect remains.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
-	)
-
+test("attestation from a reader leaves the gate unchanged", async () => {
+	const calls = await runApproval({ permission: "read" })
 	expect(calls).toBe("")
 })
 
-test("Codex review finding object on the current commit leaves the gate unchanged", async () => {
-	const calls = await runCleanReviewComment(
-		`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
-		"review",
-	)
-
+test("Codex review finding object blocks an attestation", async () => {
+	const calls = await runApproval({ findingSurface: "review" })
 	expect(calls).toBe("")
 })
 
-test("Codex inline finding on the current commit leaves the gate unchanged", async () => {
-	const calls = await runCleanReviewComment(
-		`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
-		"inline",
-	)
-
+test("Codex inline finding blocks an attestation", async () => {
+	const calls = await runApproval({ findingSurface: "inline" })
 	expect(calls).toBe("")
 })

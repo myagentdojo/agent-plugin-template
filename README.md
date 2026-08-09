@@ -361,9 +361,9 @@ Hosted CI builds one candidate, then on Linux x64, Linux arm64, macOS arm64, and
 
 ### Optional Codex review gate
 
-Require the `Codex review gate` status on `main` to make review opt-in without leaving every PR blocked. New PR commits start green. A maintainer with write access can comment `@codex review`; the status becomes pending until the ChatGPT Codex Connector reports a clean review for that exact commit. When Codex reports findings, resolve them, push the fixes, and request another review of the new commit.
+Require the `Codex review gate` status on `main` to make review opt-in without leaving every PR blocked. New PR commits start green. A maintainer with write access can comment `@codex review`; the status becomes pending. After the ChatGPT Codex Connector reports a clean review, inspect the conversation and comment `@codex-gate approve <reviewed-commit>` using the 10- to 40-character reviewed SHA. When Codex reports findings, resolve them, push the fixes, and request another review of the new commit instead of approving the stale review.
 
-Enable Codex code review for the repository before activating the required status. The gate proves an authenticated clean marker for the current commit and refuses completion when that commit also has Codex review or inline-finding objects. The review conversation remains the source of finding details.
+Enable Codex code review for the repository before activating the required status. Approval requires write permission, the current commit, an authenticated Codex clean marker for that commit, and no Codex review or inline-finding objects on it. The explicit attestation owns semantic judgment; the review conversation remains the source of finding details.
 
 ## Release
 

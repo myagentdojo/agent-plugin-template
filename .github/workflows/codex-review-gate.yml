@@ -71,68 +71,50 @@ jobs:
             --raw-field description="Codex review in progress" \
             --raw-field target_url="${pr_url}"
 
-  complete-comment:
-    name: Release the gate after a clean Codex review comment
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request != null &&
-      github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+  approve:
+    name: Release the gate after an authorized clean-review attestation
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request != null
     runs-on: ubuntu-24.04
     env:
       COMMENT_BODY: ${{ github.event.comment.body }}
+      COMMENTER: ${{ github.event.comment.user.login }}
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.issue.number }}
-      CLEAN_REVIEW_MARKER: '^Codex Review: Didn''t find any major issues\.([^[:cntrl:]]*)$'
-      CONCERNING_REVIEW_SUFFIX: '(^|[^[:alnum:]_])(but|concerns?|defects?|findings?|found|however|issues?|problems?|regressions?|risks?|suggestions?|p[0-3])([^[:alnum:]_]|$)'
-      REVIEW_MARKER: '^\*\*Reviewed commit:\*\* `([0-9a-f]{10,40})`[[:space:]]*$'
     steps:
-      - name: Mark the reviewed PR commit successful
+      - name: Mark the attested PR commit successful
         shell: bash
         run: |
-          details_marker=$'\n<details> <summary>ℹ️ About Codex in GitHub</summary>'
-          if [[ "${COMMENT_BODY}" != *"${details_marker}"* ]] ||
-            [[ ! "${COMMENT_BODY}" =~ \</details\>[[:space:]]*$ ]]; then
-            echo "Ignoring a Codex comment without the expected informational-details boundary."
+          if [[ ! "${COMMENT_BODY}" =~ ^[[:space:]]*@codex-gate[[:space:]]+approve[[:space:]]+([0-9a-f]{10,40})[[:space:]]*$ ]]; then
             exit 0
           fi
+          approved_prefix="${BASH_REMATCH[1]}"
 
-          review_payload="${COMMENT_BODY%%"${details_marker}"*}"
-          payload_line_count=0
-          clean_line=""
-          review_line=""
-          while IFS= read -r line; do
-            [[ "${line}" =~ ^[[:space:]]*$ ]] && continue
-            payload_line_count=$((payload_line_count + 1))
-            case "${payload_line_count}" in
-              1) clean_line="${line}" ;;
-              2) review_line="${line}" ;;
-            esac
-          done <<< "${review_payload}"
-          if (( payload_line_count != 2 )) || [[ ! "${clean_line}" =~ ${CLEAN_REVIEW_MARKER} ]]; then
-            echo "Ignoring a Codex comment that is not an exact clean-review payload."
-            exit 0
-          fi
-          review_suffix="${BASH_REMATCH[1]}"
-          shopt -s nocasematch
-          if [[ "${review_suffix}" =~ ${CONCERNING_REVIEW_SUFFIX} ]]; then
-            echo "Ignoring a Codex clean marker with a contradictory suffix."
-            exit 0
-          fi
-          shopt -u nocasematch
-
-          if [[ ! "${review_line}" =~ ${REVIEW_MARKER} ]]; then
-            echo "Ignoring a Codex comment without an exact reviewed-commit marker."
-            exit 0
-          fi
-          reviewed_prefix="${BASH_REMATCH[1]}"
-          if [[ ! "${reviewed_prefix}" =~ ^[0-9a-f]{10,40}$ ]]; then
-            echo "Ignoring a Codex comment without an exact reviewed-commit marker."
-            exit 0
-          fi
+          permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${COMMENTER}/permission" --jq .permission)"
+          case "${permission}" in
+            admin|maintain|write) ;;
+            *)
+              echo "Ignoring review attestation from a user without write permission."
+              exit 0
+              ;;
+          esac
 
           HEAD_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)"
-          if [[ "${HEAD_SHA}" != "${reviewed_prefix}"* ]]; then
-            echo "Ignoring a Codex review comment for a stale PR commit."
+          if [[ "${HEAD_SHA}" != "${approved_prefix}"* ]]; then
+            echo "Ignoring a clean-review attestation for a stale PR commit."
+            exit 0
+          fi
+
+          clean_marker_count="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" |
+              jq -s --arg prefix "${approved_prefix}" \
+                '[.[][] | select(
+                  .user.login == "chatgpt-codex-connector[bot]" and
+                  (.body | startswith("Codex Review: Didn\u0027t find any major issues.")) and
+                  (.body | contains("**Reviewed commit:** `" + $prefix))
+                )] | length'
+          )"
+          if (( clean_marker_count == 0 )); then
+            echo "Ignoring an attestation without a current-commit Codex clean marker."
             exit 0
           fi
 
@@ -147,7 +129,7 @@ jobs:
                 '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and (.commit_id == $head or .original_commit_id == $head))] | length'
           )"
           if (( codex_review_count != 0 || codex_inline_count != 0 )); then
-            echo "Ignoring a Codex clean marker because the reviewed commit also has finding objects."
+            echo "Ignoring an attestation because the reviewed commit has Codex finding objects."
             exit 0
           fi
 
@@ -155,5 +137,5 @@ jobs:
           gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             --raw-field state=success \
             --raw-field context="${STATUS_CONTEXT}" \
-            --raw-field description="Codex review complete" \
+            --raw-field description="Clean Codex review attested" \
             --raw-field target_url="${PR_URL}"
