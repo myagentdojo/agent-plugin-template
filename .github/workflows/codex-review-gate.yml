@@ -82,7 +82,8 @@ jobs:
       COMMENT_BODY: ${{ github.event.comment.body }}
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.issue.number }}
-      CLEAN_REVIEW_MARKER: '^Codex Review: Didn''t find any major issues\.([[:space:]]+Keep it up!|[[:space:]]+Bravo\.|[[:space:]]+Another round soon, please!|[[:space:]]+You''re on a roll\.|[[:space:]]+:\+1:)?[[:space:]]*$'
+      CLEAN_REVIEW_MARKER: '^Codex Review: Didn''t find any major issues\.([^[:cntrl:]]*)$'
+      CONCERNING_REVIEW_SUFFIX: '(^|[^[:alnum:]_])(but|concerns?|defects?|findings?|found|however|issues?|problems?|regressions?|risks?|suggestions?|p[0-3])([^[:alnum:]_]|$)'
       REVIEW_MARKER: '^\*\*Reviewed commit:\*\* `([0-9a-f]{10,40})`[[:space:]]*$'
     steps:
       - name: Mark the reviewed PR commit successful
@@ -111,6 +112,13 @@ jobs:
             echo "Ignoring a Codex comment that is not an exact clean-review payload."
             exit 0
           fi
+          review_suffix="${BASH_REMATCH[1]}"
+          shopt -s nocasematch
+          if [[ "${review_suffix}" =~ ${CONCERNING_REVIEW_SUFFIX} ]]; then
+            echo "Ignoring a Codex clean marker with a contradictory suffix."
+            exit 0
+          fi
+          shopt -u nocasematch
 
           if [[ ! "${review_line}" =~ ${REVIEW_MARKER} ]]; then
             echo "Ignoring a Codex comment without an exact reviewed-commit marker."
@@ -125,6 +133,21 @@ jobs:
           HEAD_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)"
           if [[ "${HEAD_SHA}" != "${reviewed_prefix}"* ]]; then
             echo "Ignoring a Codex review comment for a stale PR commit."
+            exit 0
+          fi
+
+          codex_review_count="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" |
+              jq -s --arg head "${HEAD_SHA}" \
+                '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $head)] | length'
+          )"
+          codex_inline_count="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" |
+              jq -s --arg head "${HEAD_SHA}" \
+                '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and (.commit_id == $head or .original_commit_id == $head))] | length'
+          )"
+          if (( codex_review_count != 0 || codex_inline_count != 0 )); then
+            echo "Ignoring a Codex clean marker because the reviewed commit also has finding objects."
             exit 0
           fi
 

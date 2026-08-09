@@ -13,7 +13,10 @@ type WorkflowJob = {
 	steps: Array<{ name?: string; run?: string }>
 }
 
-async function runCleanReviewComment(commentBody: string): Promise<string> {
+async function runCleanReviewComment(
+	commentBody: string,
+	findingSurface: "review" | "inline" | null = null,
+): Promise<string> {
 	const workflow = Bun.YAML.parse(await Bun.file(workflowUrl).text()) as {
 		jobs: Record<string, WorkflowJob>
 	}
@@ -29,7 +32,19 @@ async function runCleanReviewComment(commentBody: string): Promise<string> {
 				"bash",
 				"-c",
 				`gh() {
-	if [[ "$*" == *"pulls/13"* ]]; then
+	if [[ "$*" == *"pulls/13/reviews"* ]]; then
+		if [[ "$CODEX_FINDING_SURFACE" == "review" ]]; then
+			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"38d88841ee82cf88b52b9d27f08dd29347869581"}]'
+		else
+			printf '%s\\n' '[]'
+		fi
+	elif [[ "$*" == *"pulls/13/comments"* ]]; then
+		if [[ "$CODEX_FINDING_SURFACE" == "inline" ]]; then
+			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"38d88841ee82cf88b52b9d27f08dd29347869581"}]'
+		else
+			printf '%s\\n' '[]'
+		fi
+	elif [[ "$*" == *"pulls/13"* ]]; then
 		printf '%s\\n' '38d88841ee82cf88b52b9d27f08dd29347869581'
 	else
 		printf '%s\\n' "$*" >> "$GH_CALLS"
@@ -38,10 +53,12 @@ async function runCleanReviewComment(commentBody: string): Promise<string> {
 export -f gh
 ${script}`,
 			],
-			env: {
-				...process.env,
-				COMMENT_BODY: commentBody,
-				CLEAN_REVIEW_MARKER: job.env.CLEAN_REVIEW_MARKER ?? "",
+				env: {
+					...process.env,
+					CODEX_FINDING_SURFACE: findingSurface ?? "",
+					COMMENT_BODY: commentBody,
+					CLEAN_REVIEW_MARKER: job.env.CLEAN_REVIEW_MARKER ?? "",
+					CONCERNING_REVIEW_SUFFIX: job.env.CONCERNING_REVIEW_SUFFIX ?? "",
 				GH_CALLS: callsPath,
 				GH_TOKEN: "test-token",
 				GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
@@ -99,7 +116,7 @@ test("Codex review gate is opt-in and fail-closed after a request", async () => 
 
 test("clean Codex comment releases the gate from its stable verdict sentence", async () => {
 	const calls = await runCleanReviewComment(
-		`Codex Review: Didn't find any major issues. You're on a roll.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
+		`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
 	)
 
 	expect(calls).toContain("--raw-field state=success")
@@ -124,6 +141,24 @@ test("Codex comment with findings after the clean marker leaves the gate unchang
 test("Codex comment with a separate finding paragraph leaves the gate unchanged", async () => {
 	const calls = await runCleanReviewComment(
 		`Codex Review: Didn't find any major issues. Bravo.\n\nFinding: a major defect remains.\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
+	)
+
+	expect(calls).toBe("")
+})
+
+test("Codex review finding object on the current commit leaves the gate unchanged", async () => {
+	const calls = await runCleanReviewComment(
+		`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
+		"review",
+	)
+
+	expect(calls).toBe("")
+})
+
+test("Codex inline finding on the current commit leaves the gate unchanged", async () => {
+	const calls = await runCleanReviewComment(
+		`Codex Review: Didn't find any major issues. Breezy!\n\n**Reviewed commit:** \`38d88841ee8\`${aboutCodexDetails}`,
+		"inline",
 	)
 
 	expect(calls).toBe("")
