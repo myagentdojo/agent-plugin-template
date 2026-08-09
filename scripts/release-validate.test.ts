@@ -537,6 +537,7 @@ test("successful publication closes the provenance-bound Release Please lineage"
 	expect(lineageStep?.run).toContain("persisted-candidate.json")
 	expect(lineageStep?.run).toContain("autorelease: tagged")
 	expect(lineageStep?.run).toContain("autorelease%3A%20pending")
+	expect(lineageStep?.run.match(/gh api --paginate "\$labels_endpoint"/g)).toHaveLength(2)
 	expect(lineageStep?.run).toContain("Release Please lineage did not converge")
 	expect(lineageStep?.run).toBeString()
 
