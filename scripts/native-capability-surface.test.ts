@@ -230,6 +230,38 @@ test("static capability sidecars do not own the plugin version", () => {
 	}
 })
 
+test("repository docs separate lifecycle mechanics from fresh-native qualification", () => {
+	const readme = readFileSync(join(root, "README.md"), "utf8")
+	const context = readFileSync(join(root, "CONTEXT.md"), "utf8")
+	const custody = readFileSync(join(root, "docs", "adr", "0005-shared-runtime-custody.md"), "utf8")
+	const capability = readFileSync(
+		join(root, "docs", "adr", "0008-native-plugin-capability-tour.md"),
+		"utf8",
+	)
+	const docs = `${readme}\n${context}\n${custody}\n${capability}`
+
+	expect(docs).not.toMatch(/no lifecycle hooks|lifecycle hooks \| None/i)
+	for (const claim of [
+		"lifecycle mechanics proof",
+		"SessionStart",
+		"Stop",
+		"native activation",
+		"exact hook definition",
+		"disabled or untrusted",
+		"0700",
+		"0600",
+		"macOS and Linux POSIX hosts",
+	]) {
+		expect(docs).toContain(claim)
+	}
+	expect(docs).toMatch(/fail[- ]open/)
+	for (const exclusion of ["No MCP", "No standalone agent", "No telemetry"]) {
+		expect(capability).toContain(exclusion)
+	}
+	expect(capability).toMatch(/production integrity or security\s+guarantee/)
+	expect(capability).not.toMatch(/\bv?\d+\.\d+\.\d+\b/)
+})
+
 test("recursive package copy preserves the complete payload inventory", () => {
 	const installation = mkdtempSync(join(tmpdir(), "capability-tour-payload-"))
 	const installedRoot = join(installation, "plugin")

@@ -19,6 +19,7 @@ import {
 	copyMarketplaceDistribution,
 	hostedMarketplaceSources,
 	nativeHarnessEnvironment,
+	promoteNativeQualificationEvidence,
 	proveHarnessInstall,
 	proveInstalledCapabilityEvidence,
 	redactTemporaryEvidencePath,
@@ -36,6 +37,196 @@ const root = resolve(import.meta.dir, "..")
 let proof: ReturnType<typeof proveHarnessInstall>
 const claudeNativeTest = Bun.which("claude") ? test : test.skip
 const codexNativeTest = Bun.which("codex") ? test : test.skip
+
+function nativeQualificationSummary(client: "claude" | "codex") {
+	const hash = (value: string) => value.repeat(64)
+	return {
+		schema: "native-capability-qualification-v1",
+		client,
+		platform: "macos",
+		receiptSha256: hash("1"),
+		sourceCandidateSha: "a".repeat(40),
+		archiveSha256: hash("2"),
+		packagedPayloadHash: hash("3"),
+		installedPayloadHash: hash("3"),
+		derivedPayloadHash: hash("4"),
+		conclusions: {
+			discovery: "proved",
+			uiIdentity: "proved",
+			skillSeededNativeDelegation: "proved",
+			hostOwnedLifecycleEvidence: "proved",
+			sessionStart: "proved",
+			cleanStop: "silent",
+			driftContinuation: "proved",
+			reentry: "silent",
+			hooksFallback: "proved",
+			exactDefinitionTrust: client === "codex" ? "proved" : "not-applicable",
+		},
+		evidence: {
+			discoverySha256: hash("5"),
+			uiIdentitySha256: hash("6"),
+			delegationLifecycleSha256: hash("7"),
+			sessionStartSha256: hash("8"),
+			cleanStopSha256: hash("9"),
+			driftSha256: hash("a"),
+			reentrySha256: hash("b"),
+			hooksFallbackSha256: hash("c"),
+			...(client === "codex" ? { exactDefinitionTrustSha256: hash("d") } : {}),
+		},
+	}
+}
+
+test("fresh-native qualification promotion accepts only candidate-bound bounded evidence", () => {
+	const summary = nativeQualificationSummary("codex")
+	expect(
+		promoteNativeQualificationEvidence(summary, {
+			client: "codex",
+			sourceCommit: summary.sourceCandidateSha,
+			archiveSha256: summary.archiveSha256,
+			packagedPayloadHash: summary.packagedPayloadHash,
+			installedPayloadHash: summary.installedPayloadHash,
+		}),
+	).toEqual(summary)
+
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, rawSession: { transcript: "must stay private" } },
+			{
+				client: "codex",
+				sourceCommit: summary.sourceCandidateSha,
+				archiveSha256: summary.archiveSha256,
+				packagedPayloadHash: summary.packagedPayloadHash,
+				installedPayloadHash: summary.installedPayloadHash,
+			},
+		),
+	).toThrow("bounded summary and evidence hashes")
+})
+
+test("a bounded failed qualification records evidence without promoting native claims", () => {
+	const summary = nativeQualificationSummary("codex")
+	const failed = {
+		...summary,
+		conclusions: { ...summary.conclusions, sessionStart: "failed" },
+	}
+	expect(
+		promoteNativeQualificationEvidence(failed, {
+			client: "codex",
+			sourceCommit: summary.sourceCandidateSha,
+			archiveSha256: summary.archiveSha256,
+			packagedPayloadHash: summary.packagedPayloadHash,
+			installedPayloadHash: summary.installedPayloadHash,
+		}),
+	).toEqual(failed)
+})
+
+test("fresh-native qualification promotion rejects unbound or incomplete claims", () => {
+	const summary = nativeQualificationSummary("claude")
+	const expected = {
+		client: "claude" as const,
+		sourceCommit: summary.sourceCandidateSha,
+		archiveSha256: summary.archiveSha256,
+		packagedPayloadHash: summary.packagedPayloadHash,
+		installedPayloadHash: summary.installedPayloadHash,
+	}
+
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, sourceCandidateSha: "f".repeat(40) },
+			expected,
+		),
+	).toThrow("candidate lineage")
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, archiveSha256: "e".repeat(64) },
+			expected,
+		),
+	).toThrow("candidate lineage")
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, derivedPayloadHash: summary.packagedPayloadHash },
+			expected,
+		),
+	).toThrow("distinct derived payload hash")
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{
+				...summary,
+				conclusions: { ...summary.conclusions, exactDefinitionTrust: "proved" },
+			},
+			expected,
+		),
+	).toThrow("exact-definition trust")
+})
+
+test("installed evidence promotes native claims only with a validated fresh-client summary", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-native-promotion-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const candidateCommit = "a".repeat(40)
+		const payloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
+		const base = nativeQualificationSummary("claude")
+		const receipt = {
+			...base,
+			sourceCandidateSha: candidateCommit,
+			packagedPayloadHash: payloadHash,
+			installedPayloadHash: payloadHash,
+		}
+
+		expect(
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				candidateCommit,
+				payloadHash,
+				{
+					summary: receipt,
+					lineage: {
+						sourceCommit: candidateCommit,
+						archiveSha256: receipt.archiveSha256,
+						packagedPayloadHash: payloadHash,
+						installedPayloadHash: payloadHash,
+					},
+				},
+			),
+		).toMatchObject({
+			currentSessionHook: "proved",
+			nativeActivation: "proved",
+			externalCandidateQualification: "proved",
+			nativeDelegation: "proved",
+			nativeQualification: { status: "proved", receipt },
+		})
+		const failedReceipt = {
+			...receipt,
+			conclusions: { ...receipt.conclusions, cleanStop: "failed" },
+		}
+		expect(
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				candidateCommit,
+				payloadHash,
+				{
+					summary: failedReceipt,
+					lineage: {
+						sourceCommit: candidateCommit,
+						archiveSha256: failedReceipt.archiveSha256,
+						packagedPayloadHash: payloadHash,
+						installedPayloadHash: payloadHash,
+					},
+				},
+			),
+		).toMatchObject({
+			currentSessionHook: "unknown",
+			nativeActivation: "not-proved",
+			externalCandidateQualification: "unknown",
+			nativeDelegation: "not-proved",
+			nativeQualification: { status: "failed", receipt: failedReceipt },
+		})
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
 
 test("source-bound native receipts reject dirty checkout bytes", () => {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "native-receipt-source-"))
@@ -154,6 +345,7 @@ test("automated install evidence binds bytes without claiming native activation"
 			nativeActivation: "not-proved",
 			externalCandidateQualification: "unknown",
 			nativeDelegation: "not-proved",
+			nativeQualification: { status: "not-proved", receipt: null },
 			portableSkillsWithoutHooks: [
 				"hello-world",
 				"skill-a",

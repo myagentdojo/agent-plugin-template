@@ -19,6 +19,7 @@ import {
 	PUBLISHING_SYSTEM_PATHS,
 	admitCandidateRef,
 	bindTransportIdentity,
+	bindCandidateQualificationLineage,
 	bindTrustedPrivateRun,
 	candidateRefForSource,
 	classifyPublishingSystemChanges,
@@ -30,6 +31,43 @@ import {
 
 const root = resolve(import.meta.dir, "..")
 const ignoredEntries = new Set([".claude", ".dev", ".git", ".worktrees", "dist", "node_modules"])
+
+test("candidate qualification lineage binds package and installed bytes to one source", () => {
+	const sourceCommit = "1".repeat(40)
+	const archiveSha256 = "2".repeat(64)
+	const payloadInventorySha256 = "3".repeat(64)
+	expect(
+		bindCandidateQualificationLineage(
+			sourceCommit,
+			{ sourceCommit, archiveSha256, payloadInventorySha256 },
+			payloadInventorySha256,
+		),
+	).toEqual({
+		sourceCommit,
+		archiveSha256,
+		packagedPayloadHash: payloadInventorySha256,
+		installedPayloadHash: payloadInventorySha256,
+	})
+})
+
+test("candidate qualification lineage rejects a different source or installed payload", () => {
+	const sourceCommit = "1".repeat(40)
+	const checksums = {
+		sourceCommit,
+		archiveSha256: "2".repeat(64),
+		payloadInventorySha256: "3".repeat(64),
+	}
+	expect(() =>
+		bindCandidateQualificationLineage(
+			sourceCommit,
+			{ ...checksums, sourceCommit: "4".repeat(40) },
+			checksums.payloadInventorySha256,
+		),
+	).toThrow("source commit")
+	expect(() =>
+		bindCandidateQualificationLineage(sourceCommit, checksums, "5".repeat(64)),
+	).toThrow("installed payload")
+})
 
 function executable(path: string, contents: string): void {
 	writeFileSync(path, contents)

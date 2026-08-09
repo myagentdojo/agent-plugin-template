@@ -144,6 +144,62 @@ export interface CandidateInstallEvidence {
 	}
 }
 
+/** Exact package and installed-byte lineage required before promoting native claims. */
+export interface CandidateQualificationLineage {
+	sourceCommit: string
+	archiveSha256: string
+	packagedPayloadHash: string
+	installedPayloadHash: string
+}
+
+/** Bind qualification lineage to checksum metadata and the independently hashed installation. */
+export function bindCandidateQualificationLineage(
+	expectedSourceCommit: string,
+	checksums: {
+		sourceCommit?: unknown
+		archiveSha256?: unknown
+		payloadInventorySha256?: unknown
+	},
+	installedPayloadHash: string,
+): CandidateQualificationLineage {
+	if (!/^[a-f0-9]{40}$/.test(expectedSourceCommit) || checksums.sourceCommit !== expectedSourceCommit) {
+		throw new CanaryError(
+			"qualification_lineage_mismatch",
+			"qualification checksum source commit does not match the exact candidate",
+			"use the checksums and installed payload from the exact candidate commit",
+			false,
+		)
+	}
+	if (
+		typeof checksums.archiveSha256 !== "string" ||
+		!/^[a-f0-9]{64}$/.test(checksums.archiveSha256) ||
+		typeof checksums.payloadInventorySha256 !== "string" ||
+		!/^[a-f0-9]{64}$/.test(checksums.payloadInventorySha256) ||
+		!/^[a-f0-9]{64}$/.test(installedPayloadHash)
+	) {
+		throw new CanaryError(
+			"qualification_lineage_invalid",
+			"qualification lineage requires complete SHA-256 package and installed-payload evidence",
+			"record the archive, packaged payload, and installed payload SHA-256 values",
+			false,
+		)
+	}
+	if (installedPayloadHash !== checksums.payloadInventorySha256) {
+		throw new CanaryError(
+			"qualification_lineage_mismatch",
+			"qualification installed payload does not match the packaged payload",
+			"reinstall the exact candidate and hash the selected installed payload",
+			false,
+		)
+	}
+	return {
+		sourceCommit: expectedSourceCommit,
+		archiveSha256: checksums.archiveSha256,
+		packagedPayloadHash: checksums.payloadInventorySha256,
+		installedPayloadHash,
+	}
+}
+
 /** Injectable hosted-I/O seams keep qualification behavior unit-testable without real repositories. */
 export interface QualificationDependencies {
 	publish: (target: Target, sourceSha: string) => void | Promise<void>

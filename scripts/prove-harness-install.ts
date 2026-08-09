@@ -231,11 +231,197 @@ export interface InstalledCapabilityEvidence {
 	declarationHealth: "healthy"
 	directHandlerHealth: "healthy"
 	fixtureState: "matched"
-	currentSessionHook: "unknown"
-	nativeActivation: "not-proved"
-	externalCandidateQualification: "unknown"
-	nativeDelegation: "not-proved"
+	currentSessionHook: "unknown" | "proved"
+	nativeActivation: "not-proved" | "proved"
+	externalCandidateQualification: "unknown" | "proved"
+	nativeDelegation: "not-proved" | "proved"
+	nativeQualification:
+		| { status: "not-proved"; receipt: null }
+		| { status: "proved"; receipt: NativeQualificationEvidence }
+		| { status: "failed"; receipt: NativeQualificationEvidence }
 	portableSkillsWithoutHooks: ["hello-world", "skill-a", "skill-b", "runtime-custody", "capability-tour"]
+}
+
+/** Hash-only conclusions that may be promoted from a private fresh-client receipt. */
+export interface NativeQualificationEvidence {
+	schema: "native-capability-qualification-v1"
+	client: "claude" | "codex"
+	platform: "macos" | "linux"
+	receiptSha256: string
+	sourceCandidateSha: string
+	archiveSha256: string
+	packagedPayloadHash: string
+	installedPayloadHash: string
+	derivedPayloadHash: string
+	conclusions: {
+		discovery: "proved" | "failed"
+		uiIdentity: "proved" | "failed"
+		skillSeededNativeDelegation: "proved" | "failed"
+		hostOwnedLifecycleEvidence: "proved" | "failed"
+		sessionStart: "proved" | "failed"
+		cleanStop: "silent" | "failed"
+		driftContinuation: "proved" | "failed"
+		reentry: "silent" | "failed"
+		hooksFallback: "proved" | "failed"
+		exactDefinitionTrust: "proved" | "failed" | "not-applicable"
+	}
+	evidence: {
+		discoverySha256: string
+		uiIdentitySha256: string
+		delegationLifecycleSha256: string
+		sessionStartSha256: string
+		cleanStopSha256: string
+		driftSha256: string
+		reentrySha256: string
+		hooksFallbackSha256: string
+		exactDefinitionTrustSha256?: string
+	}
+}
+
+export interface NativeQualificationBinding {
+	client: "claude" | "codex"
+	sourceCommit: string
+	archiveSha256: string
+	packagedPayloadHash: string
+	installedPayloadHash: string
+}
+
+export interface NativeQualificationPromotion {
+	summary: unknown
+	lineage: Omit<NativeQualificationBinding, "client">
+}
+
+function qualificationRecord(value: unknown): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error("native qualification promotion accepts only bounded summary and evidence hashes")
+	}
+	return value as Record<string, unknown>
+}
+
+function requireQualificationKeys(value: unknown, expected: string[]): Record<string, unknown> {
+	const record = qualificationRecord(value)
+	if (Object.keys(record).sort().join("\0") !== [...expected].sort().join("\0")) {
+		throw new Error("native qualification promotion accepts only bounded summary and evidence hashes")
+	}
+	return record
+}
+
+function qualificationSha256(value: unknown): value is string {
+	return typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
+}
+
+/** Validate a private receipt's promotable subset without accepting paths, transcripts, or session data. */
+export function promoteNativeQualificationEvidence(
+	input: unknown,
+	expected: NativeQualificationBinding,
+): NativeQualificationEvidence {
+	const summary = requireQualificationKeys(input, [
+		"schema",
+		"client",
+		"platform",
+		"receiptSha256",
+		"sourceCandidateSha",
+		"archiveSha256",
+		"packagedPayloadHash",
+		"installedPayloadHash",
+		"derivedPayloadHash",
+		"conclusions",
+		"evidence",
+	])
+	const conclusions = requireQualificationKeys(summary.conclusions, [
+		"discovery",
+		"uiIdentity",
+		"skillSeededNativeDelegation",
+		"hostOwnedLifecycleEvidence",
+		"sessionStart",
+		"cleanStop",
+		"driftContinuation",
+		"reentry",
+		"hooksFallback",
+		"exactDefinitionTrust",
+	])
+	const evidenceKeys = [
+		"discoverySha256",
+		"uiIdentitySha256",
+		"delegationLifecycleSha256",
+		"sessionStartSha256",
+		"cleanStopSha256",
+		"driftSha256",
+		"reentrySha256",
+		"hooksFallbackSha256",
+	]
+	if (expected.client === "codex") evidenceKeys.push("exactDefinitionTrustSha256")
+	const evidence = requireQualificationKeys(summary.evidence, evidenceKeys)
+
+	if (
+		summary.schema !== "native-capability-qualification-v1" ||
+		summary.client !== expected.client ||
+		(summary.platform !== "macos" && summary.platform !== "linux") ||
+		!qualificationSha256(summary.receiptSha256) ||
+		!qualificationSha256(summary.archiveSha256) ||
+		!qualificationSha256(summary.packagedPayloadHash) ||
+		!qualificationSha256(summary.installedPayloadHash) ||
+		!qualificationSha256(summary.derivedPayloadHash) ||
+		!Object.values(evidence).every(qualificationSha256)
+	) {
+		throw new Error("native qualification promotion contains invalid bounded evidence metadata")
+	}
+	if (
+		summary.sourceCandidateSha !== expected.sourceCommit ||
+		summary.archiveSha256 !== expected.archiveSha256 ||
+		summary.packagedPayloadHash !== expected.packagedPayloadHash ||
+		summary.installedPayloadHash !== expected.installedPayloadHash ||
+		summary.packagedPayloadHash !== summary.installedPayloadHash
+	) {
+		throw new Error("native qualification promotion does not match candidate lineage")
+	}
+	if (summary.derivedPayloadHash === summary.packagedPayloadHash) {
+		throw new Error("native qualification promotion requires a distinct derived payload hash")
+	}
+	for (const field of [
+		"discovery",
+		"uiIdentity",
+		"skillSeededNativeDelegation",
+		"hostOwnedLifecycleEvidence",
+		"sessionStart",
+		"driftContinuation",
+		"hooksFallback",
+	] as const) {
+		if (conclusions[field] !== "proved" && conclusions[field] !== "failed") {
+			throw new Error("native qualification promotion contains an invalid bounded conclusion")
+		}
+	}
+	for (const field of ["cleanStop", "reentry"] as const) {
+		if (conclusions[field] !== "silent" && conclusions[field] !== "failed") {
+			throw new Error("native qualification promotion contains an invalid bounded conclusion")
+		}
+	}
+	if (
+		(expected.client === "claude" && conclusions.exactDefinitionTrust !== "not-applicable") ||
+		(expected.client === "codex" &&
+			conclusions.exactDefinitionTrust !== "proved" &&
+			conclusions.exactDefinitionTrust !== "failed")
+	) {
+		throw new Error("native qualification promotion has the wrong exact-definition trust conclusion")
+	}
+	return input as NativeQualificationEvidence
+}
+
+function nativeQualificationPassed(receipt: NativeQualificationEvidence): boolean {
+	return (
+		receipt.conclusions.discovery === "proved" &&
+		receipt.conclusions.uiIdentity === "proved" &&
+		receipt.conclusions.skillSeededNativeDelegation === "proved" &&
+		receipt.conclusions.hostOwnedLifecycleEvidence === "proved" &&
+		receipt.conclusions.sessionStart === "proved" &&
+		receipt.conclusions.cleanStop === "silent" &&
+		receipt.conclusions.driftContinuation === "proved" &&
+		receipt.conclusions.reentry === "silent" &&
+		receipt.conclusions.hooksFallback === "proved" &&
+		(receipt.client === "claude"
+			? receipt.conclusions.exactDefinitionTrust === "not-applicable"
+			: receipt.conclusions.exactDefinitionTrust === "proved")
+	)
 }
 
 interface HarnessInstallProof {
@@ -1151,6 +1337,7 @@ export function proveInstalledCapabilityEvidence(
 	client: "claude" | "codex",
 	candidateCommit: string,
 	candidatePayloadHash: string,
+	qualification?: NativeQualificationPromotion,
 ): InstalledCapabilityEvidence {
 	if (!/^[a-f0-9]{40}$/.test(candidateCommit) || !/^[a-f0-9]{64}$/.test(candidatePayloadHash)) {
 		throw new Error("installed capability evidence requires a candidate commit and payload hash")
@@ -1253,6 +1440,28 @@ export function proveInstalledCapabilityEvidence(
 	if (installed.payloadHash !== candidatePayloadHash) {
 		throw new Error(`${client} installed payload hash differs from the candidate payload`)
 	}
+	let nativeQualification: InstalledCapabilityEvidence["nativeQualification"] = {
+		status: "not-proved",
+		receipt: null,
+	}
+	if (qualification !== undefined) {
+		if (
+			qualification.lineage.sourceCommit !== candidateCommit ||
+			qualification.lineage.packagedPayloadHash !== candidatePayloadHash ||
+			qualification.lineage.installedPayloadHash !== installed.payloadHash
+		) {
+			throw new Error("native qualification lineage does not match the installed candidate proof")
+		}
+		const receipt = promoteNativeQualificationEvidence(qualification.summary, {
+			client,
+			...qualification.lineage,
+		})
+		nativeQualification = {
+			status: nativeQualificationPassed(receipt) ? "proved" : "failed",
+			receipt,
+		}
+	}
+	const nativeProved = nativeQualification.status === "proved"
 	return {
 		candidateCommit,
 		candidatePayloadHash,
@@ -1260,10 +1469,11 @@ export function proveInstalledCapabilityEvidence(
 		declarationHealth: "healthy",
 		directHandlerHealth: "healthy",
 		fixtureState: "matched",
-		currentSessionHook: "unknown",
-		nativeActivation: "not-proved",
-		externalCandidateQualification: "unknown",
-		nativeDelegation: "not-proved",
+		currentSessionHook: nativeProved ? "proved" : "unknown",
+		nativeActivation: nativeProved ? "proved" : "not-proved",
+		externalCandidateQualification: nativeProved ? "proved" : "unknown",
+		nativeDelegation: nativeProved ? "proved" : "not-proved",
+		nativeQualification,
 		portableSkillsWithoutHooks: [
 			"hello-world",
 			"skill-a",
