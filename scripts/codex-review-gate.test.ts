@@ -14,7 +14,7 @@ type WorkflowJob = {
 
 type ApprovalOptions = {
 	approvedPrefix?: string
-	findingSurface?: "review" | "inline" | null
+	findingSurface?: "review" | "inline" | "remapped-inline" | null
 	permission?: string
 	receiptAuthor?: string
 	receiptBody?: string
@@ -60,7 +60,9 @@ async function runApproval(options: ApprovalOptions = {}): Promise<string> {
 		fi
 	elif [[ "$*" == *"pulls/13/comments"* ]]; then
 		if [[ "$CODEX_FINDING_SURFACE" == "inline" ]]; then
-			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"${headSha}"}]'
+			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"${headSha}","original_commit_id":"${headSha}"}]'
+		elif [[ "$CODEX_FINDING_SURFACE" == "remapped-inline" ]]; then
+			printf '%s\\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"${headSha}","original_commit_id":"9907c53775f758758dc2a5f7670eee335efca05d"}]'
 		else
 			printf '%s\\n' '[]'
 		fi
@@ -162,4 +164,9 @@ test("Codex review finding object blocks an attestation", async () => {
 test("Codex inline finding blocks an attestation", async () => {
 	const calls = await runApproval({ findingSurface: "inline" })
 	expect(calls).toBe("")
+})
+
+test("resolved inline finding remapped onto the current diff does not block attestation", async () => {
+	const calls = await runApproval({ findingSurface: "remapped-inline" })
+	expect(calls).toContain("--raw-field state=success")
 })
