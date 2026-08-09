@@ -592,7 +592,14 @@ function validateRepository(repositoryRoot: string) {
 	}
 	const releaseJobStart = releaseWorkflow.indexOf("\n  release:\n")
 	if (releaseJobStart === -1) throw new Error("release workflow is missing the release job boundary")
-	const releaseJob = releaseWorkflow.slice(releaseJobStart)
+	const convergeJobStart = releaseWorkflow.indexOf("\n  converge:\n")
+	if (convergeJobStart === -1) {
+		throw new Error("release workflow is missing the converge job boundary")
+	}
+	if (convergeJobStart <= releaseJobStart) {
+		throw new Error("release workflow converge job must follow the release job")
+	}
+	const releaseJob = releaseWorkflow.slice(releaseJobStart, convergeJobStart)
 	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
 		throw new Error("release workflow publish job must depend on package")
 	}

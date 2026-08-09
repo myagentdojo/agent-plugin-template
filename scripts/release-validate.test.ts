@@ -349,6 +349,9 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(normalizePredicate(parsedWorkflow.jobs.package.if)).toBe(
 		"always() && needs.resolve.result == 'success' && needs.candidate.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair') && (needs.compatibility.result == 'success' || (needs.resolve.outputs.mode == 'repair' && needs.compatibility.result == 'skipped'))",
 	)
+	expect(normalizePredicate(parsedWorkflow.jobs.release.if)).toBe(
+		"always() && needs.resolve.result == 'success' && needs.package.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair')",
+	)
 	expect(workflow.match(/--dir "\$RUNNER_TEMP\/platform-candidate"/g)).toHaveLength(2)
 	expect(maintainJob).toContain("persist-credentials: false")
 	expect(maintainJob).toContain("group: release-maintenance")
@@ -394,6 +397,124 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).not.toContain("ref: ${{ inputs.release_tag || github.sha }}")
 	expect(workflow).not.toContain("*.provenance.json")
 	expect(workflow).not.toContain("endswith($repository)")
+})
+
+test("release workflow fails closed when the requested terminal operation is skipped", () => {
+	const workflow = Bun.YAML.parse(
+		readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8"),
+	) as {
+		jobs: {
+			converge?: {
+				if?: string
+				needs?: string[]
+				steps?: Array<{ name?: string; env?: Record<string, string>; run?: string }>
+			}
+		}
+	}
+	const convergeJob = workflow.jobs.converge
+	expect(convergeJob?.if).toBe("always()")
+	expect(convergeJob?.needs).toEqual([
+		"resolve",
+		"maintain",
+		"candidate",
+		"compatibility",
+		"package",
+		"release",
+	])
+	const assertionStep = convergeJob?.steps?.find(
+		(step) => step.name === "Require the requested release operation to complete",
+	)
+	expect(assertionStep?.env).toEqual({
+		MODE: "${{ needs.resolve.outputs.mode }}",
+		RESOLVE_RESULT: "${{ needs.resolve.result }}",
+		CANDIDATE_RESULT: "${{ needs.candidate.result }}",
+		COMPATIBILITY_RESULT: "${{ needs.compatibility.result }}",
+		PACKAGE_RESULT: "${{ needs.package.result }}",
+		MAINTAIN_RESULT: "${{ needs.maintain.result }}",
+		RELEASE_RESULT: "${{ needs.release.result }}",
+	})
+	expect(assertionStep?.run).toBeString()
+
+	type ConvergenceState = [
+		mode: string,
+		resolveResult: string,
+		candidateResult: string,
+		compatibilityResult: string,
+		packageResult: string,
+		maintainResult: string,
+		releaseResult: string,
+	]
+	const runAssertion = ([
+		mode,
+		resolveResult,
+		candidateResult,
+		compatibilityResult,
+		packageResult,
+		maintainResult,
+		releaseResult,
+	]: ConvergenceState) =>
+		Bun.spawnSync({
+			cmd: ["/bin/bash", "-c", assertionStep?.run ?? "exit 99"],
+			env: {
+				MODE: mode,
+				RESOLVE_RESULT: resolveResult,
+				CANDIDATE_RESULT: candidateResult,
+				COMPATIBILITY_RESULT: compatibilityResult,
+				PACKAGE_RESULT: packageResult,
+				MAINTAIN_RESULT: maintainResult,
+				RELEASE_RESULT: releaseResult,
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+	for (const accepted of [
+		["maintenance", "success", "skipped", "skipped", "skipped", "success", "skipped"],
+		["publish", "success", "success", "success", "success", "skipped", "success"],
+		["repair", "success", "success", "skipped", "success", "skipped", "success"],
+	] satisfies ConvergenceState[]) {
+		expect(runAssertion(accepted).exitCode).toBe(0)
+	}
+	for (const rejected of [
+		["publish", "success", "success", "success", "success", "skipped", "skipped"],
+		["publish", "success", "success", "success", "success", "skipped", "failure"],
+		["publish", "success", "success", "success", "success", "skipped", "cancelled"],
+		["repair", "success", "success", "skipped", "success", "skipped", "skipped"],
+		["repair", "success", "success", "skipped", "success", "skipped", "failure"],
+		["repair", "success", "success", "skipped", "success", "skipped", "cancelled"],
+		["maintenance", "success", "skipped", "skipped", "skipped", "skipped", "skipped"],
+		["maintenance", "success", "skipped", "skipped", "skipped", "failure", "skipped"],
+		["maintenance", "success", "skipped", "skipped", "skipped", "cancelled", "skipped"],
+		["publish", "success", "skipped", "success", "success", "skipped", "success"],
+		["publish", "success", "failure", "success", "success", "skipped", "success"],
+		["publish", "success", "cancelled", "success", "success", "skipped", "success"],
+		["publish", "success", "success", "skipped", "success", "skipped", "success"],
+		["publish", "success", "success", "failure", "success", "skipped", "success"],
+		["publish", "success", "success", "cancelled", "success", "skipped", "success"],
+		["publish", "success", "success", "success", "skipped", "skipped", "success"],
+		["publish", "success", "success", "success", "failure", "skipped", "success"],
+		["publish", "success", "success", "success", "cancelled", "skipped", "success"],
+		["publish", "success", "success", "success", "success", "success", "success"],
+		["repair", "success", "skipped", "skipped", "success", "skipped", "success"],
+		["repair", "success", "failure", "skipped", "success", "skipped", "success"],
+		["repair", "success", "success", "success", "success", "skipped", "success"],
+		["repair", "success", "success", "skipped", "skipped", "skipped", "success"],
+		["repair", "success", "success", "skipped", "failure", "skipped", "success"],
+		["repair", "success", "success", "skipped", "success", "success", "success"],
+		["repair", "failure", "success", "skipped", "success", "skipped", "success"],
+		["repair", "cancelled", "success", "skipped", "success", "skipped", "success"],
+		["repair", "skipped", "success", "skipped", "success", "skipped", "success"],
+		["maintenance", "success", "success", "skipped", "skipped", "success", "skipped"],
+		["maintenance", "success", "skipped", "success", "skipped", "success", "skipped"],
+		["maintenance", "success", "skipped", "skipped", "success", "success", "skipped"],
+		["maintenance", "success", "skipped", "skipped", "skipped", "success", "success"],
+		["unknown", "success", "skipped", "skipped", "skipped", "skipped", "skipped"],
+		["", "success", "skipped", "skipped", "skipped", "skipped", "skipped"],
+	] satisfies ConvergenceState[]) {
+		const result = runAssertion(rejected)
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain("Release operation did not converge")
+	}
 })
 
 test("successful publication closes the provenance-bound Release Please lineage", () => {
@@ -699,6 +820,7 @@ test.each([
 	["maintain", "\n  maintain:\n"],
 	["compatibility", "\n  compatibility:\n"],
 	["release", "\n  release:\n"],
+	["converge", "\n  converge:\n"],
 ] as const)("release validation fails closed without the %s job boundary", (_job, marker) => {
 	const temporaryRoot = copyRepository()
 	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
