@@ -1,6 +1,6 @@
 {
   "name": "harness-native-plugin-prototype",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Dependency-closed skills using a verified, plugin-managed Bun runtime",
   "author": {
     "name": "Prototype"
