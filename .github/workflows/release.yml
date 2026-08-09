@@ -115,6 +115,9 @@ jobs:
               | jq -sc 'add | map({filename,status,sha}) | sort_by(.filename)')
             printf '%s\n' "$projection" > repair-projection.json
             base_parent=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${candidate_sha}" --jq '.parents[0].sha')
+            # Re-run the trusted base parent's admission policy. Current projection
+            # rules may legitimately remove generated paths after an older release.
+            git checkout --detach "$base_parent"
             projection_result=$(bun run scripts/release-projection.ts \
               --base "$base_parent" \
               --head "$candidate_sha" \
