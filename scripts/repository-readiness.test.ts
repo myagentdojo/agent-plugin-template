@@ -378,5 +378,50 @@ test("missing release-path status checks name the branch settings repair", () =>
 
 	expect(check.status).toBe("missing")
 	expect(check.detail).toContain("Deterministic package")
-	expect(check.repair).toContain("Settings > Branches > Branch protection rules")
+	expect(check.repair).toContain("Settings > Rules > Rulesets")
+})
+
+test("effective main ruleset proves every release-path status check", () => {
+	const check = classifyRequiredStatusChecks(null, [
+		{
+			type: "required_status_checks",
+			parameters: {
+				required_status_checks: REQUIRED_STATUS_CHECKS.map((context) => ({ context })),
+			},
+		},
+	])
+
+	expect(check).toMatchObject({
+		name: "required-status-checks",
+		status: "ready",
+		repair: "",
+	})
+})
+
+test("classic protection and effective rulesets combine their required checks", () => {
+	const [classicContext, ...rulesetContexts] = REQUIRED_STATUS_CHECKS
+	const check = classifyRequiredStatusChecks(
+		{ contexts: [classicContext] },
+		[
+			{
+				type: "required_status_checks",
+				parameters: {
+					required_status_checks: rulesetContexts.map((context) => ({ context })),
+				},
+			},
+		],
+	)
+
+	expect(check.status).toBe("ready")
+})
+
+test("unreadable effective required-check rules fail closed", () => {
+	expect(
+		classifyRequiredStatusChecks(null, [
+			{ type: "required_status_checks", parameters: { required_status_checks: [{}] } },
+		]),
+	).toMatchObject({
+		name: "required-status-checks",
+		status: "unavailable",
+	})
 })

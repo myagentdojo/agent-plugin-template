@@ -11,7 +11,7 @@ const mergeHistoryRepair =
 const actionsRepair =
 	"Settings > Actions > General > Actions permissions: enable the actions and reusable workflows used by this repository"
 const requiredChecksRepair =
-	"Settings > Branches > Branch protection rules: protect main and require every release-path status check"
+	"Settings > Rules > Rulesets (or Branches > Branch protection rules): protect main and require every release-path status check"
 const workflowAdminRepair =
 	"Remove administration from workflow permissions; release publication needs contents: write, never repository administration"
 const releaseAutomationRepair =
@@ -523,7 +523,8 @@ export function classifyHostedCanaryConfiguration(
 /**
  * Verify every status check needed by the release path protects main.
  *
- * @param protection - Required status checks API response
+ * @param protection - Classic required status checks response, or null when classic protection is absent
+ * @param effectiveRules - Effective GitHub ruleset rules for main
  * @returns Required-checks safeguard classification
  *
  * @example
@@ -531,8 +532,11 @@ export function classifyHostedCanaryConfiguration(
  * classifyRequiredStatusChecks({ contexts: ["Release impact"] })
  * ```
  */
-export function classifyRequiredStatusChecks(protection: unknown): ReadinessCheck {
-	if (!isRecord(protection)) {
+export function classifyRequiredStatusChecks(
+	protection: unknown,
+	effectiveRules: unknown = [],
+): ReadinessCheck {
+	if (protection !== null && !isRecord(protection)) {
 		return {
 			name: "required-status-checks",
 			status: "unavailable",
@@ -540,15 +544,49 @@ export function classifyRequiredStatusChecks(protection: unknown): ReadinessChec
 			repair: requiredChecksRepair,
 		}
 	}
-	const contexts = Array.isArray(protection.contexts)
+	if (
+		!Array.isArray(effectiveRules) ||
+		effectiveRules.some((rule) => !isRecord(rule) || typeof rule.type !== "string")
+	) {
+		return {
+			name: "required-status-checks",
+			status: "unavailable",
+			detail: "GitHub returned unreadable effective rules for main; release-path checks are unproven",
+			repair: requiredChecksRepair,
+		}
+	}
+
+	const contexts = isRecord(protection) && Array.isArray(protection.contexts)
 		? protection.contexts.filter((context): context is string => typeof context === "string")
 		: []
-	const checks = Array.isArray(protection.checks)
+	const checks = isRecord(protection) && Array.isArray(protection.checks)
 		? protection.checks.flatMap((check) =>
 				isRecord(check) && typeof check.context === "string" ? [check.context] : [],
 			)
 		: []
 	const configured = new Set([...contexts, ...checks])
+	for (const rule of effectiveRules) {
+		if (!isRecord(rule) || rule.type !== "required_status_checks") continue
+		if (!isRecord(rule.parameters) || !Array.isArray(rule.parameters.required_status_checks)) {
+			return {
+				name: "required-status-checks",
+				status: "unavailable",
+				detail: "GitHub returned an unreadable required-status-checks ruleset; release-path checks are unproven",
+				repair: requiredChecksRepair,
+			}
+		}
+		for (const check of rule.parameters.required_status_checks) {
+			if (!isRecord(check) || typeof check.context !== "string") {
+				return {
+					name: "required-status-checks",
+					status: "unavailable",
+					detail: "GitHub returned an unreadable required check in the main ruleset; release-path checks are unproven",
+					repair: requiredChecksRepair,
+				}
+			}
+			configured.add(check.context)
+		}
+	}
 	const absent = REQUIRED_STATUS_CHECKS.filter((check) => !configured.has(check))
 	if (absent.length === 0) {
 		return ready("required-status-checks", `main requires ${REQUIRED_STATUS_CHECKS.length} release-path checks`)
@@ -829,6 +867,18 @@ function checkMergeHistoryPolicy(repository: string): ReadinessCheck {
 	return classifyMergeHistoryPolicy(protection.ok ? protection.data : null, effectiveRules.data)
 }
 
+function checkRequiredStatusChecks(repository: string): ReadinessCheck {
+	const protection = readApi(`repos/${repository}/branches/main/protection/required_status_checks`)
+	if (!protection.ok && !isNotFoundApiFailure(protection)) {
+		return apiFailure("required-status-checks", protection, requiredChecksRepair)
+	}
+	const effectiveRules = readApi(`repos/${repository}/rules/branches/main`)
+	if (!effectiveRules.ok) {
+		return apiFailure("required-status-checks", effectiveRules, requiredChecksRepair)
+	}
+	return classifyRequiredStatusChecks(protection.ok ? protection.data : null, effectiveRules.data)
+}
+
 function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 	const environment = readApi(`repos/${repository}/environments/${HOSTED_CANARY_ENVIRONMENT}`)
 	if (!environment.ok) {
@@ -929,12 +979,7 @@ function runChecks(repository: string): ReadinessCheck[] {
 	} else {
 		checks.push(classifyReleaseAutomationConfiguration(releaseSecrets.data, releaseVariables.data))
 	}
-	const requiredChecks = readApi(`repos/${repository}/branches/main/protection/required_status_checks`)
-	checks.push(
-		requiredChecks.ok
-			? classifyRequiredStatusChecks(requiredChecks.data)
-			: apiFailure("required-status-checks", requiredChecks, requiredChecksRepair),
-	)
+	checks.push(checkRequiredStatusChecks(repository))
 	const releaseEnvironment = readApi(`repos/${repository}/environments/release`)
 	checks.push(
 		releaseEnvironment.ok
