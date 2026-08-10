@@ -1700,7 +1700,7 @@ function runHarnessInstallProof(
 	const sourceCommit = qualifyRuntimeJourney
 		? resolveCleanSourceCommit(repositoryRoot)
 		: resolveCandidatePayloadCommit(repositoryRoot)
-	const configuredSourceCommit = process.env.SOURCE_COMMIT ?? process.env.GITHUB_SHA
+	const configuredSourceCommit = process.env.SOURCE_COMMIT || process.env.GITHUB_SHA || undefined
 	if (configuredSourceCommit !== undefined && configuredSourceCommit !== sourceCommit) {
 		throw new Error("candidate proof source commit does not match Git HEAD")
 	}

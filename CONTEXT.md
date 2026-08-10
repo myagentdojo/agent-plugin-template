@@ -41,7 +41,7 @@ An immutable, versioned Plugin Payload made available for production installatio
 _Avoid_: Main build, CI artifact, merged commit
 
 **Capability Tour**:
-One shared model-only skill that reports declarations, direct mechanics, current-session observation, external qualification, and skill-seeded native delegation separately. It uses one skill-local reviewer prompt with generic host delegation and an inline fallback; it has no standalone agent.
+One shared model-only skill that reports declarations, direct mechanics, current-session observation, external qualification status, and skill-seeded native delegation separately. It never reads, ingests, or infers private qualification receipts, and its default result is not an automated native-qualification claim. It uses one skill-local reviewer prompt with generic host delegation and an inline fallback; it has no standalone agent.
 _Avoid_: Capability runner, agent package
 
 **Lifecycle Mechanics Proof**:

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 import { validateBunOnlyPayload } from "./build"
@@ -26,6 +26,11 @@ export function validateCapabilitySidecars(repositoryRoot: string): string[] {
 	]
 	if (drifted.length > 0) {
 		throw new Error(`generated capability sidecar differs from its source: ${drifted[0]}`)
+	}
+	for (const path of STATIC_CAPABILITY_SIDECAR_PATHS) {
+		if (!existsSync(join(repositoryRoot, path))) {
+			throw new Error(`static capability sidecar is missing: ${path}`)
+		}
 	}
 	return [
 		...STATIC_CAPABILITY_SIDECAR_PATHS,

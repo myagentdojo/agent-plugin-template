@@ -16,6 +16,7 @@ import {
 	admitPublicationCandidate,
 	validatePublicationBinding,
 	parsePublicationCandidateRecord,
+	validateCapabilitySidecars,
 	validateRepairCandidateBinding,
 	validateRepairBinding,
 } from "./release-validate"
@@ -71,6 +72,19 @@ const allowedProjection = [
 	"plugin/.claude-plugin/plugin.json",
 	"plugin/.codex-plugin/plugin.json",
 ]
+
+test("capability sidecar validation rejects a missing static file", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const missingPath = "plugin/assets/logo.svg"
+		rmSync(join(temporaryRoot, missingPath))
+		expect(() => validateCapabilitySidecars(temporaryRoot)).toThrow(
+			`static capability sidecar is missing: ${missingPath}`,
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
 
 function releasePullRequest(overrides: Record<string, unknown> = {}) {
 	return {

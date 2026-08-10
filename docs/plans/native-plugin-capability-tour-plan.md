@@ -244,9 +244,9 @@ flowchart TD
 - Read version from the installed manifest and require exactly one valid semver.
 - Emit SessionStart context only for startup/resume.
 - Enforce the 1 MiB input cap before parsing; parse only top-level `stop_hook_active`; true exits silently before comparison.
-- Compare exact fixture bytes; mismatch returns one common block envelope; all operational ambiguity fails open with a bounded warning.
+- Compare exact fixture bytes; mismatch returns one common block envelope; all operational ambiguity fails open with one bounded warning on stderr and empty stdout.
 
-**Test scenarios:** clean Stop silence; first mismatch block; active re-entry silence; startup/resume receipt; clear/compact/fork silence; whitespace/reordered JSON; string and nested decoys; duplicate/missing/non-boolean guard; malformed/oversized input; invalid version; missing/unreadable fixture; unavailable comparison tool; hostile cwd/PATH; no file mutation.
+**Test scenarios:** clean Stop silence; first mismatch block; active re-entry silence; startup/resume receipt; clear/compact/fork silence; whitespace/reordered JSON; string and nested decoys; duplicate/missing/non-boolean guard; malformed/oversized input; invalid version; missing/unreadable fixture; unavailable comparison tool; hostile cwd/PATH; no file mutation. Exercise malformed input, oversized input, and operational Stop failures for both Claude and Codex.
 
 **Verification:** Focused Bun tests run the handler in isolated temporary plugin roots and assert stdout, stderr, exit code, byte hashes, filesystem snapshot, and absence of Bun/Node/network/workspace execution.
 

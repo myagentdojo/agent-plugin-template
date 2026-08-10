@@ -10,6 +10,7 @@
   "plugins": [
     {
       "name": "harness-native-plugin-prototype",
+      "displayName": "Harness Plugin Prototype",
       "description": "Portable Bun skills and a guided native capability tour for Claude Code and Codex",
       "author": {
         "name": "Prototype"

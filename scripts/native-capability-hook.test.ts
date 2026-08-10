@@ -13,10 +13,11 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { afterEach, expect, test } from "bun:test"
 
-const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "")
+const root = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const temporaryRoots: string[] = []
 const warning =
 	"This plugin could not run its lifecycle mechanics proof; continuing without blocking.\n"
@@ -68,6 +69,12 @@ function runHook(
 		stderr: "pipe",
 		...options,
 	})
+}
+
+function expectFailsOpen(result: ReturnType<typeof runHook>): void {
+	expect(result.exitCode).toBe(0)
+	expect(result.stdout.toString()).toBe("")
+	expect(result.stderr.toString()).toBe(warning)
 }
 
 function treeSnapshot(directory: string): string[] {
@@ -230,17 +237,17 @@ test("ambiguous Stop guards fail open with one bounded warning", () => {
 		'{"stop_hook_active":false,"stop_hook_active":true}',
 		'{"nested":{"stop_hook_active":false}}',
 		'{"stop_hook_active":false',
+		'{"other":1 "stop_hook_active":false}',
 		'{"stop_hook_active":false "other":1}',
 		'{"stop_hook_active":false} trailing',
 		'[false]',
 		'not json',
 	]
 
-	for (const input of inputs) {
-		const result = runHook(fixture.handler, "Stop", "claude", input)
-		expect(result.exitCode).toBe(0)
-		expect(result.stdout.toString()).toBe("")
-		expect(result.stderr.toString()).toBe(warning)
+	for (const client of ["claude", "codex"] as const) {
+		for (const input of inputs) {
+			expectFailsOpen(runHook(fixture.handler, "Stop", client, input))
+		}
 	}
 })
 
@@ -249,10 +256,9 @@ test("oversized input fails open after reading only 1 MiB plus one overflow byte
 	const overflowInput = "x".repeat(1024 * 1024 + 1)
 	expect(Buffer.byteLength(overflowInput)).toBe(1024 * 1024 + 1)
 
-	const overflow = runHook(fixture.handler, "Stop", "claude", overflowInput)
-	expect(overflow.exitCode).toBe(0)
-	expect(overflow.stdout.toString()).toBe("")
-	expect(overflow.stderr.toString()).toBe(warning)
+	for (const client of ["claude", "codex"] as const) {
+		expectFailsOpen(runHook(fixture.handler, "Stop", client, overflowInput))
+	}
 })
 
 test("near-limit hostile payloads complete within a bounded wall clock", () => {
@@ -351,15 +357,15 @@ test("an unreadable display name fails open instead of substituting a placeholde
 
 test("malformed SessionStart input fails open without a context marker", () => {
 	const fixture = installedPlugin()
-	for (const input of [
-		'{"source":"startup"',
-		'{"source":"startup","source":"resume"}',
-		'{"source":true}',
-	]) {
-		const result = runHook(fixture.handler, "SessionStart", "codex", input)
-		expect(result.exitCode).toBe(0)
-		expect(result.stdout.toString()).toBe("")
-		expect(result.stderr.toString()).toBe(warning)
+	for (const client of ["claude", "codex"] as const) {
+		for (const input of [
+			'{"source":"startup"',
+			'{"source":"startup","source":"resume"}',
+			'{"source":true}',
+			'{"other":1 "source":"startup"}',
+		]) {
+			expectFailsOpen(runHook(fixture.handler, "SessionStart", client, input))
+		}
 	}
 })
 
@@ -415,16 +421,19 @@ test("missing or unreadable proof files and unavailable comparison fail open", (
 		join(missing.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.source.json"),
 	)
 
-	const unreadable = installedPlugin()
-	chmodSync(
-		join(
-			unreadable.pluginRoot,
-			"hooks",
-			"fixture",
-			"lifecycle-mechanics-proof.generated.json",
-		),
-		0o000,
-	)
+	const runningAsRoot = process.getuid?.() === 0
+	const unreadable = runningAsRoot ? undefined : installedPlugin()
+	if (unreadable) {
+		chmodSync(
+			join(
+				unreadable.pluginRoot,
+				"hooks",
+				"fixture",
+				"lifecycle-mechanics-proof.generated.json",
+			),
+			0o000,
+		)
+	}
 
 	const noComparison = installedPlugin()
 	const systemPath = mkdtempSync(join(tmpdir(), "native-capability-system-path-"))
@@ -442,16 +451,17 @@ test("missing or unreadable proof files and unavailable comparison fail open", (
 		),
 	)
 
-	for (const fixture of [missing, unreadable, noComparison]) {
-		const result = runHook(
-			fixture.handler,
-			"Stop",
-			"claude",
-			'{"stop_hook_active":false}',
-		)
-		expect(result.exitCode).toBe(0)
-		expect(result.stdout.toString()).toBe("")
-		expect(result.stderr.toString()).toBe(warning)
+	for (const client of ["claude", "codex"] as const) {
+		for (const fixture of [missing, ...(unreadable ? [unreadable] : []), noComparison]) {
+			expectFailsOpen(
+				runHook(
+					fixture.handler,
+					"Stop",
+					client,
+					'{"stop_hook_active":false}',
+				),
+			)
+		}
 	}
 })
 

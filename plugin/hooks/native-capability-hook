@@ -98,6 +98,7 @@ top_level_string() {
 		document_length = length(document)
 		short_string_limit = 256
 		char_indexed = split(document, chars, "") == document_length
+		if (!char_indexed && document_length > 65536) exit 2
 		n = document_length
 		for (i = 1; i <= n && whitespace(charat(i)); i++) {}
 		if (charat(i) != "{") exit 2
@@ -127,6 +128,11 @@ top_level_string() {
 			if (string_depth == 1 && stack[1] == "{") {
 				j = key_end + 1
 				while (j <= n && whitespace(charat(j))) j++
+				if (charat(j) == ":") {
+					key_start = i - 1
+					while (key_start >= 1 && whitespace(charat(key_start))) key_start--
+					if (charat(key_start) != "{" && charat(key_start) != ",") exit 2
+				}
 				if (charat(j) == ":" && key_plain && key == target) {
 					matches++
 					if (matches > 1) exit 2
@@ -259,6 +265,7 @@ top_level_stop_guard() {
 		document_length = length(document)
 		short_string_limit = 256
 		char_indexed = split(document, chars, "") == document_length
+		if (!char_indexed && document_length > 65536) exit 2
 		n = document_length
 		for (i = 1; i <= n && whitespace(charat(i)); i++) {}
 		if (charat(i) != "{") exit 2
@@ -288,6 +295,11 @@ top_level_stop_guard() {
 			if (string_depth == 1 && stack[1] == "{") {
 				j = key_end + 1
 				while (j <= n && whitespace(charat(j))) j++
+				if (charat(j) == ":") {
+					key_start = i - 1
+					while (key_start >= 1 && whitespace(charat(key_start))) key_start--
+					if (charat(key_start) != "{" && charat(key_start) != ",") exit 2
+				}
 				if (charat(j) == ":" && key_plain && key == "stop_hook_active") {
 					matches++
 					if (matches > 1) exit 2

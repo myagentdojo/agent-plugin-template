@@ -103,6 +103,7 @@ test("native marketplace projections preserve identity, source, policy, and acti
 	expect(claudeMarketplace.metadata.version).toBe(config.version)
 	expect(claudeMarketplace.plugins[0]).toMatchObject({
 		name: config.name,
+		displayName: config.displayName,
 		source: "./plugin",
 		defaultEnabled: false,
 	})

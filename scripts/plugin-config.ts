@@ -358,6 +358,7 @@ function claudeMarketplace(config: PluginConfig): GeneratedFile {
 			plugins: [
 				{
 					name: config.name,
+					displayName: config.displayName,
 					description: config.description,
 					author: config.author,
 					source: "./plugin",

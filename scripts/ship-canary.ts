@@ -1010,10 +1010,14 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 				readFileSync(join(checkoutRoot, "plugin", ".claude-plugin", "plugin.json"), "utf8"),
 			) as { name?: unknown }
 		).name
-		if (typeof manifestName !== "string" || manifestName.length === 0) {
+		if (
+			typeof manifestName !== "string" ||
+			!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifestName) ||
+			manifestName.length > 64
+		) {
 			throw new CanaryError(
 				"install_mismatch",
-				`${target.repository} candidate plugin manifest is missing a name for lineage packaging`,
+				`${target.repository} candidate plugin manifest name must be kebab-case and at most 64 characters for lineage packaging`,
 				`repair plugin/.claude-plugin/plugin.json at ${target.candidateRef}; never rewrite history`,
 				false,
 			)
