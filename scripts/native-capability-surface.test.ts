@@ -48,7 +48,7 @@ test("generation projects one exact native hook declaration per supported client
 						{
 							type: "command",
 							command:
-								'"${CODEX_PLUGIN_ROOT}/hooks/native-capability-hook" SessionStart codex',
+								'"${PLUGIN_ROOT}/hooks/native-capability-hook" SessionStart codex',
 						},
 					],
 				},
@@ -58,7 +58,7 @@ test("generation projects one exact native hook declaration per supported client
 					hooks: [
 						{
 							type: "command",
-							command: '"${CODEX_PLUGIN_ROOT}/hooks/native-capability-hook" Stop codex',
+							command: '"${PLUGIN_ROOT}/hooks/native-capability-hook" Stop codex',
 						},
 					],
 				},
@@ -155,6 +155,7 @@ test("capability tour is one model-only skill with one cross-client reviewer pro
 		expect(skill).toContain(evidence)
 	}
 	expect(skill).toContain("exactly one")
+	expect(skill).toContain("three directories above this `SKILL.md`")
 	expect(skill).toContain("host-owned")
 	expect(skill).toContain("lifecycle mechanics proof")
 	expect(reviewer).toContain("Do not mutate")

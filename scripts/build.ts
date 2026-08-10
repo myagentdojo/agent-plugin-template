@@ -1727,7 +1727,11 @@ export function validateBunOnlyPayload(root: string): void {
 	if (launchers.join("\0") !== expectedLaunchers.join("\0")) {
 		throw new Error("Bun payload closure: launcher inventory does not match the skill catalog")
 	}
-	for (const path of ["runtime/runtime-exec", ...expectedLaunchers.map((id) => `bin/${id}`)]) {
+	for (const path of [
+		"runtime/runtime-exec",
+		"hooks/native-capability-hook",
+		...expectedLaunchers.map((id) => `bin/${id}`),
+	]) {
 		if ((statSync(join(root, "plugin", path)).mode & 0o111) === 0) {
 			throw new Error(`Bun payload closure: ${path} is not executable`)
 		}

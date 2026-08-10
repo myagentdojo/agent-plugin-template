@@ -5,7 +5,7 @@ description: "Run the native plugin capability tour and report truthful hook, sk
 
 # Native Plugin Capability Tour
 
-Inspect only the installed plugin. Do not inspect the source checkout or unrelated project and user state. Resolve the installed plugin root two directories above this `SKILL.md`.
+Inspect only the installed plugin. Do not inspect the source checkout or unrelated project and user state. Resolve the installed plugin root three directories above this `SKILL.md`.
 
 ## Evidence collection
 

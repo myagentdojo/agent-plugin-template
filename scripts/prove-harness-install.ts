@@ -1437,6 +1437,7 @@ export function proveInstalledCapabilityEvidence(
 			cmd: [handler, event, client],
 			cwd: pluginRoot,
 			env: { PATH: "/usr/bin:/bin" },
+			timeout: 15_000,
 			stdin: Buffer.from(input),
 			stdout: "pipe",
 			stderr: "pipe",

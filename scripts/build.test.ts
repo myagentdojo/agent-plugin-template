@@ -1585,6 +1585,14 @@ test.each([
 	)
 })
 
+test("Bun-only release admission rejects a non-executable native hook", () => {
+	const fixtureRoot = bunPayloadFixture()
+	chmodSync(join(fixtureRoot, "plugin", "hooks", "native-capability-hook"), 0o644)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		"Bun payload closure: hooks/native-capability-hook is not executable",
+	)
+})
+
 test.each([
 	"assets/orphan.svg",
 	"skills/capability-tour/references/orphan.md",

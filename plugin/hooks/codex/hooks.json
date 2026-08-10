@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT}/hooks/native-capability-hook\" SessionStart codex"
+            "command": "\"${PLUGIN_ROOT}/hooks/native-capability-hook\" SessionStart codex"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CODEX_PLUGIN_ROOT}/hooks/native-capability-hook\" Stop codex"
+            "command": "\"${PLUGIN_ROOT}/hooks/native-capability-hook\" Stop codex"
           }
         ]
       }

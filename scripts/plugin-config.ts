@@ -441,7 +441,7 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 
 /** Build one client's hook declaration object; proofs reuse this as the comparison contract. */
 export function hookDeclarationBody(client: "claude" | "codex"): Record<string, unknown> {
-	const pluginRoot = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "CODEX_PLUGIN_ROOT"
+	const pluginRoot = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "PLUGIN_ROOT"
 	const command = (event: "SessionStart" | "Stop") =>
 		`"\${${pluginRoot}}/hooks/native-capability-hook" ${event} ${client}`
 	return {

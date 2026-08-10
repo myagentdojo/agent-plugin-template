@@ -47,27 +47,28 @@ while [ "$input_size" -lt 1048577 ]; do
 done
 [ "$input_size" -le 1048576 ] || warn
 
-# Extract one unescaped top-level string without evaluating JSON or inspecting
-# nested values. The lexical scan rejects unbalanced input and ambiguous keys.
-# The scan is linear so a capped 1 MiB payload cannot pin a CPU: records
-# accumulate in bounded chunks, characters come from one split byte array
-# (BWK awk substr rescans its whole subject string, so per-character substr
-# is quadratic), and no path rebuilds a long string character by character.
-top_level_string() {
-	awk -v target="$2" '
+# Validate one JSON object and extract one unescaped top-level member. Both hook
+# inputs and manifests use this parser so malformed unrelated members cannot
+# authorize a Stop block or produce startup context. Input and nesting caps keep
+# hostile payloads bounded; any unsupported or uncertain input fails open.
+top_level_member() {
+	awk -v target="$2" -v expected_kind="$3" '
 	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
 	function charat(i) { return char_indexed ? chars[i] : substr(document, i, 1) }
+	function skip_whitespace(i) {
+		while (i <= document_length && whitespace(charat(i))) i++
+		return i
+	}
 	function parse_string(start,    i,c,e,k,content_length) {
 		parsed_raw = ""
 		parsed_plain = 1
+		parsed_too_long = 0
 		for (i = start + 1; i <= document_length; i++) {
 			c = charat(i)
 			if (c == "\"") {
 				parsed_end = i
 				content_length = i - start - 1
-				if (parsed_plain && content_length > short_string_limit) {
-					parsed_raw = substr(document, start + 1, content_length)
-				}
+				if (parsed_plain && content_length > short_string_limit) parsed_too_long = 1
 				return 1
 			}
 			if (c == "\\") {
@@ -88,6 +89,121 @@ top_level_string() {
 		}
 		return 0
 	}
+	function parse_number(start,    i,c) {
+		i = start
+		if (charat(i) == "-") i++
+		if (charat(i) == "0") {
+			i++
+			if (charat(i) ~ /^[0-9]$/) return 0
+		} else {
+			if (charat(i) !~ /^[1-9]$/) return 0
+			while (charat(i) ~ /^[0-9]$/) i++
+		}
+		if (charat(i) == ".") {
+			i++
+			if (charat(i) !~ /^[0-9]$/) return 0
+			while (charat(i) ~ /^[0-9]$/) i++
+		}
+		c = charat(i)
+		if (c == "e" || c == "E") {
+			i++
+			c = charat(i)
+			if (c == "+" || c == "-") i++
+			if (charat(i) !~ /^[0-9]$/) return 0
+			while (charat(i) ~ /^[0-9]$/) i++
+		}
+		parsed_end = i - 1
+		parsed_kind = "number"
+		return 1
+	}
+	function parse_array(start, depth,    i,value_end) {
+		if (depth > nesting_limit) return 0
+		i = skip_whitespace(start + 1)
+		if (charat(i) == "]") { parsed_end = i; return 1 }
+		for (;;) {
+			if (!parse_value(i, depth)) return 0
+			value_end = parsed_end
+			i = skip_whitespace(value_end + 1)
+			if (charat(i) == "]") { parsed_end = i; return 1 }
+			if (charat(i) != ",") return 0
+			i = skip_whitespace(i + 1)
+			if (charat(i) == "]") return 0
+		}
+	}
+	function parse_object(start, depth,    i,key,key_plain,key_too_long,key_end,value_end,value_kind,value_raw,value_plain,value_too_long) {
+		if (depth > nesting_limit) return 0
+		i = skip_whitespace(start + 1)
+		if (charat(i) == "}") { parsed_end = i; return 1 }
+		for (;;) {
+			if (charat(i) != "\"" || !parse_string(i)) return 0
+			key = parsed_raw
+			key_plain = parsed_plain
+			key_too_long = parsed_too_long
+			key_end = parsed_end
+			i = skip_whitespace(key_end + 1)
+			if (charat(i) != ":") return 0
+			i = skip_whitespace(i + 1)
+			if (!parse_value(i, depth)) return 0
+			value_end = parsed_end
+			value_kind = parsed_kind
+			value_raw = parsed_raw
+			value_plain = parsed_plain
+			value_too_long = parsed_too_long
+			if (depth == 0 && key_plain && !key_too_long && key == target) {
+				matches++
+				if (matches > 1 || value_kind != expected_kind) return 0
+				if (expected_kind == "string") {
+					if (!value_plain || value_too_long) return 0
+					target_value = value_raw
+				} else target_value = value_raw
+			}
+			i = skip_whitespace(value_end + 1)
+			if (charat(i) == "}") { parsed_end = i; return 1 }
+			if (charat(i) != ",") return 0
+			i = skip_whitespace(i + 1)
+			if (charat(i) == "}") return 0
+		}
+	}
+	function parse_value(start, depth,    c) {
+		start = skip_whitespace(start)
+		c = charat(start)
+		parsed_raw = ""
+		parsed_plain = 0
+		parsed_too_long = 0
+		if (c == "\"") {
+			if (!parse_string(start)) return 0
+			parsed_kind = "string"
+			return 1
+		}
+		if (c == "{") {
+			if (!parse_object(start, depth + 1)) return 0
+			parsed_kind = "object"
+			return 1
+		}
+		if (c == "[") {
+			if (!parse_array(start, depth + 1)) return 0
+			parsed_kind = "array"
+			return 1
+		}
+		if (substr(document, start, 4) == "true") {
+			parsed_end = start + 3
+			parsed_kind = "boolean"
+			parsed_raw = "true"
+			return 1
+		}
+		if (substr(document, start, 5) == "false") {
+			parsed_end = start + 4
+			parsed_kind = "boolean"
+			parsed_raw = "false"
+			return 1
+		}
+		if (substr(document, start, 4) == "null") {
+			parsed_end = start + 3
+			parsed_kind = "null"
+			return 1
+		}
+		return parse_number(start)
+	}
 	{
 		if (NR > 1) pending = pending "\n"
 		pending = pending $0
@@ -97,62 +213,21 @@ top_level_string() {
 		document = document pending
 		document_length = length(document)
 		short_string_limit = 256
+		nesting_limit = 128
 		char_indexed = split(document, chars, "") == document_length
 		if (!char_indexed && document_length > 65536) exit 2
-		n = document_length
-		for (i = 1; i <= n && whitespace(charat(i)); i++) {}
-		if (charat(i) != "{") exit 2
-		depth = 0
-		closed = 0
-		for (; i <= n; i++) {
-			c = charat(i)
-			if (closed) {
-				if (!whitespace(c)) exit 2
-				continue
-			}
-			if (c == "{") { depth++; stack[depth] = c; continue }
-			if (c == "[") { depth++; stack[depth] = c; continue }
-			if (c == "}" || c == "]") {
-				if (depth < 1) exit 2
-				if ((c == "}" && stack[depth] != "{") || (c == "]" && stack[depth] != "[")) exit 2
-				depth--
-				if (depth == 0) closed = 1
-				continue
-			}
-			if (c != "\"") continue
-			string_depth = depth
-			if (!parse_string(i)) exit 2
-			key = parsed_raw
-			key_plain = parsed_plain
-			key_end = parsed_end
-			if (string_depth == 1 && stack[1] == "{") {
-				j = key_end + 1
-				while (j <= n && whitespace(charat(j))) j++
-				if (charat(j) == ":") {
-					key_start = i - 1
-					while (key_start >= 1 && whitespace(charat(key_start))) key_start--
-					if (charat(key_start) != "{" && charat(key_start) != ",") exit 2
-				}
-				if (charat(j) == ":" && key_plain && key == target) {
-					matches++
-					if (matches > 1) exit 2
-					j++
-					while (j <= n && whitespace(charat(j))) j++
-					if (charat(j) != "\"") exit 2
-					if (!parse_string(j) || !parsed_plain) exit 2
-					value = parsed_raw
-					value_end = parsed_end + 1
-					while (value_end <= n && whitespace(charat(value_end))) value_end++
-					if (charat(value_end) != "," && charat(value_end) != "}") exit 2
-				}
-			}
-			i = key_end
-		}
-		if (!closed || depth != 0 || matches > 1) exit 2
+		i = skip_whitespace(1)
+		if (charat(i) != "{" || !parse_object(i, 0)) exit 2
+		i = skip_whitespace(parsed_end + 1)
+		if (i <= document_length || matches > 1) exit 2
 		if (matches == 0) print "__MISSING__"
-		else print value
+		else print target_value
 	}
 	' "$1"
+}
+
+top_level_string() {
+	top_level_member "$1" "$2" string
 }
 
 valid_semver() {
@@ -216,114 +291,6 @@ manifest_display_name() {
 	printf '%s\n' "$display_name"
 }
 
-# Recognize only one top-level stop_hook_active member whose value is the JSON
-# boolean true or false. Strings and nested members remain lexical decoys. The
-# scan shares the linear-time structure of top_level_string above.
-top_level_stop_guard() {
-	awk '
-	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
-	function boundary(c) { return c == "" || c == "," || c == "}" || whitespace(c) }
-	function charat(i) { return char_indexed ? chars[i] : substr(document, i, 1) }
-	function parse_string(start,    i,c,e,k,content_length) {
-		parsed_raw = ""
-		parsed_plain = 1
-		for (i = start + 1; i <= document_length; i++) {
-			c = charat(i)
-			if (c == "\"") {
-				parsed_end = i
-				content_length = i - start - 1
-				if (parsed_plain && content_length > short_string_limit) {
-					parsed_raw = substr(document, start + 1, content_length)
-				}
-				return 1
-			}
-			if (c == "\\") {
-				parsed_plain = 0
-				i++
-				if (i > document_length) return 0
-				e = charat(i)
-				if (e == "u") {
-					for (k = 1; k <= 4; k++) {
-						i++
-						if (charat(i) !~ /^[0-9A-Fa-f]$/) return 0
-					}
-				} else if (e !~ /^["\\\/bfnrt]$/) return 0
-				continue
-			}
-			if (c ~ /[[:cntrl:]]/) return 0
-			if (parsed_plain && i - start <= short_string_limit) parsed_raw = parsed_raw c
-		}
-		return 0
-	}
-	{
-		if (NR > 1) pending = pending "\n"
-		pending = pending $0
-		if (length(pending) >= 4096) { document = document pending; pending = "" }
-	}
-	END {
-		document = document pending
-		document_length = length(document)
-		short_string_limit = 256
-		char_indexed = split(document, chars, "") == document_length
-		if (!char_indexed && document_length > 65536) exit 2
-		n = document_length
-		for (i = 1; i <= n && whitespace(charat(i)); i++) {}
-		if (charat(i) != "{") exit 2
-		depth = 0
-		closed = 0
-		for (; i <= n; i++) {
-			c = charat(i)
-			if (closed) {
-				if (!whitespace(c)) exit 2
-				continue
-			}
-			if (c == "{") { depth++; stack[depth] = c; continue }
-			if (c == "[") { depth++; stack[depth] = c; continue }
-			if (c == "}" || c == "]") {
-				if (depth < 1) exit 2
-				if ((c == "}" && stack[depth] != "{") || (c == "]" && stack[depth] != "[")) exit 2
-				depth--
-				if (depth == 0) closed = 1
-				continue
-			}
-			if (c != "\"") continue
-			string_depth = depth
-			if (!parse_string(i)) exit 2
-			key = parsed_raw
-			key_plain = parsed_plain
-			key_end = parsed_end
-			if (string_depth == 1 && stack[1] == "{") {
-				j = key_end + 1
-				while (j <= n && whitespace(charat(j))) j++
-				if (charat(j) == ":") {
-					key_start = i - 1
-					while (key_start >= 1 && whitespace(charat(key_start))) key_start--
-					if (charat(key_start) != "{" && charat(key_start) != ",") exit 2
-				}
-				if (charat(j) == ":" && key_plain && key == "stop_hook_active") {
-					matches++
-					if (matches > 1) exit 2
-					j++
-					while (j <= n && whitespace(charat(j))) j++
-					if (substr(document, j, 4) == "true" && boundary(charat(j + 4))) {
-						value = "true"
-						value_end = j + 4
-					} else if (substr(document, j, 5) == "false" && boundary(charat(j + 5))) {
-						value = "false"
-						value_end = j + 5
-					} else exit 2
-					while (value_end <= n && whitespace(charat(value_end))) value_end++
-					if (charat(value_end) != "," && charat(value_end) != "}") exit 2
-				}
-			}
-			i = key_end
-		}
-		if (!closed || depth != 0 || matches != 1) exit 2
-		print value
-	}
-	' "$1"
-}
-
 if [ "$event" = SessionStart ]; then
 	source=$(top_level_string "$input_file" source) || warn
 	case "$source" in
@@ -337,7 +304,8 @@ if [ "$event" = SessionStart ]; then
 	exit 0
 fi
 
-stop_hook_active=$(top_level_stop_guard "$input_file") || warn
+stop_hook_active=$(top_level_member "$input_file" stop_hook_active boolean) || warn
+[ "$stop_hook_active" != __MISSING__ ] || warn
 [ "$stop_hook_active" = true ] && exit 0
 
 version=$(manifest_version) || warn
