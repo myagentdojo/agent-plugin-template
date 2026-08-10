@@ -75,6 +75,7 @@ jobs:
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
           CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
           CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}
+          CANARY_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"

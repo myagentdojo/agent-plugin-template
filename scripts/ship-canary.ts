@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { loadPluginConfig } from "./plugin-config"
+import { type PluginConfig, loadPluginConfig } from "./plugin-config"
 import { deterministicPluginArchive, payloadInventorySha256 } from "./plugin-files"
 import { copyMarketplaceDistribution, proveHostedHarnessInstall } from "./prove-harness-install"
 
@@ -1097,14 +1097,22 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 	}
 }
 
-function candidateCanaryTargets(sourceRoot: string): {
-	owner?: unknown
-	actor?: unknown
-	publicRepository?: unknown
-	privateRepository?: unknown
-} {
+interface CandidateCanaryConfig {
+	template?: unknown
+	repository?: unknown
+	canary: {
+		owner?: unknown
+		actor?: unknown
+		publicRepository?: unknown
+		privateRepository?: unknown
+	}
+}
+
+function candidateCanaryConfig(sourceRoot: string): CandidateCanaryConfig {
 	try {
 		const candidate = JSON.parse(readFileSync(join(sourceRoot, "plugin.config.json"), "utf8")) as {
+			template?: unknown
+			repository?: unknown
 			canary?: {
 				owner?: unknown
 				actor?: unknown
@@ -1112,7 +1120,11 @@ function candidateCanaryTargets(sourceRoot: string): {
 				privateRepository?: unknown
 			}
 		}
-		return candidate.canary ?? {}
+		return {
+			template: candidate.template,
+			repository: candidate.repository,
+			canary: candidate.canary ?? {},
+		}
 	} catch (error) {
 		throw new CanaryError(
 			"candidate_config_invalid",
@@ -1121,6 +1133,52 @@ function candidateCanaryTargets(sourceRoot: string): {
 			false,
 		)
 	}
+}
+
+function trustedCanaryTargets(
+	trustedConfig: PluginConfig,
+	candidate: CandidateCanaryConfig,
+	identity: string,
+	environment: Record<string, string | undefined> = process.env,
+): PluginConfig["canary"] {
+	const exactMatch =
+		candidate.canary.owner === trustedConfig.canary.owner &&
+		candidate.canary.actor === trustedConfig.canary.actor &&
+		candidate.canary.publicRepository === trustedConfig.canary.publicRepository &&
+		candidate.canary.privateRepository === trustedConfig.canary.privateRepository
+	if (exactMatch) return trustedConfig.canary
+
+	const repository = environment.GITHUB_REPOSITORY ?? ""
+	const [owner, name, extra] = repository.split("/")
+	const expected = {
+		owner,
+		actor: identity,
+		publicRepository: `${name}-public-canary`,
+		privateRepository: `${name}-private-canary`,
+	}
+	const protectedBootstrap =
+		trustedConfig.template === true &&
+		environment.GITHUB_ACTIONS === "true" &&
+		Boolean(owner && name && !extra && identity) &&
+		environment.CANARY_HEAD_REPOSITORY === repository &&
+		environment.GITHUB_WORKFLOW_REF?.startsWith(
+			`${repository}/.github/workflows/hosted-canary.yml@`,
+		) === true &&
+		/^[0-9a-f]{40}$/.test(environment.CANARY_TRUSTED_WORKFLOW_SHA ?? "") &&
+		candidate.template === false &&
+		candidate.repository === `https://github.com/${repository}` &&
+		candidate.canary.owner === expected.owner &&
+		candidate.canary.actor === expected.actor &&
+		candidate.canary.publicRepository === expected.publicRepository &&
+		candidate.canary.privateRepository === expected.privateRepository
+	if (protectedBootstrap) return expected
+
+	throw new CanaryError(
+		"canary_target_mismatch",
+		"candidate canary targets differ from the trusted driver checkout",
+		"restore the trusted targets, or initialize the exact same-repository template through its protected hosted-canary workflow",
+		false,
+	)
 }
 
 function assertCandidateInstall(
@@ -1223,21 +1281,9 @@ export async function qualifyTargets(
 
 function preflight(options: PublishOptions): Preflight {
 	const trustedConfig = loadPluginConfig(root)
-	const candidateCanary = candidateCanaryTargets(options.sourceRoot)
-	if (
-		candidateCanary.owner !== trustedConfig.canary.owner ||
-		candidateCanary.actor !== trustedConfig.canary.actor ||
-		candidateCanary.publicRepository !== trustedConfig.canary.publicRepository ||
-		candidateCanary.privateRepository !== trustedConfig.canary.privateRepository
-	) {
-		throw new CanaryError(
-			"canary_target_mismatch",
-			"candidate canary targets differ from the trusted driver checkout",
-			"restore plugin.config.json canary targets to the trusted base values",
-			false,
-		)
-	}
+	const candidateConfig = candidateCanaryConfig(options.sourceRoot)
 	const identity = processResult(["gh", "api", "user", "--jq", ".login"]) || ""
+	const canary = trustedCanaryTargets(trustedConfig, candidateConfig, identity)
 	const dirty = processResult(
 		["git", "status", "--porcelain", "--untracked-files=no"],
 		false,
@@ -1327,7 +1373,7 @@ function preflight(options: PublishOptions): Preflight {
 	const boundTransport = bindTransportIdentity(
 		identity,
 		resolvedTransport.identity,
-		trustedConfig.canary.actor,
+		canary.actor,
 		resolvedTransport.kind,
 	)
 	const transportIdentity = { ...boundTransport, host: resolvedTransport.host }
@@ -1335,9 +1381,9 @@ function preflight(options: PublishOptions): Preflight {
 	try {
 		const targets = buildTargets(
 			origin,
-			trustedConfig.canary.owner,
-			trustedConfig.canary.publicRepository,
-			trustedConfig.canary.privateRepository,
+			canary.owner,
+			canary.publicRepository,
+			canary.privateRepository,
 			sourceSha,
 			options.sourceRoot,
 			publicCandidate,
