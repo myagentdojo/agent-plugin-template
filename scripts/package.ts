@@ -1,20 +1,9 @@
-import {
-	chmodSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	statSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 import { validateBunOnlyPayload } from "./build"
 import {
-	copyPluginPayload,
-	directoryArchiveEntries,
+	deterministicPluginArchive,
 	payloadInventorySha256,
 	pluginPayloadInventory,
 } from "./plugin-files"
@@ -25,8 +14,6 @@ const pluginConfig = loadPluginConfig(root)
 const version = pluginConfig.version
 const outputRoot = join(root, "dist")
 const packageName = `${pluginConfig.name}-${version}`
-const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
-const packageRoot = join(stagingRoot, packageName)
 
 function resolveSourceCommit(): string {
 	const sourceCommit = process.env.SOURCE_COMMIT
@@ -72,117 +59,42 @@ function payloadInventoryDigest(): string {
 	return payloadInventorySha256(join(root, "plugin"), pluginPayloadInventory(root))
 }
 
-try {
-	// Missing, stale, or orphaned bundle mappings fail before packaging.
-	validateBunOnlyPayload(root)
-	const sourceCommit = resolveSourceCommit()
-	const runtimeLockSha256 = sha256(readFileSync(join(root, "runtime", "runtime.lock.json")))
-	const bundleInventorySha256 = sha256(
-		readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json")),
-	)
-	const payloadInventorySha256 = payloadInventoryDigest()
-	mkdirSync(outputRoot, { recursive: true })
-	copyPluginPayload(root, packageRoot)
+// Missing, stale, or orphaned bundle mappings fail before packaging.
+validateBunOnlyPayload(root)
+const sourceCommit = resolveSourceCommit()
+const runtimeLockSha256 = sha256(readFileSync(join(root, "runtime", "runtime.lock.json")))
+const bundleInventorySha256 = sha256(
+	readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json")),
+)
+const payloadInventoryDigestValue = payloadInventoryDigest()
+mkdirSync(outputRoot, { recursive: true })
 
-	const entries = directoryArchiveEntries(packageRoot, packageName)
-	const epoch = new Date(0)
-	for (const relativePath of entries) {
-		const absolutePath = join(stagingRoot, relativePath)
-		const status = statSync(absolutePath)
-		chmodSync(absolutePath, status.isDirectory() ? 0o755 : status.mode & 0o111 ? 0o755 : 0o644)
-		utimesSync(absolutePath, epoch, epoch)
-	}
-
-	const fileList = join(stagingRoot, "entries.bin")
-	writeFileSync(fileList, Buffer.from(`${entries.join("\0")}\0`))
-	const uncompressedArchive = join(stagingRoot, `${packageName}.tar`)
-	const tarArguments =
-		process.platform === "darwin"
-			? [
-					"tar",
-					"-cf",
-					uncompressedArchive,
-					"--format",
-					"ustar",
-					"--uid",
-					"0",
-					"--gid",
-					"0",
-					"--uname",
-					"root",
-					"--gname",
-					"root",
-					"--no-xattrs",
-					"--no-acls",
-					"--no-fflags",
-					"--no-mac-metadata",
-					"--no-recursion",
-					"--null",
-					"-C",
-					stagingRoot,
-					"-T",
-					fileList,
-				]
-			: [
-					"tar",
-					"--sort=name",
-					"--mtime=@0",
-					"--owner=0",
-					"--group=0",
-					"--numeric-owner",
-					"--no-xattrs",
-					"--no-acls",
-					"--no-selinux",
-					"--format=ustar",
-					"--no-recursion",
-					"--null",
-					"-cf",
-					uncompressedArchive,
-					"-C",
-					stagingRoot,
-					"-T",
-					fileList,
-				]
-	const tar = Bun.spawnSync({ cmd: tarArguments, stdout: "inherit", stderr: "inherit" })
-	if (tar.exitCode !== 0) process.exit(tar.exitCode)
-
-	const gzip = Bun.spawnSync({
-		cmd: ["gzip", "-n", "-9", "-c", uncompressedArchive],
-		stdout: "pipe",
-		stderr: "inherit",
-	})
-	if (gzip.exitCode !== 0) process.exit(gzip.exitCode)
-
-	const archive = join(outputRoot, `${packageName}.tar.gz`)
-	writeFileSync(archive, gzip.stdout)
-	const archiveBytes = statSync(archive).size
-	const archiveDigest = new Bun.CryptoHasher("sha256")
-		.update(readFileSync(archive))
-		.digest("hex")
-	const checksums = join(outputRoot, `${packageName}.checksums.json`)
-	writeFileSync(
-		checksums,
-		`${JSON.stringify(
-			{
-				repository: pluginConfig.repository,
-				sourceCommit,
-				tag: `v${version}`,
-				plugin: pluginConfig.name,
-				version,
-				archive: `${packageName}.tar.gz`,
-				archiveBytes,
-				archiveSha256: archiveDigest,
-				runtimeLockSha256,
-				bundleInventorySha256,
-				payloadInventorySha256,
-				evidence:
-					"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
-			},
-			null,
-			2,
-		)}\n`,
-	)
-	console.log(JSON.stringify({ archive, checksums, archiveBytes, archiveDigest }))
-} finally {
-	rmSync(stagingRoot, { recursive: true, force: true })
-}
+const archiveArtifact = deterministicPluginArchive(root, packageName)
+const archive = join(outputRoot, `${packageName}.tar.gz`)
+writeFileSync(archive, archiveArtifact.bytes)
+const archiveBytes = statSync(archive).size
+const archiveDigest = archiveArtifact.sha256
+const checksums = join(outputRoot, `${packageName}.checksums.json`)
+writeFileSync(
+	checksums,
+	`${JSON.stringify(
+		{
+			repository: pluginConfig.repository,
+			sourceCommit,
+			tag: `v${version}`,
+			plugin: pluginConfig.name,
+			version,
+			archive: `${packageName}.tar.gz`,
+			archiveBytes,
+			archiveSha256: archiveDigest,
+			runtimeLockSha256,
+			bundleInventorySha256,
+			payloadInventorySha256: payloadInventoryDigestValue,
+			evidence:
+				"Checksum metadata is integrity evidence for these archive bytes, not independent publisher or builder authenticity.",
+		},
+		null,
+		2,
+	)}\n`,
+)
+console.log(JSON.stringify({ archive, checksums, archiveBytes, archiveDigest }))

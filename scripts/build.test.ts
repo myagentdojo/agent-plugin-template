@@ -1607,6 +1607,23 @@ test("Bun-only release admission rejects a legacy runtime surface", () => {
 	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/legacy runtime surface/)
 })
 
+test("Bun-only release admission rejects an unlisted runtime executable", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", "runtime", "rogue.sh"), "#!/bin/sh\n")
+	chmodSync(join(fixtureRoot, "plugin", "runtime", "rogue.sh"), 0o755)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		/unexpected payload file runtime\/rogue\.sh/,
+	)
+})
+
+test("Bun-only release admission rejects an unlisted manifest sidecar", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", ".claude-plugin", "extra.json"), "{}\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		/unexpected payload file \.claude-plugin\/extra\.json/,
+	)
+})
+
 test("Bun-only release admission rejects an orphaned launcher", () => {
 	const fixtureRoot = bunPayloadFixture()
 	writeFileSync(join(fixtureRoot, "plugin", "bin", "orphan"), "#!/bin/sh\n")

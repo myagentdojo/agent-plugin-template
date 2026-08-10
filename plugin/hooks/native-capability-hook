@@ -6,7 +6,7 @@ export PATH
 LC_ALL=C
 export LC_ALL
 
-warning='Harness Plugin Prototype lifecycle mechanics proof could not run; continuing without blocking.'
+warning='This plugin could not run its lifecycle mechanics proof; continuing without blocking.'
 
 warn() {
 	printf '%s\n' "$warning" >&2
@@ -49,46 +49,62 @@ done
 
 # Extract one unescaped top-level string without evaluating JSON or inspecting
 # nested values. The lexical scan rejects unbalanced input and ambiguous keys.
+# The scan is linear so a capped 1 MiB payload cannot pin a CPU: records
+# accumulate in bounded chunks, characters come from one split byte array
+# (BWK awk substr rescans its whole subject string, so per-character substr
+# is quadratic), and no path rebuilds a long string character by character.
 top_level_string() {
 	awk -v target="$2" '
 	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
-	function parse_string(start,    i,c,e,k) {
+	function charat(i) { return char_indexed ? chars[i] : substr(document, i, 1) }
+	function parse_string(start,    i,c,e,k,content_length) {
 		parsed_raw = ""
 		parsed_plain = 1
-		for (i = start + 1; i <= length(document); i++) {
-			c = substr(document, i, 1)
-			if (c == "\"") { parsed_end = i; return 1 }
+		for (i = start + 1; i <= document_length; i++) {
+			c = charat(i)
+			if (c == "\"") {
+				parsed_end = i
+				content_length = i - start - 1
+				if (parsed_plain && content_length > short_string_limit) {
+					parsed_raw = substr(document, start + 1, content_length)
+				}
+				return 1
+			}
 			if (c == "\\") {
 				parsed_plain = 0
 				i++
-				if (i > length(document)) return 0
-				e = substr(document, i, 1)
+				if (i > document_length) return 0
+				e = charat(i)
 				if (e == "u") {
 					for (k = 1; k <= 4; k++) {
 						i++
-						if (substr(document, i, 1) !~ /^[0-9A-Fa-f]$/) return 0
+						if (charat(i) !~ /^[0-9A-Fa-f]$/) return 0
 					}
 				} else if (e !~ /^["\\\/bfnrt]$/) return 0
-				parsed_raw = parsed_raw "\\" e
 				continue
 			}
 			if (c ~ /[[:cntrl:]]/) return 0
-			parsed_raw = parsed_raw c
+			if (parsed_plain && i - start <= short_string_limit) parsed_raw = parsed_raw c
 		}
 		return 0
 	}
 	{
-		if (NR > 1) document = document "\n"
-		document = document $0
+		if (NR > 1) pending = pending "\n"
+		pending = pending $0
+		if (length(pending) >= 4096) { document = document pending; pending = "" }
 	}
 	END {
-		n = length(document)
-		for (i = 1; i <= n && whitespace(substr(document, i, 1)); i++) {}
-		if (substr(document, i, 1) != "{") exit 2
+		document = document pending
+		document_length = length(document)
+		short_string_limit = 256
+		char_indexed = split(document, chars, "") == document_length
+		n = document_length
+		for (i = 1; i <= n && whitespace(charat(i)); i++) {}
+		if (charat(i) != "{") exit 2
 		depth = 0
 		closed = 0
 		for (; i <= n; i++) {
-			c = substr(document, i, 1)
+			c = charat(i)
 			if (closed) {
 				if (!whitespace(c)) exit 2
 				continue
@@ -110,17 +126,18 @@ top_level_string() {
 			key_end = parsed_end
 			if (string_depth == 1 && stack[1] == "{") {
 				j = key_end + 1
-				while (j <= n && whitespace(substr(document, j, 1))) j++
-				if (substr(document, j, 1) == ":" && key_plain && key == target) {
+				while (j <= n && whitespace(charat(j))) j++
+				if (charat(j) == ":" && key_plain && key == target) {
 					matches++
+					if (matches > 1) exit 2
 					j++
-					while (j <= n && whitespace(substr(document, j, 1))) j++
-					if (substr(document, j, 1) != "\"") exit 2
+					while (j <= n && whitespace(charat(j))) j++
+					if (charat(j) != "\"") exit 2
 					if (!parse_string(j) || !parsed_plain) exit 2
 					value = parsed_raw
 					value_end = parsed_end + 1
-					while (value_end <= n && whitespace(substr(document, value_end, 1))) value_end++
-					if (substr(document, value_end, 1) != "," && substr(document, value_end, 1) != "}") exit 2
+					while (value_end <= n && whitespace(charat(value_end))) value_end++
+					if (charat(value_end) != "," && charat(value_end) != "}") exit 2
 				}
 			}
 			i = key_end
@@ -179,49 +196,76 @@ manifest_version() {
 	printf '%s\n' "$version"
 }
 
+# The claude manifest is the one native manifest carrying a top-level
+# displayName; the codex manifest nests its display name inside "interface",
+# beyond this narrow top-level scanner. Every install ships both manifests, so
+# both clients read the same file. A plain top-level string value carries no
+# quotes, backslashes, or control characters, so it embeds safely below.
+manifest_display_name() {
+	name_manifest=$plugin_root/.claude-plugin/plugin.json
+	[ -f "$name_manifest" ] && [ -r "$name_manifest" ] || return 1
+	display_name=$(top_level_string "$name_manifest" displayName) || return 1
+	[ "$display_name" != __MISSING__ ] || return 1
+	[ -n "$display_name" ] || return 1
+	printf '%s\n' "$display_name"
+}
+
 # Recognize only one top-level stop_hook_active member whose value is the JSON
-# boolean true or false. Strings and nested members remain lexical decoys.
+# boolean true or false. Strings and nested members remain lexical decoys. The
+# scan shares the linear-time structure of top_level_string above.
 top_level_stop_guard() {
 	awk '
 	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
 	function boundary(c) { return c == "" || c == "," || c == "}" || whitespace(c) }
-	function parse_string(start,    i,c,e,k) {
+	function charat(i) { return char_indexed ? chars[i] : substr(document, i, 1) }
+	function parse_string(start,    i,c,e,k,content_length) {
 		parsed_raw = ""
 		parsed_plain = 1
-		for (i = start + 1; i <= length(document); i++) {
-			c = substr(document, i, 1)
-			if (c == "\"") { parsed_end = i; return 1 }
+		for (i = start + 1; i <= document_length; i++) {
+			c = charat(i)
+			if (c == "\"") {
+				parsed_end = i
+				content_length = i - start - 1
+				if (parsed_plain && content_length > short_string_limit) {
+					parsed_raw = substr(document, start + 1, content_length)
+				}
+				return 1
+			}
 			if (c == "\\") {
 				parsed_plain = 0
 				i++
-				if (i > length(document)) return 0
-				e = substr(document, i, 1)
+				if (i > document_length) return 0
+				e = charat(i)
 				if (e == "u") {
 					for (k = 1; k <= 4; k++) {
 						i++
-						if (substr(document, i, 1) !~ /^[0-9A-Fa-f]$/) return 0
+						if (charat(i) !~ /^[0-9A-Fa-f]$/) return 0
 					}
 				} else if (e !~ /^["\\\/bfnrt]$/) return 0
-				parsed_raw = parsed_raw "\\" e
 				continue
 			}
 			if (c ~ /[[:cntrl:]]/) return 0
-			parsed_raw = parsed_raw c
+			if (parsed_plain && i - start <= short_string_limit) parsed_raw = parsed_raw c
 		}
 		return 0
 	}
 	{
-		if (NR > 1) document = document "\n"
-		document = document $0
+		if (NR > 1) pending = pending "\n"
+		pending = pending $0
+		if (length(pending) >= 4096) { document = document pending; pending = "" }
 	}
 	END {
-		n = length(document)
-		for (i = 1; i <= n && whitespace(substr(document, i, 1)); i++) {}
-		if (substr(document, i, 1) != "{") exit 2
+		document = document pending
+		document_length = length(document)
+		short_string_limit = 256
+		char_indexed = split(document, chars, "") == document_length
+		n = document_length
+		for (i = 1; i <= n && whitespace(charat(i)); i++) {}
+		if (charat(i) != "{") exit 2
 		depth = 0
 		closed = 0
 		for (; i <= n; i++) {
-			c = substr(document, i, 1)
+			c = charat(i)
 			if (closed) {
 				if (!whitespace(c)) exit 2
 				continue
@@ -243,20 +287,21 @@ top_level_stop_guard() {
 			key_end = parsed_end
 			if (string_depth == 1 && stack[1] == "{") {
 				j = key_end + 1
-				while (j <= n && whitespace(substr(document, j, 1))) j++
-				if (substr(document, j, 1) == ":" && key_plain && key == "stop_hook_active") {
+				while (j <= n && whitespace(charat(j))) j++
+				if (charat(j) == ":" && key_plain && key == "stop_hook_active") {
 					matches++
+					if (matches > 1) exit 2
 					j++
-					while (j <= n && whitespace(substr(document, j, 1))) j++
-					if (substr(document, j, 4) == "true" && boundary(substr(document, j + 4, 1))) {
+					while (j <= n && whitespace(charat(j))) j++
+					if (substr(document, j, 4) == "true" && boundary(charat(j + 4))) {
 						value = "true"
 						value_end = j + 4
-					} else if (substr(document, j, 5) == "false" && boundary(substr(document, j + 5, 1))) {
+					} else if (substr(document, j, 5) == "false" && boundary(charat(j + 5))) {
 						value = "false"
 						value_end = j + 5
 					} else exit 2
-					while (value_end <= n && whitespace(substr(document, value_end, 1))) value_end++
-					if (substr(document, value_end, 1) != "," && substr(document, value_end, 1) != "}") exit 2
+					while (value_end <= n && whitespace(charat(value_end))) value_end++
+					if (charat(value_end) != "," && charat(value_end) != "}") exit 2
 				}
 			}
 			i = key_end
@@ -274,8 +319,9 @@ if [ "$event" = SessionStart ]; then
 	*) exit 0 ;;
 	esac
 	version=$(manifest_version) || warn
-	printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Harness Plugin Prototype v%s | %s | SessionStart:%s"}}\n' \
-		"$version" "$client" "$source"
+	display_name=$(manifest_display_name) || warn
+	printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s v%s | %s | SessionStart:%s"}}\n' \
+		"$display_name" "$version" "$client" "$source"
 	exit 0
 fi
 
@@ -283,6 +329,7 @@ stop_hook_active=$(top_level_stop_guard "$input_file") || warn
 [ "$stop_hook_active" = true ] && exit 0
 
 version=$(manifest_version) || warn
+display_name=$(manifest_display_name) || warn
 fixture_source=$plugin_root/hooks/fixture/lifecycle-mechanics-proof.source.json
 fixture_projection=$plugin_root/hooks/fixture/lifecycle-mechanics-proof.generated.json
 [ -f "$fixture_source" ] && [ -r "$fixture_source" ] || warn
@@ -293,7 +340,7 @@ comparison_status=$?
 case "$comparison_status" in
 0) exit 0 ;;
 1)
-	printf '{"decision":"block","reason":"Harness Plugin Prototype v%s found a mismatch in its packaged lifecycle proof files. Do not modify the workspace. Continue once to explain how to reinstall this plugin from its trusted source; if the mismatch remains, report this plugin version."}\n' "$version"
+	printf '{"decision":"block","reason":"%s v%s found a mismatch in its packaged lifecycle proof files. Do not modify the workspace. Continue once to explain how to reinstall this plugin from its trusted source; if the mismatch remains, report this plugin version."}\n' "$display_name" "$version"
 	exit 0
 	;;
 *) warn ;;

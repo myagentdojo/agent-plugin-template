@@ -190,11 +190,27 @@ test("installed evidence promotes native claims only with a validated fresh-clie
 				},
 			),
 		).toMatchObject({
-			currentSessionHook: "proved",
+			currentSessionHook: "unknown",
 			nativeActivation: "proved",
 			externalCandidateQualification: "proved",
 			nativeDelegation: "proved",
 			nativeQualification: { status: "proved", receipt },
+		})
+		expect(
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				candidateCommit,
+				payloadHash,
+				undefined,
+				true,
+			),
+		).toMatchObject({
+			currentSessionHook: "proved",
+			nativeActivation: "not-proved",
+			externalCandidateQualification: "unknown",
+			nativeDelegation: "not-proved",
+			nativeQualification: { status: "not-proved", receipt: null },
 		})
 		const failedReceipt = {
 			...receipt,

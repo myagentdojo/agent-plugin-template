@@ -593,7 +593,7 @@ test("package accepts an explicit source commit when Git metadata is unavailable
 	expect(checksums.sourceCommit).toBe(sourceCommit)
 })
 
-test("package preserves filenames containing newlines and backslashes", () => {
+test("package rejects payload files outside the exact expected inventory", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-package-filenames-")
 	const init = initializeTemplate(temporaryRoot)
 	expect(init.exitCode, init.stderr.toString()).toBe(0)
@@ -601,21 +601,9 @@ test("package preserves filenames containing newlines and backslashes", () => {
 	const unusualPath = join(temporaryRoot, "plugin", "runtime", unusualName)
 	writeFileSync(unusualPath, "unusual filename payload\n")
 	const sourceCommit = commitPackageCheckout(temporaryRoot)
-	const result = successfulPackageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
-	const extractRoot = mkdtempSync(join(tmpdir(), "agent-plugin-template-package-extract-"))
-	try {
-		const extracted = Bun.spawnSync({
-			cmd: ["tar", "-xzf", result.archive, "-C", extractRoot],
-			stdout: "pipe",
-			stderr: "pipe",
-		})
-		expect(extracted.exitCode, extracted.stderr.toString()).toBe(0)
-		const archivedPath = join(extractRoot, `dojo-hello-${initialVersion}`, "runtime", unusualName)
-		expect(existsSync(archivedPath)).toBe(true)
-		expect(readFileSync(archivedPath, "utf8")).toBe("unusual filename payload\n")
-	} finally {
-		rmSync(extractRoot, { recursive: true, force: true })
-	}
+	const packaged = packageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
+	expect(packaged.exitCode).not.toBe(0)
+	expect(packaged.stderr.toString()).toContain("Bun payload closure: unexpected payload file")
 })
 
 test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(

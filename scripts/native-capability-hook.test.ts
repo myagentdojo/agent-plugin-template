@@ -19,7 +19,7 @@ import { afterEach, expect, test } from "bun:test"
 const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "")
 const temporaryRoots: string[] = []
 const warning =
-	"Harness Plugin Prototype lifecycle mechanics proof could not run; continuing without blocking.\n"
+	"This plugin could not run its lifecycle mechanics proof; continuing without blocking.\n"
 
 afterEach(() => {
 	for (const temporaryRoot of temporaryRoots.splice(0)) {
@@ -46,7 +46,7 @@ function installedPlugin(): { handler: string; pluginRoot: string } {
 	for (const harness of ["claude", "codex"]) {
 		writeFileSync(
 			join(pluginRoot, `.${harness}-plugin`, "plugin.json"),
-			'{"name":"fixture","version":"0.3.0"}\n',
+			'{"name":"fixture","displayName":"Harness Plugin Prototype","version":"0.3.0"}\n',
 		)
 	}
 	const handler = join(pluginRoot, "hooks", "native-capability-hook")
@@ -255,6 +255,100 @@ test("oversized input fails open after reading only 1 MiB plus one overflow byte
 	expect(overflow.stderr.toString()).toBe(warning)
 })
 
+test("near-limit hostile payloads complete within a bounded wall clock", () => {
+	const fixture = installedPlugin()
+	const boundMilliseconds = 10_000
+	const giantString = `{"payload":"${"a".repeat(1024 * 1024 - 64)}","stop_hook_active":false}`
+	const escapeDense = `{"payload":"${"\\n".repeat((1024 * 1024 - 64) / 2)}","stop_hook_active":false}`
+	const manyMembers = `{${Array.from({ length: 65_536 }, (_, index) => `"k${index}":"v"`).join(",")},"stop_hook_active":false}`
+	for (const input of [giantString, escapeDense, manyMembers]) {
+		expect(Buffer.byteLength(input)).toBeLessThanOrEqual(1024 * 1024)
+		const started = performance.now()
+		const result = runHook(fixture.handler, "Stop", "claude", input)
+		const elapsed = performance.now() - started
+		expect(result.exitCode).toBe(0)
+		expect(result.stdout.toString()).toBe("")
+		expect(result.stderr.toString()).toBe("")
+		expect(elapsed).toBeLessThan(boundMilliseconds)
+	}
+
+	const newlineFlood = "\n".repeat(1024 * 1024 - 1)
+	const floodStarted = performance.now()
+	const flood = runHook(fixture.handler, "Stop", "claude", newlineFlood)
+	const floodElapsed = performance.now() - floodStarted
+	expect(flood.exitCode).toBe(0)
+	expect(flood.stdout.toString()).toBe("")
+	expect(flood.stderr.toString()).toBe(warning)
+	expect(floodElapsed).toBeLessThan(boundMilliseconds)
+
+	const sessionStart = `{"payload":"${"a".repeat(1024 * 1024 - 64)}","source":"startup"}`
+	expect(Buffer.byteLength(sessionStart)).toBeLessThanOrEqual(1024 * 1024)
+	const started = performance.now()
+	const result = runHook(fixture.handler, "SessionStart", "claude", sessionStart)
+	const elapsed = performance.now() - started
+	expect(result.exitCode).toBe(0)
+	expect(result.stderr.toString()).toBe("")
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		hookSpecificOutput: {
+			additionalContext: "Harness Plugin Prototype v0.3.0 | claude | SessionStart:startup",
+		},
+	})
+	expect(elapsed).toBeLessThan(boundMilliseconds)
+})
+
+test("a renamed manifest identity reaches the receipt and the block reason", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, ".claude-plugin", "plugin.json"),
+		'{"name":"dojo-hello","displayName":"Dojo Hello","version":"0.3.0"}\n',
+	)
+
+	for (const client of ["claude", "codex"] as const) {
+		const start = runHook(fixture.handler, "SessionStart", client, '{"source":"startup"}')
+		expect(start.exitCode).toBe(0)
+		expect(start.stderr.toString()).toBe("")
+		expect(JSON.parse(start.stdout.toString())).toMatchObject({
+			hookSpecificOutput: {
+				additionalContext: `Dojo Hello v0.3.0 | ${client} | SessionStart:startup`,
+			},
+		})
+	}
+
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+	const stop = runHook(fixture.handler, "Stop", "claude", '{"stop_hook_active":false}')
+	expect(stop.exitCode).toBe(0)
+	expect(stop.stderr.toString()).toBe("")
+	expect(JSON.parse(stop.stdout.toString())).toMatchObject({
+		decision: "block",
+		reason: expect.stringContaining("Dojo Hello v0.3.0 found a mismatch"),
+	})
+})
+
+test("an unreadable display name fails open instead of substituting a placeholder", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, ".claude-plugin", "plugin.json"),
+		'{"name":"fixture","version":"0.3.0"}\n',
+	)
+
+	const start = runHook(fixture.handler, "SessionStart", "claude", '{"source":"startup"}')
+	expect(start.exitCode).toBe(0)
+	expect(start.stdout.toString()).toBe("")
+	expect(start.stderr.toString()).toBe(warning)
+
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+	const stop = runHook(fixture.handler, "Stop", "claude", '{"stop_hook_active":false}')
+	expect(stop.exitCode).toBe(0)
+	expect(stop.stdout.toString()).toBe("")
+	expect(stop.stderr.toString()).toBe(warning)
+})
+
 test("malformed SessionStart input fails open without a context marker", () => {
 	const fixture = installedPlugin()
 	for (const input of [
@@ -460,7 +554,7 @@ test("generation owns one deterministic LF fixture projection", () => {
 		const nonCanonicalSource = runGenerateCheck()
 		expect(nonCanonicalSource.exitCode).toBe(1)
 		expect(nonCanonicalSource.stderr.toString()).toContain(
-			"lifecycle mechanics proof source must use fixed field order and LF line endings",
+			"plugin/hooks/fixture/lifecycle-mechanics-proof.source.json",
 		)
 	} finally {
 		writeFileSync(sourcePath, originalSource)

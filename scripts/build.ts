@@ -1743,6 +1743,15 @@ export function validateBunOnlyPayload(root: string): void {
 			}
 		}
 	}
+	// The expected inventory is complete: manifest sidecars, generated runtime
+	// scripts, capability sidecars, and catalog-derived launchers, skills, and
+	// bundles. Anything outside that exact set never ships.
+	const expectedInventory = new Set(required)
+	for (const path of inventory) {
+		if (!expectedInventory.has(path)) {
+			throw new Error(`Bun payload closure: unexpected payload file ${path}`)
+		}
+	}
 	for (const manifestPath of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"] as const) {
 		const manifest = JSON.parse(readFileSync(join(root, "plugin", manifestPath), "utf8")) as {
 			hooks?: unknown

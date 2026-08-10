@@ -1,45 +1,16 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import type { GeneratedFile } from "./plugin-config"
+import { type GeneratedFile, loadPluginConfig } from "./plugin-config"
 
 const sourcePath = "plugin/hooks/fixture/lifecycle-mechanics-proof.source.json"
 const projectionPath = "plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json"
 
-interface LifecycleMechanicsProof {
-	schemaVersion: 1
-	purpose: string
-}
-
-function loadLifecycleMechanicsProof(root: string): LifecycleMechanicsProof {
-	const sourceContents = readFileSync(join(root, sourcePath), "utf8")
-	const parsed = JSON.parse(sourceContents) as unknown
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		throw new Error("lifecycle mechanics proof source must be one JSON object")
-	}
-	const record = parsed as Record<string, unknown>
-	if (
-		Object.keys(record).sort().join("\0") !== "purpose\0schemaVersion" ||
-		record.schemaVersion !== 1 ||
-		typeof record.purpose !== "string" ||
-		!record.purpose.trim()
-	) {
-		throw new Error("lifecycle mechanics proof source has an invalid fixed schema")
-	}
-	const source = { schemaVersion: 1 as const, purpose: record.purpose }
-	if (sourceContents !== serializeLifecycleMechanicsProof(source)) {
-		throw new Error(
-			"lifecycle mechanics proof source must use fixed field order and LF line endings",
-		)
-	}
-	return source
-}
-
-function serializeLifecycleMechanicsProof(source: LifecycleMechanicsProof): string {
+function serializeLifecycleMechanicsProof(displayName: string): string {
 	return `${JSON.stringify(
 		{
-			schemaVersion: source.schemaVersion,
-			purpose: source.purpose,
+			schemaVersion: 1,
+			purpose: `${displayName} lifecycle mechanics proof`,
 		},
 		null,
 		2,
@@ -47,33 +18,50 @@ function serializeLifecycleMechanicsProof(source: LifecycleMechanicsProof): stri
 }
 
 /**
- * Render the lifecycle proof projection with fixed field order and LF bytes.
+ * Render both lifecycle proof fixture files for one configured display name.
  *
- * @param root - Plugin Repository root containing the canonical fixture source
- * @returns The one generated payload projection
- * @throws {Error} When the canonical source is missing, malformed, or outside its fixed schema
+ * The purpose string derives from the plugin's display name, so initialized
+ * templates regenerate an identity-correct fixture instead of keeping the
+ * template's product name.
+ *
+ * @param displayName - Validated human-readable plugin title
+ * @returns The source and projection payload files with identical LF bytes
  *
  * @example
  * ```ts
- * const [projection] = renderNativeCapabilityFixture(process.cwd())
+ * const [source, projection] = renderNativeCapabilityFixtureFor("Dojo Hello")
  * ```
  */
-export function renderNativeCapabilityFixture(root: string): GeneratedFile[] {
-	const source = loadLifecycleMechanicsProof(root)
+export function renderNativeCapabilityFixtureFor(displayName: string): GeneratedFile[] {
+	const contents = serializeLifecycleMechanicsProof(displayName)
 	return [
-		{
-			path: projectionPath,
-			contents: serializeLifecycleMechanicsProof(source),
-		},
+		{ path: sourcePath, contents },
+		{ path: projectionPath, contents },
 	]
 }
 
 /**
- * Write the generated lifecycle proof projection beside its canonical source.
+ * Render the lifecycle proof fixture files with fixed field order and LF bytes.
  *
- * @param root - Plugin Repository root receiving the projection
- * @returns The generated file written to the payload
- * @throws {Error} When source validation or projection writing fails
+ * @param root - Plugin Repository root containing plugin.config.json
+ * @returns The generated source and projection payload files
+ * @throws {Error} When plugin.config.json is missing or violates its contract
+ *
+ * @example
+ * ```ts
+ * const [source, projection] = renderNativeCapabilityFixture(process.cwd())
+ * ```
+ */
+export function renderNativeCapabilityFixture(root: string): GeneratedFile[] {
+	return renderNativeCapabilityFixtureFor(loadPluginConfig(root).displayName)
+}
+
+/**
+ * Write the generated lifecycle proof source and projection into the payload.
+ *
+ * @param root - Plugin Repository root receiving the fixture files
+ * @returns The generated files written to the payload
+ * @throws {Error} When configuration validation or fixture writing fails
  *
  * @example
  * ```ts
@@ -87,11 +75,11 @@ export function writeNativeCapabilityFixture(root: string): GeneratedFile[] {
 }
 
 /**
- * Find lifecycle proof projections whose checked-in bytes drifted.
+ * Find lifecycle proof fixture files whose checked-in bytes drifted.
  *
  * @param root - Plugin Repository root containing source and projection
  * @returns Repository-relative paths needing regeneration
- * @throws {Error} When the canonical source is missing or invalid
+ * @throws {Error} When plugin.config.json is missing or invalid
  *
  * @example
  * ```ts

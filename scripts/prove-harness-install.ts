@@ -1091,8 +1091,20 @@ function installCodex(
 export interface HostedHarnessInstallProof {
 	temporaryRoot: string
 	preflight: TaggedCheckout
-	claude: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
-	codex: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
+	claude: {
+		mode: "native-hosted-marketplace"
+		version: string
+		inventory: string[]
+		/** SHA-256 measured over the bytes each native client actually installed. */
+		installedPayloadHash: string
+	}
+	codex: {
+		mode: "native-hosted-marketplace"
+		version: string
+		inventory: string[]
+		/** SHA-256 measured over the bytes each native client actually installed. */
+		installedPayloadHash: string
+	}
 }
 
 /** Bind each native client to the same transport-specific hosted Git remote and ref. */
@@ -1182,6 +1194,10 @@ export function proveHostedHarnessInstall(
 			throw new Error("Claude hosted install reported the wrong manifest version")
 		}
 		const claudeInventory = comparePayload(expected, claudeInstall.activeCachePath)
+		const claudeInstalledPayloadHash = payloadInventorySha256(
+			claudeInstall.activeCachePath,
+			claudeInventory,
+		)
 
 		const codexHome = join(temporaryRoot, "codex", "home")
 		const codexProject = join(temporaryRoot, "codex", "project")
@@ -1197,6 +1213,10 @@ export function proveHostedHarnessInstall(
 		)
 		assertCodexReportedVersion(codexInstall, claudeManifest.version, "hosted install")
 		const codexInventory = comparePayload(expected, codexInstall.add.installedPath)
+		const codexInstalledPayloadHash = payloadInventorySha256(
+			codexInstall.add.installedPath,
+			codexInventory,
+		)
 		return {
 			temporaryRoot,
 			preflight: expected,
@@ -1204,11 +1224,13 @@ export function proveHostedHarnessInstall(
 				mode: "native-hosted-marketplace",
 				version: claudeInstall.version,
 				inventory: claudeInventory,
+				installedPayloadHash: claudeInstalledPayloadHash,
 			},
 			codex: {
 				mode: "native-hosted-marketplace",
 				version: codexInstall.add.version,
 				inventory: codexInventory,
+				installedPayloadHash: codexInstalledPayloadHash,
 			},
 		}
 	} catch (error) {
@@ -1322,13 +1344,20 @@ export function runtimeClosureEvidence(
 	}
 }
 
-/** Inspect installed bytes and direct handler mechanics without making a native claim. */
+/**
+ * Inspect installed bytes and direct handler mechanics without making a native claim.
+ *
+ * `currentSessionHook` derives only from the explicit `currentSessionMarker` input
+ * (the current session's native context marker); a qualification receipt is a
+ * separate evidence layer and never proves the current session's hook.
+ */
 export function proveInstalledCapabilityEvidence(
 	pluginRoot: string,
 	client: "claude" | "codex",
 	candidateCommit: string,
 	candidatePayloadHash: string,
 	qualification?: NativeQualificationPromotion,
+	currentSessionMarker?: boolean,
 ): InstalledCapabilityEvidence {
 	if (!/^[a-f0-9]{40}$/.test(candidateCommit) || !/^[a-f0-9]{64}$/.test(candidatePayloadHash)) {
 		throw new Error("installed capability evidence requires a candidate commit and payload hash")
@@ -1413,7 +1442,15 @@ export function proveInstalledCapabilityEvidence(
 			stderr: "pipe",
 		})
 	const start = runHandler("SessionStart", '{"source":"startup"}')
-	const expectedContext = `Harness Plugin Prototype v${manifest.version} | ${client} | SessionStart:startup`
+	// The hook reads its display name from the claude manifest for both clients;
+	// only that manifest carries a top-level displayName.
+	const identityManifest = JSON.parse(
+		readFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"),
+	) as { displayName?: unknown }
+	if (typeof identityManifest.displayName !== "string" || !identityManifest.displayName) {
+		throw new Error(`${client} installed claude manifest displayName is invalid`)
+	}
+	const expectedContext = `${identityManifest.displayName} v${manifest.version} | ${client} | SessionStart:startup`
 	let startContext: unknown
 	try {
 		startContext = JSON.parse(start.stdout.toString()).hookSpecificOutput?.additionalContext
@@ -1460,7 +1497,7 @@ export function proveInstalledCapabilityEvidence(
 		declarationHealth: "healthy",
 		directHandlerHealth: "healthy",
 		fixtureState: "matched",
-		currentSessionHook: nativeProved ? "proved" : "unknown",
+		currentSessionHook: currentSessionMarker === true ? "proved" : "unknown",
 		nativeActivation: nativeProved ? "proved" : "not-proved",
 		externalCandidateQualification: nativeProved ? "proved" : "unknown",
 		nativeDelegation: nativeProved ? "proved" : "not-proved",

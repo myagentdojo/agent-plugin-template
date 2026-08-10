@@ -4,10 +4,16 @@ import {
 	copyFileSync,
 	lstatSync,
 	mkdirSync,
+	mkdtempSync,
 	readFileSync,
 	readdirSync,
 	realpathSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
 } from "node:fs"
+import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
 /** Canonical directory copied by development staging and release packaging. */
@@ -129,6 +135,108 @@ export function pluginPayloadInventory(sourceRoot: string): string[] {
 	// rejected before descent, so valid POSIX names need no per-entry realpath.
 	walk(pluginRealRoot, "")
 	return inventory.sort(compareCodeUnits)
+}
+
+/**
+ * Build the deterministic release archive bytes for one plugin payload.
+ *
+ * Release packaging and canary qualification share this builder, so the archive
+ * SHA-256 bound into candidate lineage is byte-identical to the released
+ * `*.tar.gz` whenever the payload bytes and package name match.
+ *
+ * @param sourceRoot - Repository or candidate root containing the canonical `plugin/` directory
+ * @param packageName - Archive root entry name, `<plugin-name>-<version>`
+ * @returns Gzipped deterministic tar bytes and their SHA-256 digest
+ * @throws {Error} When the payload is unsafe or tar/gzip fails
+ *
+ * @example
+ * ```ts
+ * const { sha256 } = deterministicPluginArchive(process.cwd(), "hello-0.1.0")
+ * ```
+ */
+export function deterministicPluginArchive(
+	sourceRoot: string,
+	packageName: string,
+): { bytes: Buffer; sha256: string } {
+	const stagingRoot = mkdtempSync(join(tmpdir(), "plugin-package-"))
+	try {
+		const packageRoot = join(stagingRoot, packageName)
+		copyPluginPayload(sourceRoot, packageRoot)
+		const entries = directoryArchiveEntries(packageRoot, packageName)
+		const epoch = new Date(0)
+		for (const relativePath of entries) {
+			const absolutePath = join(stagingRoot, relativePath)
+			const status = statSync(absolutePath)
+			chmodSync(absolutePath, status.isDirectory() ? 0o755 : status.mode & 0o111 ? 0o755 : 0o644)
+			utimesSync(absolutePath, epoch, epoch)
+		}
+		const fileList = join(stagingRoot, "entries.bin")
+		writeFileSync(fileList, Buffer.from(`${entries.join("\0")}\0`))
+		const uncompressedArchive = join(stagingRoot, `${packageName}.tar`)
+		const tarArguments =
+			process.platform === "darwin"
+				? [
+						"tar",
+						"-cf",
+						uncompressedArchive,
+						"--format",
+						"ustar",
+						"--uid",
+						"0",
+						"--gid",
+						"0",
+						"--uname",
+						"root",
+						"--gname",
+						"root",
+						"--no-xattrs",
+						"--no-acls",
+						"--no-fflags",
+						"--no-mac-metadata",
+						"--no-recursion",
+						"--null",
+						"-C",
+						stagingRoot,
+						"-T",
+						fileList,
+					]
+				: [
+						"tar",
+						"--sort=name",
+						"--mtime=@0",
+						"--owner=0",
+						"--group=0",
+						"--numeric-owner",
+						"--no-xattrs",
+						"--no-acls",
+						"--no-selinux",
+						"--format=ustar",
+						"--no-recursion",
+						"--null",
+						"-cf",
+						uncompressedArchive,
+						"-C",
+						stagingRoot,
+						"-T",
+						fileList,
+					]
+		const tar = Bun.spawnSync({ cmd: tarArguments, stdout: "inherit", stderr: "inherit" })
+		if (tar.exitCode !== 0) {
+			throw new Error(`deterministic archive tar failed with exit code ${tar.exitCode}`)
+		}
+		const gzip = Bun.spawnSync({
+			cmd: ["gzip", "-n", "-9", "-c", uncompressedArchive],
+			stdout: "pipe",
+			stderr: "inherit",
+		})
+		if (gzip.exitCode !== 0) {
+			throw new Error(`deterministic archive gzip failed with exit code ${gzip.exitCode}`)
+		}
+		const bytes = Buffer.from(gzip.stdout)
+		return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") }
+	} finally {
+		rmSync(stagingRoot, { recursive: true, force: true })
+	}
 }
 
 /**
