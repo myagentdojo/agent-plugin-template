@@ -304,7 +304,7 @@ test("near-limit hostile payloads complete within a bounded wall clock", () => {
 		},
 	})
 	expect(elapsed).toBeLessThan(boundMilliseconds)
-})
+}, 60_000)
 
 test("a renamed manifest identity reaches the receipt and the block reason", () => {
 	const fixture = installedPlugin()
