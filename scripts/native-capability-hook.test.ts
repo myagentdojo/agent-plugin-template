@@ -235,6 +235,8 @@ test("ambiguous Stop guards fail open with one bounded warning", () => {
 		'{"stop_hook_active":null}',
 		'{"stop_hook_active":1}',
 		'{"stop_hook_active":false,"stop_hook_active":true}',
+		'{"stop_hook_active":false,"\\u0073top_hook_active":true}',
+		'{"\\u0073top_hook_active":true,"stop_hook_active":false}',
 		'{"nested":{"stop_hook_active":false}}',
 		'{"stop_hook_active":false',
 		'{"other":1 "stop_hook_active":false}',

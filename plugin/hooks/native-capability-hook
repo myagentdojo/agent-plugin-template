@@ -144,6 +144,9 @@ top_level_member() {
 			key_plain = parsed_plain
 			key_too_long = parsed_too_long
 			key_end = parsed_end
+			# Escaped top-level keys can decode to the protected target. Treat the
+			# object as ambiguous instead of authorizing a block from a raw spelling.
+			if (depth == 0 && !key_plain) return 0
 			i = skip_whitespace(key_end + 1)
 			if (charat(i) != ":") return 0
 			i = skip_whitespace(i + 1)
