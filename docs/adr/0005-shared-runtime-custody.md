@@ -72,7 +72,9 @@ bundle/runtime tampering, argument pass-through, and shared warm reuse.
 Platform CI selects and acquires each of the four reviewed assets, runs a
 packaged skill, and proves warm execution with custody network denied. Native
 Claude and Codex receipts own discovery and the approval/repair/retry journey;
-a named private manual receipt owns the bounded Codex Desktop smoke.
+a named private manual receipt owns the bounded Codex Desktop smoke. The
+capability-tour lifecycle sidecar is proved separately: it never selects,
+installs, repairs, or prewarms this runtime.
 
 ## Consequences
 
@@ -85,5 +87,8 @@ a named private manual receipt owns the bounded Codex Desktop smoke.
   verified use works offline.
 - The active contract supports Bun only. Another runtime requires a new
   decision, not a generic registry or per-skill bootstrap framework.
-- There are no lifecycle hooks, prewarm, doctor, inventory, prune, automatic
-  repair-on-run, or user-managed setup commands.
+- The capability tour has one dependency-free, fail-open `SessionStart`/`Stop`
+  lifecycle mechanics proof. It is not a runtime-custody hook and provides no
+  production integrity or security guarantee.
+- Runtime setup hooks, prewarm, doctor, inventory, prune, automatic repair-on-run,
+  and user-managed setup commands remain absent.

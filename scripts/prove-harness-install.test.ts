@@ -19,9 +19,12 @@ import {
 	copyMarketplaceDistribution,
 	hostedMarketplaceSources,
 	nativeHarnessEnvironment,
+	promoteNativeQualificationEvidence,
 	proveHarnessInstall,
+	proveInstalledCapabilityEvidence,
 	redactTemporaryEvidencePath,
 	resolveCleanSourceCommit,
+	resolveCandidatePayloadCommit,
 	runtimeClosureEvidence,
 } from "./prove-harness-install"
 import {
@@ -35,6 +38,212 @@ let proof: ReturnType<typeof proveHarnessInstall>
 const claudeNativeTest = Bun.which("claude") ? test : test.skip
 const codexNativeTest = Bun.which("codex") ? test : test.skip
 
+function nativeQualificationSummary(client: "claude" | "codex") {
+	const hash = (value: string) => value.repeat(64)
+	return {
+		schema: "native-capability-qualification-v1",
+		client,
+		platform: "macos",
+		receiptSha256: hash("1"),
+		sourceCandidateSha: "a".repeat(40),
+		archiveSha256: hash("2"),
+		packagedPayloadHash: hash("3"),
+		installedPayloadHash: hash("3"),
+		derivedPayloadHash: hash("4"),
+		conclusions: {
+			discovery: "proved",
+			uiIdentity: "proved",
+			skillSeededNativeDelegation: "proved",
+			hostOwnedLifecycleEvidence: "proved",
+			sessionStart: "proved",
+			cleanStop: "silent",
+			driftContinuation: "proved",
+			reentry: "silent",
+			hooksFallback: "proved",
+			exactDefinitionTrust: client === "codex" ? "proved" : "not-applicable",
+		},
+		evidence: {
+			discoverySha256: hash("5"),
+			uiIdentitySha256: hash("6"),
+			delegationLifecycleSha256: hash("7"),
+			sessionStartSha256: hash("8"),
+			cleanStopSha256: hash("9"),
+			driftSha256: hash("a"),
+			reentrySha256: hash("b"),
+			hooksFallbackSha256: hash("c"),
+			...(client === "codex" ? { exactDefinitionTrustSha256: hash("d") } : {}),
+		},
+	}
+}
+
+test("fresh-native qualification promotion accepts only candidate-bound bounded evidence", () => {
+	const summary = nativeQualificationSummary("codex")
+	expect(
+		promoteNativeQualificationEvidence(summary, {
+			client: "codex",
+			sourceCommit: summary.sourceCandidateSha,
+			archiveSha256: summary.archiveSha256,
+			packagedPayloadHash: summary.packagedPayloadHash,
+			installedPayloadHash: summary.installedPayloadHash,
+		}),
+	).toEqual(summary)
+
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, rawSession: { transcript: "must stay private" } },
+			{
+				client: "codex",
+				sourceCommit: summary.sourceCandidateSha,
+				archiveSha256: summary.archiveSha256,
+				packagedPayloadHash: summary.packagedPayloadHash,
+				installedPayloadHash: summary.installedPayloadHash,
+			},
+		),
+	).toThrow("bounded summary and evidence hashes")
+})
+
+test("a bounded failed qualification records evidence without promoting native claims", () => {
+	const summary = nativeQualificationSummary("codex")
+	const failed = {
+		...summary,
+		conclusions: { ...summary.conclusions, sessionStart: "failed" },
+	}
+	expect(
+		promoteNativeQualificationEvidence(failed, {
+			client: "codex",
+			sourceCommit: summary.sourceCandidateSha,
+			archiveSha256: summary.archiveSha256,
+			packagedPayloadHash: summary.packagedPayloadHash,
+			installedPayloadHash: summary.installedPayloadHash,
+		}),
+	).toEqual(failed)
+})
+
+test("fresh-native qualification promotion rejects unbound or incomplete claims", () => {
+	const summary = nativeQualificationSummary("claude")
+	const expected = {
+		client: "claude" as const,
+		sourceCommit: summary.sourceCandidateSha,
+		archiveSha256: summary.archiveSha256,
+		packagedPayloadHash: summary.packagedPayloadHash,
+		installedPayloadHash: summary.installedPayloadHash,
+	}
+
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, sourceCandidateSha: "f".repeat(40) },
+			expected,
+		),
+	).toThrow("candidate lineage")
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, archiveSha256: "e".repeat(64) },
+			expected,
+		),
+	).toThrow("candidate lineage")
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{ ...summary, derivedPayloadHash: summary.packagedPayloadHash },
+			expected,
+		),
+	).toThrow("distinct derived payload hash")
+	expect(() =>
+		promoteNativeQualificationEvidence(
+			{
+				...summary,
+				conclusions: { ...summary.conclusions, exactDefinitionTrust: "proved" },
+			},
+			expected,
+		),
+	).toThrow("exact-definition trust")
+})
+
+test("installed evidence promotes native claims only with a validated fresh-client summary", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-native-promotion-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const candidateCommit = "a".repeat(40)
+		const payloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
+		const base = nativeQualificationSummary("claude")
+		const receipt = {
+			...base,
+			sourceCandidateSha: candidateCommit,
+			packagedPayloadHash: payloadHash,
+			installedPayloadHash: payloadHash,
+		}
+
+		expect(
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				candidateCommit,
+				payloadHash,
+				{
+					summary: receipt,
+					lineage: {
+						sourceCommit: candidateCommit,
+						archiveSha256: receipt.archiveSha256,
+						packagedPayloadHash: payloadHash,
+						installedPayloadHash: payloadHash,
+					},
+				},
+			),
+		).toMatchObject({
+			currentSessionHook: "unknown",
+			nativeActivation: "proved",
+			externalCandidateQualification: "proved",
+			nativeDelegation: "proved",
+			nativeQualification: { status: "proved", receipt },
+		})
+		expect(
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				candidateCommit,
+				payloadHash,
+				undefined,
+				true,
+			),
+		).toMatchObject({
+			currentSessionHook: "proved",
+			nativeActivation: "not-proved",
+			externalCandidateQualification: "unknown",
+			nativeDelegation: "not-proved",
+			nativeQualification: { status: "not-proved", receipt: null },
+		})
+		const failedReceipt = {
+			...receipt,
+			conclusions: { ...receipt.conclusions, cleanStop: "failed" },
+		}
+		expect(
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				candidateCommit,
+				payloadHash,
+				{
+					summary: failedReceipt,
+					lineage: {
+						sourceCommit: candidateCommit,
+						archiveSha256: failedReceipt.archiveSha256,
+						packagedPayloadHash: payloadHash,
+						installedPayloadHash: payloadHash,
+					},
+				},
+			),
+		).toMatchObject({
+			currentSessionHook: "unknown",
+			nativeActivation: "not-proved",
+			externalCandidateQualification: "unknown",
+			nativeDelegation: "not-proved",
+			nativeQualification: { status: "failed", receipt: failedReceipt },
+		})
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
 test("source-bound native receipts reject dirty checkout bytes", () => {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "native-receipt-source-"))
 	try {
@@ -45,18 +254,48 @@ test("source-bound native receipts reject dirty checkout bytes", () => {
 			GIT_COMMITTER_NAME: "Receipt Test",
 			GIT_COMMITTER_EMAIL: "receipt@example.invalid",
 		}
-		writeFileSync(join(fixtureRoot, "payload.txt"), "clean\n")
+		mkdirSync(join(fixtureRoot, "plugin"))
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "clean\n")
 		for (const command of [
 			["git", "init", "--quiet"],
-			["git", "add", "payload.txt"],
+			["git", "add", "plugin/payload.txt"],
 			["git", "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "fixture"],
 		]) {
 			const result = Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment })
 			expect(result.exitCode).toBe(0)
 		}
 		expect(resolveCleanSourceCommit(fixtureRoot)).toMatch(/^[a-f0-9]{40}$/)
-		writeFileSync(join(fixtureRoot, "payload.txt"), "dirty\n")
-		expect(() => resolveCleanSourceCommit(fixtureRoot)).toThrow(/requires a clean source checkout/)
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "dirty\n")
+		expect(() => resolveCleanSourceCommit(fixtureRoot)).toThrow(/requires clean candidate payload sources/)
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+	}
+})
+
+test("candidate payload binding permits tooling changes but rejects plugin drift", () => {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "candidate-payload-source-"))
+	try {
+		const environment = {
+			...process.env,
+			GIT_AUTHOR_NAME: "Candidate Test",
+			GIT_AUTHOR_EMAIL: "candidate@example.invalid",
+			GIT_COMMITTER_NAME: "Candidate Test",
+			GIT_COMMITTER_EMAIL: "candidate@example.invalid",
+		}
+		mkdirSync(join(fixtureRoot, "plugin"))
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "clean\n")
+		writeFileSync(join(fixtureRoot, "tooling.txt"), "clean\n")
+		for (const command of [
+			["git", "init", "--quiet"],
+			["git", "add", "plugin/payload.txt", "tooling.txt"],
+			["git", "-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "fixture"],
+		]) {
+			expect(Bun.spawnSync({ cmd: command, cwd: fixtureRoot, env: environment }).exitCode).toBe(0)
+		}
+		writeFileSync(join(fixtureRoot, "tooling.txt"), "changed\n")
+		expect(resolveCandidatePayloadCommit(fixtureRoot)).toMatch(/^[a-f0-9]{40}$/)
+		writeFileSync(join(fixtureRoot, "plugin", "payload.txt"), "changed\n")
+		expect(() => resolveCandidatePayloadCommit(fixtureRoot)).toThrow("plugin payload bytes")
 	} finally {
 		rmSync(fixtureRoot, { recursive: true, force: true })
 	}
@@ -103,6 +342,145 @@ test("both isolated harness installs report the tagged manifest version", () => 
 	expect(proof.targetPreflight.requestedRef).not.toBe(proof.preflight.requestedRef)
 	expect(proof.restorationPreflight).toEqual(proof.preflight)
 	expect(proof.versionAgreement).toBe(true)
+})
+
+test("automated install evidence binds bytes without claiming native activation", () => {
+	const head = Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD"], cwd: root, stdout: "pipe" })
+	expect(proof.capabilityEvidence.candidateCommit).toBe(head.stdout.toString().trim())
+	expect(proof.capabilityEvidence.fixtureCommit).toBe(proof.preflight.resolvedSha)
+	expect(proof.capabilityEvidence.candidatePayloadHash).toMatch(/^[a-f0-9]{64}$/)
+	for (const client of ["claude", "codex"] as const) {
+		expect(proof.capabilityEvidence.clients[client]).toEqual({
+			candidateCommit: proof.capabilityEvidence.candidateCommit,
+			candidatePayloadHash: proof.capabilityEvidence.candidatePayloadHash,
+			installedPayloadHash: proof.capabilityEvidence.candidatePayloadHash,
+			declarationHealth: "healthy",
+			directHandlerHealth: "healthy",
+			fixtureState: "matched",
+			currentSessionHook: "unknown",
+			nativeActivation: "not-proved",
+			externalCandidateQualification: "unknown",
+			nativeDelegation: "not-proved",
+			nativeQualification: { status: "not-proved", receipt: null },
+			portableSkillsWithoutHooks: [
+				"hello-world",
+				"skill-a",
+				"skill-b",
+				"runtime-custody",
+				"capability-tour",
+			],
+		})
+	}
+	expect(proof.codex).not.toHaveProperty("activation")
+})
+
+test.each([
+	{
+		path: "assets/logo.svg",
+		tamper: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("tampered\n")]),
+		expected: "installed payload hash differs from the candidate payload",
+	},
+	{
+		path: "skills/capability-tour/references/capability-reviewer.md",
+		tamper: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("tampered\n")]),
+		expected: "installed payload hash differs from the candidate payload",
+	},
+	{
+		path: "hooks/claude/hooks.json",
+		tamper: () => Buffer.from("{}\n"),
+		expected: "installed declaration bytes do not match the capability contract",
+	},
+	{
+		path: "hooks/fixture/lifecycle-mechanics-proof.generated.json",
+		tamper: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("tampered\n")]),
+		expected: "installed lifecycle mechanics proof fixture differs",
+	},
+] as const)("installed capability evidence rejects tampered $path bytes", ({ path, tamper, expected }) => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-tamper-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const candidatePayloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
+		const absolutePath = join(pluginRoot, path)
+		writeFileSync(absolutePath, tamper(readFileSync(absolutePath)))
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				"a".repeat(40),
+				candidatePayloadHash,
+			),
+		).toThrow(expected)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("installed payload hash is validated before the candidate handler executes", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-handler-tamper-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	const marker = join(temporaryRoot, "handler-ran")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const candidatePayloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
+		writeFileSync(
+			join(pluginRoot, "hooks", "native-capability-hook"),
+			`#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`,
+		)
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				"a".repeat(40),
+				candidatePayloadHash,
+			),
+		).toThrow("installed payload hash differs from the candidate payload")
+		expect(existsSync(marker)).toBe(false)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("installed capability evidence rejects a catalogued model-only tour", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-catalog-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const catalogPath = join(pluginRoot, "runtime", "skill-catalog.sh")
+		writeFileSync(catalogPath, `${readFileSync(catalogPath, "utf8")}\n\tcapability-tour)\n`)
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				"a".repeat(40),
+				runtimeClosureEvidence(pluginRoot).payloadHash,
+			),
+		).toThrow("installed runtime catalog includes capability-tour")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("installed capability evidence rejects a bundled model-only tour", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-bundle-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const inventoryPath = join(pluginRoot, "runtime", "bundle-inventory.json")
+		const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"))
+		inventory.bundles["capability-tour"] = inventory.bundles["hello-world"]
+		writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, "\t")}\n`)
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"codex",
+				"a".repeat(40),
+				runtimeClosureEvidence(pluginRoot).payloadHash,
+			),
+		).toThrow("installed bundle inventory differs")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
 })
 
 test("release proof requires both native harness CLIs", () => {
@@ -268,7 +646,13 @@ test("cleaned CLI proof reports that temporary evidence was removed", () => {
 		evidenceRetained: false,
 		codex: {
 			mode: "fixture-copy",
-			activation: null,
+			installedState: null,
+		},
+		capabilityEvidence: {
+			clients: {
+				claude: { nativeActivation: "not-proved" },
+				codex: { nativeActivation: "not-proved" },
+			},
 		},
 	})
 }, 60_000)
@@ -423,14 +807,13 @@ codexNativeTest("Codex local refresh changes bytes (Codex CLI required; fallback
 	expect(proof.codex.localRefresh.failureRestored).toBe(true)
 })
 
-test("Codex activation evidence matches the proof mode", () => {
+test("Codex installed state never claims native activation", () => {
 	if (proof.codex.mode === "fixture-copy") {
-		expect(proof.codex.activation).toBeNull()
+		expect(proof.codex.installedState).toBeNull()
 		return
 	}
-	expect(proof.codex.activation).toMatchObject({
+	expect(proof.codex.installedState).toMatchObject({
 		pluginEnabled: true,
-		lifecycleHookPresent: false,
 		executionEntry: "explicit skill launcher",
 		runtimeRepairOwner: "agent workflow with human approval",
 	})

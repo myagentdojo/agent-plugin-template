@@ -25,6 +25,7 @@ import {
 import { copyPluginPayload, payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
+	hookDeclarationBody,
 	loadPluginConfig,
 	type PluginConfig,
 	writeGeneratedFiles,
@@ -217,12 +218,211 @@ export interface CodexProof {
 		enabledStateRestored: boolean
 		failureRestored: boolean
 	}
-	activation: {
+	installedState: {
 		pluginEnabled: boolean
-		lifecycleHookPresent: false
 		executionEntry: "explicit skill launcher"
 		runtimeRepairOwner: "agent workflow with human approval"
 	} | null
+}
+
+export interface InstalledCapabilityEvidence {
+	candidateCommit: string
+	candidatePayloadHash: string
+	installedPayloadHash: string
+	declarationHealth: "healthy"
+	directHandlerHealth: "healthy"
+	fixtureState: "matched"
+	currentSessionHook: "unknown" | "proved"
+	nativeActivation: "not-proved" | "proved"
+	externalCandidateQualification: "unknown" | "proved"
+	nativeDelegation: "not-proved" | "proved"
+	nativeQualification:
+		| { status: "not-proved"; receipt: null }
+		| { status: "proved"; receipt: NativeQualificationEvidence }
+		| { status: "failed"; receipt: NativeQualificationEvidence }
+	portableSkillsWithoutHooks: ["hello-world", "skill-a", "skill-b", "runtime-custody", "capability-tour"]
+}
+
+/** Hash-only conclusions that may be promoted from a private fresh-client receipt. */
+export interface NativeQualificationEvidence {
+	schema: "native-capability-qualification-v1"
+	client: "claude" | "codex"
+	platform: "macos" | "linux"
+	receiptSha256: string
+	sourceCandidateSha: string
+	archiveSha256: string
+	packagedPayloadHash: string
+	installedPayloadHash: string
+	derivedPayloadHash: string
+	conclusions: {
+		discovery: "proved" | "failed"
+		uiIdentity: "proved" | "failed"
+		skillSeededNativeDelegation: "proved" | "failed"
+		hostOwnedLifecycleEvidence: "proved" | "failed"
+		sessionStart: "proved" | "failed"
+		cleanStop: "silent" | "failed"
+		driftContinuation: "proved" | "failed"
+		reentry: "silent" | "failed"
+		hooksFallback: "proved" | "failed"
+		exactDefinitionTrust: "proved" | "failed" | "not-applicable"
+	}
+	evidence: {
+		discoverySha256: string
+		uiIdentitySha256: string
+		delegationLifecycleSha256: string
+		sessionStartSha256: string
+		cleanStopSha256: string
+		driftSha256: string
+		reentrySha256: string
+		hooksFallbackSha256: string
+		exactDefinitionTrustSha256?: string
+	}
+}
+
+export interface NativeQualificationBinding {
+	client: "claude" | "codex"
+	sourceCommit: string
+	archiveSha256: string
+	packagedPayloadHash: string
+	installedPayloadHash: string
+}
+
+export interface NativeQualificationPromotion {
+	summary: unknown
+	lineage: Omit<NativeQualificationBinding, "client">
+}
+
+function qualificationRecord(value: unknown): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error("native qualification promotion accepts only bounded summary and evidence hashes")
+	}
+	return value as Record<string, unknown>
+}
+
+function requireQualificationKeys(value: unknown, expected: string[]): Record<string, unknown> {
+	const record = qualificationRecord(value)
+	if (Object.keys(record).sort().join("\0") !== [...expected].sort().join("\0")) {
+		throw new Error("native qualification promotion accepts only bounded summary and evidence hashes")
+	}
+	return record
+}
+
+function qualificationSha256(value: unknown): value is string {
+	return typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
+}
+
+/** Validate a private receipt's promotable subset without accepting paths, transcripts, or session data. */
+export function promoteNativeQualificationEvidence(
+	input: unknown,
+	expected: NativeQualificationBinding,
+): NativeQualificationEvidence {
+	const summary = requireQualificationKeys(input, [
+		"schema",
+		"client",
+		"platform",
+		"receiptSha256",
+		"sourceCandidateSha",
+		"archiveSha256",
+		"packagedPayloadHash",
+		"installedPayloadHash",
+		"derivedPayloadHash",
+		"conclusions",
+		"evidence",
+	])
+	const conclusions = requireQualificationKeys(summary.conclusions, [
+		"discovery",
+		"uiIdentity",
+		"skillSeededNativeDelegation",
+		"hostOwnedLifecycleEvidence",
+		"sessionStart",
+		"cleanStop",
+		"driftContinuation",
+		"reentry",
+		"hooksFallback",
+		"exactDefinitionTrust",
+	])
+	const evidenceKeys = [
+		"discoverySha256",
+		"uiIdentitySha256",
+		"delegationLifecycleSha256",
+		"sessionStartSha256",
+		"cleanStopSha256",
+		"driftSha256",
+		"reentrySha256",
+		"hooksFallbackSha256",
+	]
+	if (expected.client === "codex") evidenceKeys.push("exactDefinitionTrustSha256")
+	const evidence = requireQualificationKeys(summary.evidence, evidenceKeys)
+
+	if (
+		summary.schema !== "native-capability-qualification-v1" ||
+		summary.client !== expected.client ||
+		(summary.platform !== "macos" && summary.platform !== "linux") ||
+		!qualificationSha256(summary.receiptSha256) ||
+		!qualificationSha256(summary.archiveSha256) ||
+		!qualificationSha256(summary.packagedPayloadHash) ||
+		!qualificationSha256(summary.installedPayloadHash) ||
+		!qualificationSha256(summary.derivedPayloadHash) ||
+		!Object.values(evidence).every(qualificationSha256)
+	) {
+		throw new Error("native qualification promotion contains invalid bounded evidence metadata")
+	}
+	if (
+		summary.sourceCandidateSha !== expected.sourceCommit ||
+		summary.archiveSha256 !== expected.archiveSha256 ||
+		summary.packagedPayloadHash !== expected.packagedPayloadHash ||
+		summary.installedPayloadHash !== expected.installedPayloadHash ||
+		summary.packagedPayloadHash !== summary.installedPayloadHash
+	) {
+		throw new Error("native qualification promotion does not match candidate lineage")
+	}
+	if (summary.derivedPayloadHash === summary.packagedPayloadHash) {
+		throw new Error("native qualification promotion requires a distinct derived payload hash")
+	}
+	for (const field of [
+		"discovery",
+		"uiIdentity",
+		"skillSeededNativeDelegation",
+		"hostOwnedLifecycleEvidence",
+		"sessionStart",
+		"driftContinuation",
+		"hooksFallback",
+	] as const) {
+		if (conclusions[field] !== "proved" && conclusions[field] !== "failed") {
+			throw new Error("native qualification promotion contains an invalid bounded conclusion")
+		}
+	}
+	for (const field of ["cleanStop", "reentry"] as const) {
+		if (conclusions[field] !== "silent" && conclusions[field] !== "failed") {
+			throw new Error("native qualification promotion contains an invalid bounded conclusion")
+		}
+	}
+	if (
+		(expected.client === "claude" && conclusions.exactDefinitionTrust !== "not-applicable") ||
+		(expected.client === "codex" &&
+			conclusions.exactDefinitionTrust !== "proved" &&
+			conclusions.exactDefinitionTrust !== "failed")
+	) {
+		throw new Error("native qualification promotion has the wrong exact-definition trust conclusion")
+	}
+	return input as NativeQualificationEvidence
+}
+
+function nativeQualificationPassed(receipt: NativeQualificationEvidence): boolean {
+	return (
+		receipt.conclusions.discovery === "proved" &&
+		receipt.conclusions.uiIdentity === "proved" &&
+		receipt.conclusions.skillSeededNativeDelegation === "proved" &&
+		receipt.conclusions.hostOwnedLifecycleEvidence === "proved" &&
+		receipt.conclusions.sessionStart === "proved" &&
+		receipt.conclusions.cleanStop === "silent" &&
+		receipt.conclusions.driftContinuation === "proved" &&
+		receipt.conclusions.reentry === "silent" &&
+		receipt.conclusions.hooksFallback === "proved" &&
+		(receipt.client === "claude"
+			? receipt.conclusions.exactDefinitionTrust === "not-applicable"
+			: receipt.conclusions.exactDefinitionTrust === "proved")
+	)
 }
 
 interface HarnessInstallProof {
@@ -235,6 +435,15 @@ interface HarnessInstallProof {
 	restorationPreflight: TaggedCheckout
 	claude: ClaudeProof
 	codex: CodexProof
+	capabilityEvidence: {
+		candidateCommit: string
+		fixtureCommit: string
+		candidatePayloadHash: string
+		clients: {
+			claude: InstalledCapabilityEvidence
+			codex: InstalledCapabilityEvidence
+		}
+	}
 	runtimeJourneys?: {
 		claude: NativeRuntimeJourney
 		codex: NativeRuntimeJourney
@@ -882,8 +1091,20 @@ function installCodex(
 export interface HostedHarnessInstallProof {
 	temporaryRoot: string
 	preflight: TaggedCheckout
-	claude: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
-	codex: { mode: "native-hosted-marketplace"; version: string; inventory: string[] }
+	claude: {
+		mode: "native-hosted-marketplace"
+		version: string
+		inventory: string[]
+		/** SHA-256 measured over the bytes each native client actually installed. */
+		installedPayloadHash: string
+	}
+	codex: {
+		mode: "native-hosted-marketplace"
+		version: string
+		inventory: string[]
+		/** SHA-256 measured over the bytes each native client actually installed. */
+		installedPayloadHash: string
+	}
 }
 
 /** Bind each native client to the same transport-specific hosted Git remote and ref. */
@@ -973,6 +1194,10 @@ export function proveHostedHarnessInstall(
 			throw new Error("Claude hosted install reported the wrong manifest version")
 		}
 		const claudeInventory = comparePayload(expected, claudeInstall.activeCachePath)
+		const claudeInstalledPayloadHash = payloadInventorySha256(
+			claudeInstall.activeCachePath,
+			claudeInventory,
+		)
 
 		const codexHome = join(temporaryRoot, "codex", "home")
 		const codexProject = join(temporaryRoot, "codex", "project")
@@ -988,6 +1213,10 @@ export function proveHostedHarnessInstall(
 		)
 		assertCodexReportedVersion(codexInstall, claudeManifest.version, "hosted install")
 		const codexInventory = comparePayload(expected, codexInstall.add.installedPath)
+		const codexInstalledPayloadHash = payloadInventorySha256(
+			codexInstall.add.installedPath,
+			codexInventory,
+		)
 		return {
 			temporaryRoot,
 			preflight: expected,
@@ -995,11 +1224,13 @@ export function proveHostedHarnessInstall(
 				mode: "native-hosted-marketplace",
 				version: claudeInstall.version,
 				inventory: claudeInventory,
+				installedPayloadHash: claudeInstalledPayloadHash,
 			},
 			codex: {
 				mode: "native-hosted-marketplace",
 				version: codexInstall.add.version,
 				inventory: codexInventory,
+				installedPayloadHash: codexInstalledPayloadHash,
 			},
 		}
 	} catch (error) {
@@ -1095,7 +1326,10 @@ export function assertReplacementAdmission(
  * const evidence = runtimeClosureEvidence(installedPath)
  * ```
  */
-export function runtimeClosureEvidence(pluginRoot: string): {
+export function runtimeClosureEvidence(
+	pluginRoot: string,
+	inventory: string[] = regularFiles(pluginRoot),
+): {
 	version: string
 	inventoryHash: string
 	payloadHash: string
@@ -1103,11 +1337,179 @@ export function runtimeClosureEvidence(pluginRoot: string): {
 	const manifest = JSON.parse(
 		readFileSync(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
 	)
-	const inventory = regularFiles(pluginRoot)
 	return {
 		version: manifest.version,
 		inventoryHash: createHash("sha256").update(inventory.join("\0")).digest("hex"),
 		payloadHash: payloadInventorySha256(pluginRoot, inventory),
+	}
+}
+
+/**
+ * Inspect installed bytes and direct handler mechanics without making a native claim.
+ *
+ * `currentSessionHook` derives only from the explicit `currentSessionMarker` input
+ * (the current session's native context marker); a qualification receipt is a
+ * separate evidence layer and never proves the current session's hook.
+ */
+export function proveInstalledCapabilityEvidence(
+	pluginRoot: string,
+	client: "claude" | "codex",
+	candidateCommit: string,
+	candidatePayloadHash: string,
+	qualification?: NativeQualificationPromotion,
+	currentSessionMarker?: boolean,
+): InstalledCapabilityEvidence {
+	if (!/^[a-f0-9]{40}$/.test(candidateCommit) || !/^[a-f0-9]{64}$/.test(candidatePayloadHash)) {
+		throw new Error("installed capability evidence requires a candidate commit and payload hash")
+	}
+	const manifest = JSON.parse(
+		readFileSync(join(pluginRoot, `.${client}-plugin`, "plugin.json"), "utf8"),
+	) as { version?: unknown; hooks?: unknown }
+	const declarationPath = `./hooks/${client}/hooks.json`
+	if (manifest.hooks !== declarationPath) {
+		throw new Error(`${client} installed declaration path is invalid`)
+	}
+	const declaration = JSON.parse(
+		readFileSync(join(pluginRoot, declarationPath), "utf8"),
+	) as Record<string, unknown>
+	if (JSON.stringify(declaration) !== JSON.stringify(hookDeclarationBody(client))) {
+		throw new Error(`${client} installed declaration bytes do not match the capability contract`)
+	}
+	const fixtureSource = readFileSync(
+		join(pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.source.json"),
+	)
+	const fixtureProjection = readFileSync(
+		join(pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+	)
+	if (!fixtureSource.equals(fixtureProjection)) {
+		throw new Error(`${client} installed lifecycle mechanics proof fixture differs`)
+	}
+	const installedInventory = regularFiles(pluginRoot)
+	const installed = runtimeClosureEvidence(pluginRoot, installedInventory)
+	if (installed.payloadHash !== candidatePayloadHash) {
+		throw new Error(`${client} installed payload hash differs from the candidate payload`)
+	}
+	const installedSkills = installedInventory
+		.filter((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path))
+		.map((path) => path.slice("skills/".length, -"/SKILL.md".length))
+	const portableSkills = [
+		"capability-tour",
+		"hello-world",
+		"runtime-custody",
+		"skill-a",
+		"skill-b",
+	]
+	if (JSON.stringify(installedSkills) !== JSON.stringify(portableSkills)) {
+		throw new Error(`${client} installed portable skill inventory differs`)
+	}
+	const executableSkills = ["hello-world", "skill-a", "skill-b"]
+	const launchers = installedInventory
+		.filter((path) => path.startsWith("bin/"))
+		.map((path) => path.slice("bin/".length))
+	const catalogProjection = readFileSync(
+		join(pluginRoot, "runtime", "skill-catalog.sh"),
+		"utf8",
+	)
+	if (JSON.stringify(launchers) !== JSON.stringify(executableSkills)) {
+		throw new Error(`${client} installed launcher inventory differs`)
+	}
+	for (const skillId of executableSkills) {
+		if (!catalogProjection.includes(`\n\t${skillId})`)) {
+			throw new Error(`${client} installed runtime catalog omits ${skillId}`)
+		}
+		const launcher = readFileSync(join(pluginRoot, "bin", skillId), "utf8")
+		if (!launcher.includes(`runtime/runtime-exec\" run ${skillId} --`) || launcher.includes("hooks/")) {
+			throw new Error(`${client} installed ${skillId} launcher is not hook-independent`)
+		}
+	}
+	if (catalogProjection.includes("capability-tour")) {
+		throw new Error(`${client} installed runtime catalog includes capability-tour`)
+	}
+	const bundleInventory = JSON.parse(
+		readFileSync(join(pluginRoot, "runtime", "bundle-inventory.json"), "utf8"),
+	) as { bundles?: Record<string, unknown> }
+	if (
+		JSON.stringify(Object.keys(bundleInventory.bundles ?? {}).sort()) !==
+		JSON.stringify(executableSkills)
+	) {
+		throw new Error(`${client} installed bundle inventory differs`)
+	}
+	if (typeof manifest.version !== "string") throw new Error(`${client} installed version is invalid`)
+	const handler = join(pluginRoot, "hooks", "native-capability-hook")
+	const runHandler = (event: "SessionStart" | "Stop", input: string) =>
+		Bun.spawnSync({
+			cmd: [handler, event, client],
+			cwd: pluginRoot,
+			env: { PATH: "/usr/bin:/bin" },
+			timeout: 15_000,
+			stdin: Buffer.from(input),
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+	const start = runHandler("SessionStart", '{"source":"startup"}')
+	// The hook reads its display name from the claude manifest for both clients;
+	// only that manifest carries a top-level displayName.
+	const identityManifest = JSON.parse(
+		readFileSync(join(pluginRoot, ".claude-plugin", "plugin.json"), "utf8"),
+	) as { displayName?: unknown }
+	if (typeof identityManifest.displayName !== "string" || !identityManifest.displayName) {
+		throw new Error(`${client} installed claude manifest displayName is invalid`)
+	}
+	const expectedContext = `${identityManifest.displayName} v${manifest.version} | ${client} | SessionStart:startup`
+	let startContext: unknown
+	try {
+		startContext = JSON.parse(start.stdout.toString()).hookSpecificOutput?.additionalContext
+	} catch {
+		startContext = undefined
+	}
+	if (start.exitCode !== 0 || start.stderr.toString() !== "" || startContext !== expectedContext) {
+		throw new Error(`${client} installed direct SessionStart handler check failed`)
+	}
+	const stop = runHandler("Stop", '{"stop_hook_active":false}')
+	if (stop.exitCode !== 0 || stop.stdout.toString() !== "" || stop.stderr.toString() !== "") {
+		throw new Error(`${client} installed direct Stop handler check failed`)
+	}
+	let nativeQualification: InstalledCapabilityEvidence["nativeQualification"] = {
+		status: "not-proved",
+		receipt: null,
+	}
+	if (qualification !== undefined) {
+		if (
+			qualification.lineage.sourceCommit !== candidateCommit ||
+			qualification.lineage.packagedPayloadHash !== candidatePayloadHash ||
+			qualification.lineage.installedPayloadHash !== installed.payloadHash
+		) {
+			throw new Error("native qualification lineage does not match the installed candidate proof")
+		}
+		const receipt = promoteNativeQualificationEvidence(qualification.summary, {
+			client,
+			...qualification.lineage,
+		})
+		nativeQualification = {
+			status: nativeQualificationPassed(receipt) ? "proved" : "failed",
+			receipt,
+		}
+	}
+	const nativeProved = nativeQualification.status === "proved"
+	return {
+		candidateCommit,
+		candidatePayloadHash,
+		installedPayloadHash: installed.payloadHash,
+		declarationHealth: "healthy",
+		directHandlerHealth: "healthy",
+		fixtureState: "matched",
+		currentSessionHook: currentSessionMarker === true ? "proved" : "unknown",
+		nativeActivation: nativeProved ? "proved" : "not-proved",
+		externalCandidateQualification: nativeProved ? "proved" : "unknown",
+		nativeDelegation: nativeProved ? "proved" : "not-proved",
+		nativeQualification,
+		portableSkillsWithoutHooks: [
+			"hello-world",
+			"skill-a",
+			"skill-b",
+			"runtime-custody",
+			"capability-tour",
+		],
 	}
 }
 
@@ -1241,36 +1643,55 @@ function proveNativeRuntimeJourney(
 	}
 }
 
-/** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
-export function resolveCleanSourceCommit(repositoryRoot: string): string {
-	const sourceStatus = Bun.spawnSync({
-		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+function resolveCleanPathsCommit(
+	repositoryRoot: string,
+	paths: string[],
+	errors: { status: string; dirty: string; resolve: string; invalid?: string },
+): string {
+	const status = Bun.spawnSync({
+		cmd: ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", ...paths],
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: 15_000,
 	})
-	if (sourceStatus.exitCode !== 0) {
-		throw new Error("native receipt could not verify source checkout cleanliness")
-	}
-	if (sourceStatus.stdout.toString().trim() !== "") {
-		throw new Error(
-			"native runtime qualification requires a clean source checkout so sourceCommit matches the installed payload bytes",
-		)
-	}
-	const sourceCommitResult = Bun.spawnSync({
+	if (status.exitCode !== 0) throw new Error(errors.status)
+	if (status.stdout.toString().trim() !== "") throw new Error(errors.dirty)
+	const head = Bun.spawnSync({
 		cmd: ["git", "rev-parse", "HEAD"],
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: 15_000,
 	})
-	if (sourceCommitResult.exitCode !== 0) {
-		throw new Error("native receipt could not resolve source commit")
-	}
-	const sourceCommit = sourceCommitResult.stdout.toString().trim()
-	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) {
-		throw new Error("native receipt source commit is invalid")
-	}
+	if (head.exitCode !== 0) throw new Error(errors.resolve)
+	const sourceCommit = head.stdout.toString().trim()
+	if (!/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error(errors.invalid ?? errors.resolve)
 	return sourceCommit
+}
+
+/** Resolve the exact commit used by a source-bound native receipt, refusing dirty bytes. */
+export function resolveCleanSourceCommit(repositoryRoot: string): string {
+	return resolveCleanPathsCommit(
+		repositoryRoot,
+		["plugin", "runtime", "packages", "package.json", "bun.lock", "bunfig.toml", "plugin.config.json"],
+		{
+			status: "native receipt could not verify candidate payload source cleanliness",
+			dirty:
+				"native runtime qualification requires clean candidate payload sources so sourceCommit matches the installed payload bytes",
+			resolve: "native receipt could not resolve source commit",
+			invalid: "native receipt source commit is invalid",
+		},
+	)
+}
+
+/** Bind automated payload evidence to Git HEAD while allowing tooling-only worktree changes. */
+export function resolveCandidatePayloadCommit(repositoryRoot: string): string {
+	return resolveCleanPathsCommit(repositoryRoot, ["plugin"], {
+		status: "candidate proof could not inspect plugin payload status",
+		dirty: "candidate proof requires plugin payload bytes to match the candidate commit",
+		resolve: "candidate proof could not resolve the source commit",
+	})
 }
 
 function runHarnessInstallProof(
@@ -1281,7 +1702,11 @@ function runHarnessInstallProof(
 ): HarnessInstallProof {
 	const sourceCommit = qualifyRuntimeJourney
 		? resolveCleanSourceCommit(repositoryRoot)
-		: undefined
+		: resolveCandidatePayloadCommit(repositoryRoot)
+	const configuredSourceCommit = process.env.SOURCE_COMMIT || process.env.GITHUB_SHA || undefined
+	if (configuredSourceCommit !== undefined && configuredSourceCommit !== sourceCommit) {
+		throw new Error("candidate proof source commit does not match Git HEAD")
+	}
 	const fixture = createFixtureRelease(repositoryRoot, temporaryRoot)
 	admitGitTransport({
 		source: fixture.repositoryRoot,
@@ -1297,7 +1722,7 @@ function runHarnessInstallProof(
 	const pluginConfig = loadPluginConfig(repositoryRoot)
 	const nativeIdentity = {
 		repository: pluginConfig.repository,
-		sourceCommit: sourceCommit ?? fixture.base.resolvedSha,
+		sourceCommit,
 		runtimeLockSha256: createHash("sha256")
 			.update(readFileSync(join(repositoryRoot, "runtime", "runtime.lock.json")))
 			.digest("hex"),
@@ -1343,15 +1768,37 @@ function runHarnessInstallProof(
 	}
 	const trustBase = runtimeClosureEvidence(join(fixture.base.checkoutRoot, "plugin"))
 	const trustTarget = runtimeClosureEvidence(join(fixture.target.checkoutRoot, "plugin"))
+	const sourceCandidate = runtimeClosureEvidence(join(repositoryRoot, "plugin"))
 	if (
 		trustBase.inventoryHash !== trustTarget.inventoryHash ||
-		trustBase.payloadHash === trustTarget.payloadHash
+		trustBase.payloadHash === trustTarget.payloadHash ||
+		trustBase.payloadHash !== sourceCandidate.payloadHash
 	) {
 		throw new Error("release change did not preserve inventory while changing exact payload bytes")
 	}
 	const versionAgreement =
 		claude.version === fixture.base.manifestVersion && codex.version === fixture.base.manifestVersion
 	if (!versionAgreement) throw new Error("Claude and Codex installed versions do not agree with the tag")
+	const candidatePayloadHash = sourceCandidate.payloadHash
+	const capabilityEvidence = {
+		candidateCommit: sourceCommit,
+		fixtureCommit: fixture.base.resolvedSha,
+		candidatePayloadHash,
+		clients: {
+			claude: proveInstalledCapabilityEvidence(
+				claude.activeCachePath,
+				"claude",
+				sourceCommit,
+				candidatePayloadHash,
+			),
+			codex: proveInstalledCapabilityEvidence(
+				codex.installedPath,
+				"codex",
+				sourceCommit,
+				candidatePayloadHash,
+			),
+		},
+	}
 	const runtimeJourneys = qualifyRuntimeJourney
 		? {
 				claude: proveNativeRuntimeJourney(
@@ -1380,11 +1827,12 @@ function runHarnessInstallProof(
 		restorationPreflight: fixture.base,
 		claude,
 		codex,
+		capabilityEvidence,
 		runtimeJourneys,
 		versionAgreement,
 		payloadClosureChanged: true,
 		skips,
-		nextAction: "Review the installed-payload mechanics evidence. Before release, capture candidate-bound Claude task, Codex task, and Codex Desktop human-approval receipts; this fixture does not claim agent workflow proof.",
+		nextAction: "Review the candidate-bound package, declaration, direct-handler, and installed-payload evidence. Fresh-client receipts separately own native activation, trust, UI, and delegation; this automated proof claims none of them.",
 	}
 }
 

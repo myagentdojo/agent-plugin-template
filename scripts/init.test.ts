@@ -203,8 +203,8 @@ test("template user initializes both harness manifests from one metadata source"
 		version: initialVersion,
 		defaultEnabled: false,
 		skills: "./skills/",
+		hooks: "./hooks/claude/hooks.json",
 	})
-	expect(claudeManifest).not.toHaveProperty("hooks")
 	const claudeMarketplace = JSON.parse(
 		readFileSync(join(temporaryRoot, ".claude-plugin", "marketplace.json"), "utf8"),
 	)
@@ -221,9 +221,19 @@ test("template user initializes both harness manifests from one metadata source"
 		name: "dojo-hello",
 		version: initialVersion,
 		skills: "./skills/",
-		interface: { displayName: "Dojo Hello" },
+		hooks: "./hooks/codex/hooks.json",
+		interface: {
+			displayName: "Dojo Hello",
+			brandColor: "#3B5CCC",
+			composerIcon: "./assets/composer-icon.svg",
+			logo: "./assets/logo.svg",
+		},
 	})
-	expect(codexManifest).not.toHaveProperty("hooks")
+	for (const field of ["composerIcon", "logo"] as const) {
+		const assetPath = join(temporaryRoot, "plugin", codexManifest.interface[field])
+		expect(existsSync(assetPath)).toBe(true)
+		expect(readFileSync(assetPath, "utf8")).not.toMatch(/Harness Plugin Prototype|dojo-hello|Dojo Hello/)
+	}
 
 	const codexMarketplace = JSON.parse(
 		readFileSync(join(temporaryRoot, ".agents", "plugins", "marketplace.json"), "utf8"),
@@ -348,7 +358,8 @@ test("initialization resets recipient release lineage to 0.1.0", () => {
 	)
 	expect(releaseConfig.packages["."]["package-name"]).toBe("dojo-hello")
 
-	expect(existsSync(join(temporaryRoot, "plugin", "hooks"))).toBe(false)
+	expect(existsSync(join(temporaryRoot, "plugin", "hooks", "claude", "hooks.json"))).toBe(true)
+	expect(existsSync(join(temporaryRoot, "plugin", "hooks", "codex", "hooks.json"))).toBe(true)
 })
 
 test("reinitialization without force preserves recipient release files", () => {
@@ -582,7 +593,7 @@ test("package accepts an explicit source commit when Git metadata is unavailable
 	expect(checksums.sourceCommit).toBe(sourceCommit)
 })
 
-test("package preserves filenames containing newlines and backslashes", () => {
+test("package rejects payload files outside the exact expected inventory", () => {
 	const temporaryRoot = copyTemplate("agent-plugin-template-package-filenames-")
 	const init = initializeTemplate(temporaryRoot)
 	expect(init.exitCode, init.stderr.toString()).toBe(0)
@@ -590,21 +601,9 @@ test("package preserves filenames containing newlines and backslashes", () => {
 	const unusualPath = join(temporaryRoot, "plugin", "runtime", unusualName)
 	writeFileSync(unusualPath, "unusual filename payload\n")
 	const sourceCommit = commitPackageCheckout(temporaryRoot)
-	const result = successfulPackageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
-	const extractRoot = mkdtempSync(join(tmpdir(), "agent-plugin-template-package-extract-"))
-	try {
-		const extracted = Bun.spawnSync({
-			cmd: ["tar", "-xzf", result.archive, "-C", extractRoot],
-			stdout: "pipe",
-			stderr: "pipe",
-		})
-		expect(extracted.exitCode, extracted.stderr.toString()).toBe(0)
-		const archivedPath = join(extractRoot, `dojo-hello-${initialVersion}`, "runtime", unusualName)
-		expect(existsSync(archivedPath)).toBe(true)
-		expect(readFileSync(archivedPath, "utf8")).toBe("unusual filename payload\n")
-	} finally {
-		rmSync(extractRoot, { recursive: true, force: true })
-	}
+	const packaged = packageWithSource(temporaryRoot, "SOURCE_COMMIT", sourceCommit)
+	expect(packaged.exitCode).not.toBe(0)
+	expect(packaged.stderr.toString()).toContain("Bun payload closure: unexpected payload file")
 })
 
 test.each(["SOURCE_COMMIT", "GITHUB_SHA"] as const)(

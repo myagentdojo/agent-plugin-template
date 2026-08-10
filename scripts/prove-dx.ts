@@ -40,11 +40,31 @@ const codexManifest = JSON.parse(
 if (claudeManifest.version !== codexManifest.version) {
 	throw new Error("native manifest versions do not match")
 }
-if (claudeManifest.hooks !== undefined || codexManifest.hooks !== undefined) {
-	throw new Error("runtime lifecycle hooks must not be active in native manifests")
+if (
+	claudeManifest.hooks !== "./hooks/claude/hooks.json" ||
+	codexManifest.hooks !== "./hooks/codex/hooks.json"
+) {
+	throw new Error("native manifests do not reference the exact client hook declarations")
 }
-if (existsSync(join(root, "plugin", "hooks"))) {
-	throw new Error("plugin payload must not carry runtime lifecycle hook definitions")
+for (const path of [
+	"plugin/hooks/claude/hooks.json",
+	"plugin/hooks/codex/hooks.json",
+	"plugin/hooks/native-capability-hook",
+	"plugin/hooks/fixture/lifecycle-mechanics-proof.source.json",
+	"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+]) {
+	if (!existsSync(join(root, path))) throw new Error(`plugin payload is missing ${path}`)
+}
+const catalog = JSON.parse(readFileSync(join(root, "runtime", "skill-catalog.json"), "utf8"))
+const bundles = JSON.parse(
+	readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json"), "utf8"),
+)
+if (
+	Object.hasOwn(catalog.skills, "capability-tour") ||
+	Object.hasOwn(bundles.bundles, "capability-tour") ||
+	existsSync(join(root, "plugin", "bin", "capability-tour"))
+) {
+	throw new Error("model-only capability-tour entered the executable runtime closure")
 }
 
 for (const marketplacePath of [
@@ -81,6 +101,12 @@ console.log(
 			"no npm publication",
 			"Claude live reload is explicit",
 			"Codex reload means a fresh task",
+			"direct handler checks do not prove native activation",
 		],
+		automatedClaimBoundary: {
+			nativeActivation: "not-proved",
+			nativeDelegation: "not-proved",
+			qualificationReceiptsIngested: false,
+		},
 	}),
 )

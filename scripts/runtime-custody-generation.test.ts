@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { expect, test } from "bun:test"
 import { fileURLToPath } from "node:url"
 
@@ -22,7 +23,6 @@ test("one Bun version is pinned across packageManager, bun.lock, CI, and the run
 	expect(await Bun.file(new URL("../bun.lock", import.meta.url)).exists()).toBe(true)
 
 	const workflowsDirectory = fileURLToPath(new URL("../.github/workflows/", import.meta.url))
-	const { readdirSync, readFileSync } = await import("node:fs")
 	const workflowFiles = readdirSync(workflowsDirectory).filter((name) => name.endsWith(".yml"))
 	expect(workflowFiles.length).toBeGreaterThan(0)
 	let pinnedWorkflows = 0
@@ -90,9 +90,19 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 			},
 		},
 	})
+	const installedSkills = readdirSync(
+		fileURLToPath(new URL("../plugin/skills", import.meta.url)),
+	).sort()
+	expect(installedSkills).toEqual([
+		"capability-tour",
+		"hello-world",
+		"runtime-custody",
+		"skill-a",
+		"skill-b",
+	])
+	expect(catalog.skills).not.toHaveProperty("capability-tour")
 
 	// One logical catalog owns workspace, SKILL, and runtime identity per skill.
-	const { existsSync } = await import("node:fs")
 	for (const [skillId, skill] of Object.entries(
 		catalog.skills as Record<string, { workspace?: string }>,
 	)) {
@@ -112,12 +122,22 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 	for (const skillId of Object.keys(catalog.skills)) {
 		const launcher = await Bun.file(new URL(`../plugin/bin/${skillId}`, import.meta.url)).text()
 		expect(launcher).toContain(`runtime-exec\" run ${skillId} --`)
+		expect(launcher).not.toContain("hooks/")
 		const skillDocument = await Bun.file(
 			new URL(`../plugin/skills/${skillId}/SKILL.md`, import.meta.url),
 		).text()
 		expect(skillDocument).not.toContain("Status: not yet invocable")
 	}
 	expect(generated.filter((file) => file.path.startsWith("plugin/bin/")).length).toBe(3)
+	const launcherNames = readdirSync(
+		fileURLToPath(new URL("../plugin/bin", import.meta.url)),
+	).sort()
+	expect(launcherNames).toEqual(["hello-world", "skill-a", "skill-b"])
+	const bundleInventory = await Bun.file(
+		new URL("../plugin/runtime/bundle-inventory.json", import.meta.url),
+	).json()
+	expect(Object.keys(bundleInventory.bundles).sort()).toEqual(["hello-world", "skill-a", "skill-b"])
+	expect(bundleInventory.bundles).not.toHaveProperty("capability-tour")
 
 	const lockProjection = await Bun.file(
 		new URL("../plugin/runtime/runtime-lock.sh", import.meta.url),

@@ -14,6 +14,7 @@ const expected: DistributionChecksumIdentity = {
 	archive: "example-plugin-1.2.3.tar.gz",
 	archiveBytes: 1234,
 	archiveSha256: "b".repeat(64),
+	payloadInventorySha256: "e".repeat(64),
 }
 
 test.each([
@@ -25,6 +26,7 @@ test.each([
 	["archive", "wrong.tar.gz"],
 	["archiveBytes", 9999],
 	["archiveSha256", "d".repeat(64)],
+	["payloadInventorySha256", "f".repeat(64)],
 ] as const)("distribution proof rejects mismatched %s", (field, value) => {
 	expect(() =>
 		assertDistributionChecksumIdentity({ ...expected, [field]: value }, expected),

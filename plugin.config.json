@@ -3,7 +3,7 @@
   "name": "harness-native-plugin-prototype",
   "displayName": "Harness Plugin Prototype",
   "version": "0.2.0",
-  "description": "Dependency-closed skills using a verified, plugin-managed Bun runtime",
+  "description": "Portable Bun skills and a guided native capability tour for Claude Code and Codex",
   "author": {
     "name": "Prototype"
   },
@@ -14,17 +14,23 @@
     "bun"
   ],
   "category": "Developer Tools",
-  "shortDescription": "Run a portable plugin skill",
-  "longDescription": "Dependency-closed skills for Claude Code and Codex using one verified, plugin-managed Bun runtime.",
+  "shortDescription": "Tour native plugin features",
+  "longDescription": "Run a guided capability tour across Claude Code and Codex, inspect native lifecycle declarations, and keep using dependency-closed skills through one verified, plugin-managed Bun runtime.",
   "capabilities": [
     "Execute verified Bun code",
     "Download Bun after approval",
     "Write private runtime cache",
-    "Use network during repair"
+    "Use network during repair",
+    "Inspect native plugin declarations",
+    "Prove lifecycle hook mechanics",
+    "Verify with a native subagent"
   ],
   "defaultPrompts": [
-    "Run the hello-world distribution proof."
+    "Run the native plugin capability tour."
   ],
+  "brandColor": "#3B5CCC",
+  "composerIcon": "./assets/composer-icon.svg",
+  "logo": "./assets/logo.svg",
   "canary": {
     "owner": "myagentdojo",
     "actor": "myagentdojo",

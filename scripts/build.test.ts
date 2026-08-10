@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -1458,14 +1459,39 @@ function runRepositoryBuild(): {
 	return { bundles: inventory.bundles, notices: inventory.notices }
 }
 
-test("workspace bundles build, relocate, and execute without workspaces or node_modules", () => {
+test("workspace bundles build, relocate, and execute without hooks, workspaces, or node_modules", () => {
 	const result = runRepositoryBuild()
 	expect(Object.keys(result.bundles)).toEqual(["hello-world", "skill-a", "skill-b"])
 	validateBundleClosure(root)
 
 	const installedRoot = temporaryDirectory("relocated-plugin-")
 	copyPluginPayload(root, installedRoot)
+	rmSync(join(installedRoot, "hooks"), { recursive: true })
+	expect(readFileSync(join(installedRoot, "skills", "capability-tour", "SKILL.md"), "utf8")).toContain(
+		"capability tour",
+	)
 	const environment = { PATH: "/usr/bin:/bin", HOME: installedRoot }
+	const helloWorld = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			join(installedRoot, result.bundles["hello-world"].path),
+			"hello",
+			"--json",
+		],
+		cwd: installedRoot,
+		env: { ...environment, HELLO_WORLD_RUN_ID: "relocated-offline-proof" },
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	expect(helloWorld.stderr.toString()).toBe("")
+	expect(helloWorld.exitCode).toBe(0)
+	expect(JSON.parse(helloWorld.stdout.toString())).toEqual({
+		ok: true,
+		command: "hello",
+		message: "Hello, world!",
+		sideEffects: "none",
+		runId: "relocated-offline-proof",
+	})
 
 	const skillA = Bun.spawnSync({
 		cmd: [process.execPath, join(installedRoot, result.bundles["skill-a"].path)],
@@ -1528,10 +1554,86 @@ test("Bun-only release admission accepts the complete current payload", () => {
 	expect(() => validateBunOnlyPayload(bunPayloadFixture())).not.toThrow()
 })
 
+test("Bun-only release admission rejects an arbitrary model-only skill", () => {
+	const fixtureRoot = bunPayloadFixture()
+	mkdirSync(join(fixtureRoot, "plugin", "skills", "unexpected-model-skill"), {
+		recursive: true,
+	})
+	writeFileSync(
+		join(fixtureRoot, "plugin", "skills", "unexpected-model-skill", "SKILL.md"),
+		"# Unexpected model skill\n",
+	)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/skill sidecar inventory/)
+})
+
+test("Bun-only release admission rejects an arbitrary executable sidecar", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", "hooks", "unexpected-handler"), "#!/bin/sh\n")
+	chmodSync(join(fixtureRoot, "plugin", "hooks", "unexpected-handler"), 0o755)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/hook sidecar inventory/)
+})
+
+test.each([
+	[
+		"hooks/native-capability-hook",
+		"Bun payload closure: missing hooks/native-capability-hook",
+	],
+	["assets/logo.svg", "Bun payload closure: missing assets/logo.svg"],
+	[
+		"skills/capability-tour/references/capability-reviewer.md",
+		'unsafe plugin payload entry "plugin/skills/capability-tour/references": empty directory',
+	],
+] as const)("Bun-only release admission rejects missing capability sidecar %s", (path, rejection) => {
+	const fixtureRoot = bunPayloadFixture()
+	rmSync(join(fixtureRoot, "plugin", path))
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(rejection)
+})
+
+test("Bun-only release admission rejects a non-executable native hook", () => {
+	const fixtureRoot = bunPayloadFixture()
+	chmodSync(join(fixtureRoot, "plugin", "hooks", "native-capability-hook"), 0o644)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		"Bun payload closure: hooks/native-capability-hook is not executable",
+	)
+})
+
+test.each([
+	"assets/orphan.svg",
+	"skills/capability-tour/references/orphan.md",
+] as const)("Bun-only release admission rejects orphaned capability sidecar %s", (path) => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", path), "orphan\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/sidecar inventory/)
+})
+
+test("Bun-only release admission rejects an unsupported component surface", () => {
+	const fixtureRoot = bunPayloadFixture()
+	mkdirSync(join(fixtureRoot, "plugin", "mcp"))
+	writeFileSync(join(fixtureRoot, "plugin", "mcp", "server.json"), "{}\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/unsupported payload surface mcp/)
+})
+
 test("Bun-only release admission rejects a legacy runtime surface", () => {
 	const fixtureRoot = bunPayloadFixture()
 	writeFileSync(join(fixtureRoot, "plugin", "runtime", "qjs-legacy"), "legacy\n")
 	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(/legacy runtime surface/)
+})
+
+test("Bun-only release admission rejects an unlisted runtime executable", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", "runtime", "rogue.sh"), "#!/bin/sh\n")
+	chmodSync(join(fixtureRoot, "plugin", "runtime", "rogue.sh"), 0o755)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		/unexpected payload file runtime\/rogue\.sh/,
+	)
+})
+
+test("Bun-only release admission rejects an unlisted manifest sidecar", () => {
+	const fixtureRoot = bunPayloadFixture()
+	writeFileSync(join(fixtureRoot, "plugin", ".claude-plugin", "extra.json"), "{}\n")
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
+		/unexpected payload file \.claude-plugin\/extra\.json/,
+	)
 })
 
 test("Bun-only release admission rejects an orphaned launcher", () => {

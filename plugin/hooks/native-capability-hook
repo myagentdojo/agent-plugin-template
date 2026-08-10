@@ -1,0 +1,405 @@
+#!/bin/sh
+set -u
+
+PATH=/usr/bin:/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
+warning='This plugin could not run its lifecycle mechanics proof; continuing without blocking.'
+
+warn() {
+	printf '%s\n' "$warning" >&2
+	exit 0
+}
+
+case "$0" in
+/*/hooks/native-capability-hook) plugin_root=${0%/hooks/native-capability-hook} ;;
+*) warn ;;
+esac
+
+event=${1-}
+client=${2-}
+[ "$#" -eq 2 ] || warn
+case "$event:$client" in
+SessionStart:claude|SessionStart:codex|Stop:claude|Stop:codex) ;;
+*) warn ;;
+esac
+
+for required_tool in awk dd mktemp od rm wc; do
+	command -v "$required_tool" >/dev/null 2>&1 || warn
+done
+temporary_directory=$(mktemp -d /tmp/harness-native-capability-hook.XXXXXX 2>/dev/null) || warn
+case "$temporary_directory" in
+/tmp/harness-native-capability-hook.*) ;;
+*) warn ;;
+esac
+trap 'rm -rf "$temporary_directory" >/dev/null 2>&1' 0 1 2 3 15
+input_file=$temporary_directory/input.json
+: >"$input_file" || warn
+input_size=0
+while [ "$input_size" -lt 1048577 ]; do
+	previous_size=$input_size
+	remaining_bytes=$((1048577 - input_size))
+	dd bs="$remaining_bytes" count=1 >>"$input_file" 2>/dev/null || warn
+	input_size=$(wc -c <"$input_file" 2>/dev/null) || warn
+	[ "$input_size" -gt "$previous_size" ] || break
+done
+[ "$input_size" -le 1048576 ] || warn
+
+# Validate Unicode scalar-value UTF-8 before the byte-oriented JSON parser can
+# authorize output. POSIX od keeps this independent of host locale and awk
+# multibyte behavior.
+valid_utf8() {
+	utf8_bytes=$temporary_directory/utf8.bytes
+	od -An -t u1 -v "$1" >"$utf8_bytes" 2>/dev/null || return 1
+	awk '
+	{
+		for (byte_index = 1; byte_index <= NF; byte_index++) {
+			byte = $byte_index + 0
+			if (remaining > 0) {
+				minimum = 128
+				maximum = 191
+				if (first_continuation) {
+					minimum = first_minimum
+					maximum = first_maximum
+					first_continuation = 0
+				}
+				if (byte < minimum || byte > maximum) exit 1
+				remaining--
+				continue
+			}
+			first_continuation = 0
+			if (byte <= 127) continue
+			if (byte >= 194 && byte <= 223) {
+				remaining = 1
+			} else if (byte == 224) {
+				remaining = 2
+				first_continuation = 1
+				first_minimum = 160
+				first_maximum = 191
+			} else if ((byte >= 225 && byte <= 236) || (byte >= 238 && byte <= 239)) {
+				remaining = 2
+			} else if (byte == 237) {
+				remaining = 2
+				first_continuation = 1
+				first_minimum = 128
+				first_maximum = 159
+			} else if (byte == 240) {
+				remaining = 3
+				first_continuation = 1
+				first_minimum = 144
+				first_maximum = 191
+			} else if (byte >= 241 && byte <= 243) {
+				remaining = 3
+			} else if (byte == 244) {
+				remaining = 3
+				first_continuation = 1
+				first_minimum = 128
+				first_maximum = 143
+			} else {
+				exit 1
+			}
+		}
+	}
+	END { if (remaining != 0) exit 1 }
+	' "$utf8_bytes"
+}
+
+# Validate one JSON object and extract one unescaped top-level member. Both hook
+# inputs and manifests use this parser so malformed unrelated members cannot
+# authorize a Stop block or produce startup context. Input and nesting caps keep
+# hostile payloads bounded; any unsupported or uncertain input fails open.
+top_level_member() {
+	valid_utf8 "$1" || return 2
+	awk -v target="$2" -v expected_kind="$3" '
+	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
+	function charat(i) { return char_indexed ? chars[i] : substr(document, i, 1) }
+	function skip_whitespace(i) {
+		while (i <= document_length && whitespace(charat(i))) i++
+		return i
+	}
+	function parse_string(start,    i,c,e,k,content_length) {
+		parsed_raw = ""
+		parsed_encoded = ""
+		parsed_plain = 1
+		parsed_too_long = 0
+		for (i = start + 1; i <= document_length; i++) {
+			c = charat(i)
+			if (c == "\"") {
+				parsed_end = i
+				content_length = i - start - 1
+				if (content_length > short_string_limit) parsed_too_long = 1
+				return 1
+			}
+			if (i - start <= short_string_limit) parsed_encoded = parsed_encoded c
+			if (c == "\\") {
+				parsed_plain = 0
+				i++
+				if (i > document_length) return 0
+				e = charat(i)
+				if (i - start <= short_string_limit) parsed_encoded = parsed_encoded e
+				if (e == "u") {
+					for (k = 1; k <= 4; k++) {
+						i++
+						if (charat(i) !~ /^[0-9A-Fa-f]$/) return 0
+						if (i - start <= short_string_limit) parsed_encoded = parsed_encoded charat(i)
+					}
+				} else if (e !~ /^["\\\/bfnrt]$/) return 0
+				continue
+			}
+			if (c ~ /[[:cntrl:]]/) return 0
+			if (parsed_plain && i - start <= short_string_limit) parsed_raw = parsed_raw c
+		}
+		return 0
+	}
+	function parse_number(start,    i,c) {
+		i = start
+		if (charat(i) == "-") i++
+		if (charat(i) == "0") {
+			i++
+			if (charat(i) ~ /^[0-9]$/) return 0
+		} else {
+			if (charat(i) !~ /^[1-9]$/) return 0
+			while (charat(i) ~ /^[0-9]$/) i++
+		}
+		if (charat(i) == ".") {
+			i++
+			if (charat(i) !~ /^[0-9]$/) return 0
+			while (charat(i) ~ /^[0-9]$/) i++
+		}
+		c = charat(i)
+		if (c == "e" || c == "E") {
+			i++
+			c = charat(i)
+			if (c == "+" || c == "-") i++
+			if (charat(i) !~ /^[0-9]$/) return 0
+			while (charat(i) ~ /^[0-9]$/) i++
+		}
+		parsed_end = i - 1
+		parsed_kind = "number"
+		return 1
+	}
+	function parse_array(start, depth,    i,value_end) {
+		if (depth > nesting_limit) return 0
+		i = skip_whitespace(start + 1)
+		if (charat(i) == "]") { parsed_end = i; return 1 }
+		for (;;) {
+			if (!parse_value(i, depth)) return 0
+			value_end = parsed_end
+			i = skip_whitespace(value_end + 1)
+			if (charat(i) == "]") { parsed_end = i; return 1 }
+			if (charat(i) != ",") return 0
+			i = skip_whitespace(i + 1)
+			if (charat(i) == "]") return 0
+		}
+	}
+	function parse_object(start, depth,    i,key,key_plain,key_too_long,key_end,value_end,value_kind,value_raw,value_encoded,value_plain,value_too_long,kind_matches) {
+		if (depth > nesting_limit) return 0
+		i = skip_whitespace(start + 1)
+		if (charat(i) == "}") { parsed_end = i; return 1 }
+		for (;;) {
+			if (charat(i) != "\"" || !parse_string(i)) return 0
+			key = parsed_raw
+			key_plain = parsed_plain
+			key_too_long = parsed_too_long
+			key_end = parsed_end
+			# Escaped top-level keys can decode to the protected target. Treat the
+			# object as ambiguous instead of authorizing a block from a raw spelling.
+			if (depth == 0 && !key_plain) return 0
+			i = skip_whitespace(key_end + 1)
+			if (charat(i) != ":") return 0
+			i = skip_whitespace(i + 1)
+			if (!parse_value(i, depth)) return 0
+			value_end = parsed_end
+			value_kind = parsed_kind
+			value_raw = parsed_raw
+			value_encoded = parsed_encoded
+			value_plain = parsed_plain
+			value_too_long = parsed_too_long
+			if (depth == 0 && key_plain && !key_too_long && key == target) {
+				matches++
+				kind_matches = value_kind == expected_kind || (value_kind == "string" && expected_kind == "encoded-string")
+				if (matches > 1 || !kind_matches) return 0
+				if (expected_kind == "string") {
+					if (!value_plain || value_too_long) return 0
+					target_value = value_raw
+				} else if (expected_kind == "encoded-string") {
+					if (value_too_long) return 0
+					target_value = value_encoded
+				} else target_value = value_raw
+			}
+			i = skip_whitespace(value_end + 1)
+			if (charat(i) == "}") { parsed_end = i; return 1 }
+			if (charat(i) != ",") return 0
+			i = skip_whitespace(i + 1)
+			if (charat(i) == "}") return 0
+		}
+	}
+	function parse_value(start, depth,    c) {
+		start = skip_whitespace(start)
+		c = charat(start)
+		parsed_raw = ""
+		parsed_plain = 0
+		parsed_too_long = 0
+		if (c == "\"") {
+			if (!parse_string(start)) return 0
+			parsed_kind = "string"
+			return 1
+		}
+		if (c == "{") {
+			if (!parse_object(start, depth + 1)) return 0
+			parsed_kind = "object"
+			return 1
+		}
+		if (c == "[") {
+			if (!parse_array(start, depth + 1)) return 0
+			parsed_kind = "array"
+			return 1
+		}
+		if (substr(document, start, 4) == "true") {
+			parsed_end = start + 3
+			parsed_kind = "boolean"
+			parsed_raw = "true"
+			return 1
+		}
+		if (substr(document, start, 5) == "false") {
+			parsed_end = start + 4
+			parsed_kind = "boolean"
+			parsed_raw = "false"
+			return 1
+		}
+		if (substr(document, start, 4) == "null") {
+			parsed_end = start + 3
+			parsed_kind = "null"
+			return 1
+		}
+		return parse_number(start)
+	}
+	{
+		if (NR > 1) pending = pending "\n"
+		pending = pending $0
+		if (length(pending) >= 4096) { document = document pending; pending = "" }
+	}
+	END {
+		document = document pending
+		document_length = length(document)
+		short_string_limit = 256
+		nesting_limit = 128
+		char_indexed = split(document, chars, "") == document_length
+		if (!char_indexed && document_length > 65536) exit 2
+		i = skip_whitespace(1)
+		if (charat(i) != "{" || !parse_object(i, 0)) exit 2
+		i = skip_whitespace(parsed_end + 1)
+		if (i <= document_length || matches > 1) exit 2
+		if (matches == 0) print "__MISSING__"
+		else print target_value
+	}
+	' "$1"
+}
+
+top_level_string() {
+	top_level_member "$1" "$2" string
+}
+
+top_level_encoded_string() {
+	top_level_member "$1" "$2" encoded-string
+}
+
+valid_semver() {
+	awk -v value="$1" '
+	function numeric(value) { return value ~ /^(0|[1-9][0-9]*)$/ }
+	function identifiers(value, prerelease,    count,parts,part_index,item) {
+		if (value == "") return 0
+		count = split(value, parts, ".")
+		for (part_index = 1; part_index <= count; part_index++) {
+			item = parts[part_index]
+			if (item == "" || item !~ /^[0-9A-Za-z-]+$/) return 0
+			if (prerelease && item ~ /^[0-9]+$/ && !numeric(item)) return 0
+		}
+		return 1
+	}
+	BEGIN {
+		if (value == "" || value ~ /[[:space:]]/) exit 1
+		main = value
+		plus = index(main, "+")
+		if (plus) {
+			build = substr(main, plus + 1)
+			main = substr(main, 1, plus - 1)
+			if (index(build, "+") || !identifiers(build, 0)) exit 1
+		}
+		if (index(main, "-")) {
+			dash = index(main, "-")
+			prerelease = substr(main, dash + 1)
+			main = substr(main, 1, dash - 1)
+			if (!identifiers(prerelease, 1)) exit 1
+		}
+		if (split(main, core, ".") != 3) exit 1
+		for (part_index = 1; part_index <= 3; part_index++) if (!numeric(core[part_index])) exit 1
+		exit 0
+	}
+	' </dev/null
+}
+
+manifest_version() {
+	case "$client" in
+	claude) manifest=$plugin_root/.claude-plugin/plugin.json ;;
+	codex) manifest=$plugin_root/.codex-plugin/plugin.json ;;
+	esac
+	[ -f "$manifest" ] && [ -r "$manifest" ] || return 1
+	version=$(top_level_string "$manifest" version) || return 1
+	[ "$version" != __MISSING__ ] || return 1
+	valid_semver "$version" || return 1
+	printf '%s\n' "$version"
+}
+
+# The claude manifest is the one native manifest carrying a top-level
+# displayName; the codex manifest nests its display name inside "interface",
+# beyond this narrow top-level scanner. Every install ships both manifests, so
+# both clients read the same file. Preserve the validated JSON-encoded string
+# content so quotes and backslashes embed safely in the hook JSON below.
+manifest_display_name() {
+	name_manifest=$plugin_root/.claude-plugin/plugin.json
+	[ -f "$name_manifest" ] && [ -r "$name_manifest" ] || return 1
+	display_name=$(top_level_encoded_string "$name_manifest" displayName) || return 1
+	[ "$display_name" != __MISSING__ ] || return 1
+	[ -n "$display_name" ] || return 1
+	printf '%s\n' "$display_name"
+}
+
+if [ "$event" = SessionStart ]; then
+	source=$(top_level_string "$input_file" source) || warn
+	case "$source" in
+	startup|resume) ;;
+	*) exit 0 ;;
+	esac
+	version=$(manifest_version) || warn
+	display_name=$(manifest_display_name) || warn
+	printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s v%s | %s | SessionStart:%s"}}\n' \
+		"$display_name" "$version" "$client" "$source"
+	exit 0
+fi
+
+stop_hook_active=$(top_level_member "$input_file" stop_hook_active boolean) || warn
+[ "$stop_hook_active" != __MISSING__ ] || warn
+[ "$stop_hook_active" = true ] && exit 0
+
+version=$(manifest_version) || warn
+display_name=$(manifest_display_name) || warn
+fixture_source=$plugin_root/hooks/fixture/lifecycle-mechanics-proof.source.json
+fixture_projection=$plugin_root/hooks/fixture/lifecycle-mechanics-proof.generated.json
+[ -f "$fixture_source" ] && [ -r "$fixture_source" ] || warn
+[ -f "$fixture_projection" ] && [ -r "$fixture_projection" ] || warn
+command -v cmp >/dev/null 2>&1 || warn
+cmp "$fixture_source" "$fixture_projection" >/dev/null 2>&1
+comparison_status=$?
+case "$comparison_status" in
+0) exit 0 ;;
+1)
+	printf '{"decision":"block","reason":"%s v%s found a mismatch in its packaged lifecycle proof files. Do not modify the workspace. Continue once to explain how to reinstall this plugin from its trusted source; if the mismatch remains, report this plugin version."}\n' "$display_name" "$version"
+	exit 0
+	;;
+*) warn ;;
+esac
+
+exit 0

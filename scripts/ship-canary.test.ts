@@ -19,17 +19,65 @@ import {
 	PUBLISHING_SYSTEM_PATHS,
 	admitCandidateRef,
 	bindTransportIdentity,
+	bindCandidateQualificationLineage,
 	bindTrustedPrivateRun,
 	candidateRefForSource,
 	classifyPublishingSystemChanges,
 	createSanitizedPublicCandidate,
 	qualifyTargets,
+	validateLineageManifestVersion,
 	type CandidateInstallEvidence,
 	type Target,
 } from "./ship-canary"
 
 const root = resolve(import.meta.dir, "..")
 const ignoredEntries = new Set([".claude", ".dev", ".git", ".worktrees", "dist", "node_modules"])
+
+test("candidate qualification lineage binds package and installed bytes to one source", () => {
+	const sourceCommit = "1".repeat(40)
+	const archiveSha256 = "2".repeat(64)
+	const payloadInventorySha256 = "3".repeat(64)
+	expect(
+		bindCandidateQualificationLineage(
+			sourceCommit,
+			{ sourceCommit, archiveSha256, payloadInventorySha256 },
+			payloadInventorySha256,
+		),
+	).toEqual({
+		sourceCommit,
+		archiveSha256,
+		packagedPayloadHash: payloadInventorySha256,
+		installedPayloadHash: payloadInventorySha256,
+	})
+})
+
+test("candidate qualification lineage rejects a different source or installed payload", () => {
+	const sourceCommit = "1".repeat(40)
+	const checksums = {
+		sourceCommit,
+		archiveSha256: "2".repeat(64),
+		payloadInventorySha256: "3".repeat(64),
+	}
+	expect(() =>
+		bindCandidateQualificationLineage(
+			sourceCommit,
+			{ ...checksums, sourceCommit: "4".repeat(40) },
+			checksums.payloadInventorySha256,
+		),
+	).toThrow("source commit")
+	expect(() =>
+		bindCandidateQualificationLineage(sourceCommit, checksums, "5".repeat(64)),
+	).toThrow("installed payload")
+})
+
+test.each(["1.2", "01.2.3", "1.2.3/../../escape", `1.2.3+${"a".repeat(64)}`])(
+	"lineage packaging rejects unsafe manifest version %s",
+	(manifestVersion) => {
+		expect(() => validateLineageManifestVersion(manifestVersion)).toThrow(
+			"manifest version must be exact semantic versioning and at most 64 characters",
+		)
+	},
+)
 
 function executable(path: string, contents: string): void {
 	writeFileSync(path, contents)
@@ -767,6 +815,12 @@ function installEvidence(target: Target, candidateSha: string): CandidateInstall
 			version: "0.1.0",
 			cachedPayloadMatches: true,
 		},
+		lineage: {
+			sourceCommit: candidateSha,
+			archiveSha256: "a".repeat(64),
+			packagedPayloadHash: "b".repeat(64),
+			installedPayloadHash: "b".repeat(64),
+		},
 	}
 }
 
@@ -799,8 +853,26 @@ test("public and private candidates pass hosted proof then native cache comparis
 			{ repository: "myagentdojo/private-canary", conclusion: "success" },
 		],
 		installs: [
-			{ repository: "myagentdojo/public-canary", checkoutSha: "2".repeat(40) },
-			{ repository: "myagentdojo/private-canary", checkoutSha: sourceSha },
+			{
+				repository: "myagentdojo/public-canary",
+				checkoutSha: "2".repeat(40),
+				lineage: {
+					sourceCommit: "2".repeat(40),
+					archiveSha256: "a".repeat(64),
+					packagedPayloadHash: "b".repeat(64),
+					installedPayloadHash: "b".repeat(64),
+				},
+			},
+			{
+				repository: "myagentdojo/private-canary",
+				checkoutSha: sourceSha,
+				lineage: {
+					sourceCommit: sourceSha,
+					archiveSha256: "a".repeat(64),
+					packagedPayloadHash: "b".repeat(64),
+					installedPayloadHash: "b".repeat(64),
+				},
+			},
 		],
 	})
 	expect(calls).toEqual([
@@ -812,6 +884,56 @@ test("public and private candidates pass hosted proof then native cache comparis
 		"hosted:PRIVATE",
 	])
 	expect(JSON.stringify(result).toLowerCase()).not.toContain("universal-directory")
+})
+
+test("qualification binds candidate lineage and rejects unbound install evidence", async () => {
+	const sourceSha = "1".repeat(40)
+	const hostedProof = async (target: Target) => ({
+		repository: target.repository,
+		databaseId: 1,
+		conclusion: "success",
+		url: "https://example.invalid/run/1",
+		sourceSha: target.candidateSha,
+		workflowSha: "3".repeat(40),
+		authority:
+			target.visibility === "PUBLIC"
+				? ("candidate-sanitized-workflow" as const)
+				: ("protected-trusted-workflow" as const),
+	})
+
+	await expect(
+		qualifyTargets(targets(sourceSha), sourceSha, {
+			publish: () => {},
+			hostedProof,
+			install: (target, candidateSha) => {
+				const evidence = installEvidence(target, candidateSha)
+				return {
+					...evidence,
+					lineage: { ...evidence.lineage, installedPayloadHash: "c".repeat(64) },
+				}
+			},
+		}),
+	).rejects.toMatchObject({
+		category: "qualification_lineage_mismatch",
+		retrySafe: false,
+	})
+
+	await expect(
+		qualifyTargets(targets(sourceSha), sourceSha, {
+			publish: () => {},
+			hostedProof,
+			install: (target, candidateSha) => {
+				const evidence = installEvidence(target, candidateSha)
+				return {
+					...evidence,
+					lineage: { ...evidence.lineage, archiveSha256: "not-a-digest" },
+				}
+			},
+		}),
+	).rejects.toMatchObject({
+		category: "qualification_lineage_invalid",
+		retrySafe: false,
+	})
 })
 
 test("repository, visibility, hosted CI, and install failures carry non-rewriting repairs", async () => {

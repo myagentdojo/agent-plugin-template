@@ -16,6 +16,7 @@ import {
 	admitPublicationCandidate,
 	validatePublicationBinding,
 	parsePublicationCandidateRecord,
+	validateCapabilitySidecars,
 	validateRepairCandidateBinding,
 	validateRepairBinding,
 } from "./release-validate"
@@ -71,6 +72,19 @@ const allowedProjection = [
 	"plugin/.claude-plugin/plugin.json",
 	"plugin/.codex-plugin/plugin.json",
 ]
+
+test("capability sidecar validation rejects a missing static file", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const missingPath = "plugin/assets/logo.svg"
+		rmSync(join(temporaryRoot, missingPath))
+		expect(() => validateCapabilitySidecars(temporaryRoot)).toThrow(
+			`static capability sidecar is missing: ${missingPath}`,
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
 
 function releasePullRequest(overrides: Record<string, unknown> = {}) {
 	return {
@@ -200,6 +214,46 @@ test("release validation rejects a drifted version surface", () => {
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("package.json version")
 	expect(result.stderr.toString()).toContain("plugin.config.json")
+})
+
+test.each([
+	"plugin/hooks/claude/hooks.json",
+	"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+] as const)("release validation rejects stale generated capability bytes at %s", (path) => {
+	const temporaryRoot = copyRepository()
+	try {
+		const absolutePath = join(temporaryRoot, path)
+		writeFileSync(absolutePath, Buffer.concat([readFileSync(absolutePath), Buffer.from("tampered\n")]))
+
+		const result = validate(temporaryRoot)
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(path)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation reports every drifted generated capability path", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const paths = [
+			"plugin/hooks/claude/hooks.json",
+			"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+		]
+		for (const path of paths) {
+			const absolutePath = join(temporaryRoot, path)
+			writeFileSync(
+				absolutePath,
+				Buffer.concat([readFileSync(absolutePath), Buffer.from("tampered\n")]),
+			)
+		}
+
+		const result = validate(temporaryRoot)
+		expect(result.exitCode).toBe(1)
+		for (const path of paths) expect(result.stderr.toString()).toContain(path)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
 })
 
 test("release validation rejects unexpected release-please extra-files", () => {
@@ -993,13 +1047,20 @@ test.each([
 	["converge", "\n  converge:\n"],
 ] as const)("release validation fails closed without the %s job boundary", (_job, marker) => {
 	const temporaryRoot = copyRepository()
-	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
-	writeFileSync(workflowPath, readFileSync(workflowPath, "utf8").replace(marker, "\n  renamed-job:\n"))
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		writeFileSync(
+			workflowPath,
+			readFileSync(workflowPath, "utf8").replace(marker, "\n  renamed-job:\n"),
+		)
 
-	const result = validate(temporaryRoot)
+		const result = validate(temporaryRoot)
 
-	expect(result.exitCode).toBe(1)
-	expect(result.stderr.toString()).toContain("job boundary")
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain("job boundary")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
 })
 
 test("release validation rejects read-only pull-request lineage permissions", () => {

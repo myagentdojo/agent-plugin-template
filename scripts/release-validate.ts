@@ -1,10 +1,44 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 import { validateBunOnlyPayload } from "./build"
+import { checkNativeCapabilityFixture } from "./native-capability-fixture"
+import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
 import { RELEASE_PROJECTION_PATH_SET } from "./release-projection"
 
 const root = resolve(import.meta.dir, "..")
+
+const STATIC_CAPABILITY_SIDECAR_PATHS = [
+	"plugin/assets/composer-icon.svg",
+	"plugin/assets/logo.svg",
+	"plugin/hooks/native-capability-hook",
+	"plugin/hooks/fixture/lifecycle-mechanics-proof.source.json",
+	"plugin/skills/capability-tour/SKILL.md",
+	"plugin/skills/capability-tour/references/capability-reviewer.md",
+] as const
+
+/** Admit the exact static sidecar inventory and generated capability bytes. */
+export function validateCapabilitySidecars(repositoryRoot: string): string[] {
+	const config = loadPluginConfig(repositoryRoot)
+	const drifted = [
+		...checkGeneratedFiles(repositoryRoot, config),
+		...checkNativeCapabilityFixture(repositoryRoot),
+	]
+	if (drifted.length > 0) {
+		throw new Error(`generated capability sidecars differ from their sources: ${drifted.join(", ")}`)
+	}
+	for (const path of STATIC_CAPABILITY_SIDECAR_PATHS) {
+		if (!existsSync(join(repositoryRoot, path))) {
+			throw new Error(`static capability sidecar is missing: ${path}`)
+		}
+	}
+	return [
+		...STATIC_CAPABILITY_SIDECAR_PATHS,
+		"plugin/hooks/claude/hooks.json",
+		"plugin/hooks/codex/hooks.json",
+		"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+	].sort()
+}
 
 const help = `Validate release metadata and workflow invariants.
 
@@ -462,6 +496,7 @@ function readJson(repositoryRoot: string, path: string): Record<string, any> {
 
 function validateRepository(repositoryRoot: string) {
 	validateBunOnlyPayload(repositoryRoot)
+	const capabilitySidecars = validateCapabilitySidecars(repositoryRoot)
 	const packageJson = readJson(repositoryRoot, "package.json")
 	const pluginConfig = readJson(repositoryRoot, "plugin.config.json")
 	const claudeMarketplace = readJson(repositoryRoot, ".claude-plugin/marketplace.json")
@@ -488,8 +523,11 @@ function validateRepository(repositoryRoot: string) {
 			throw new Error(`${name} version ${String(actual)} does not match plugin.config.json ${version}`)
 		}
 	}
-	if (claudeManifest.hooks !== undefined || codexManifest.hooks !== undefined) {
-		throw new Error("runtime lifecycle hooks must not be active in native manifests")
+	if (
+		claudeManifest.hooks !== "./hooks/claude/hooks.json" ||
+		codexManifest.hooks !== "./hooks/codex/hooks.json"
+	) {
+		throw new Error("native manifests must reference the exact client-specific hook declarations")
 	}
 
 	if (releaseState === "bootstrap") {
@@ -704,6 +742,12 @@ function validateRepository(repositoryRoot: string) {
 		changelog: "CHANGELOG.md",
 		tag: `v${version}`,
 		npmPublicationRequired: false,
+		capabilitySidecars,
+		automatedClaimBoundary: {
+			nativeActivation: "not-proved",
+			nativeDelegation: "not-proved",
+			qualificationReceiptsIngested: false,
+		},
 		versionSurfaces: [
 			...versionSurfaces.map(([name]) => name),
 			...(releaseState === "released" ? ["release-please manifest"] : []),

@@ -12,6 +12,7 @@
  *   archive: "example-plugin-1.0.0.tar.gz",
  *   archiveBytes: 1024,
  *   archiveSha256: "b".repeat(64),
+ *   payloadInventorySha256: "c".repeat(64),
  * }
  * ```
  */
@@ -32,6 +33,8 @@ export interface DistributionChecksumIdentity {
 	archiveBytes: number
 	/** Measured SHA-256 digest of the archive. */
 	archiveSha256: string
+	/** Canonical path-and-byte digest of the complete plugin payload. */
+	payloadInventorySha256: string
 }
 
 /**
@@ -59,6 +62,7 @@ export function assertDistributionChecksumIdentity(
 		"archive",
 		"archiveBytes",
 		"archiveSha256",
+		"payloadInventorySha256",
 	] as const) {
 		if (checksums[field] !== expected[field]) {
 			throw new Error(`checksum ${field} does not match the packaged archive identity`)

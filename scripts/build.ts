@@ -1621,11 +1621,33 @@ export function validateBundleClosure(root: string): void {
 }
 
 const forbiddenRuntimePaths = [
-	/^hooks\//,
 	/^runtime\/qjs-/,
 	/^runtime\/quickjs-assets\.json$/,
 	/^QUICKJS-LICENSE$/,
 ]
+const capabilityHookFiles = [
+	"hooks/claude/hooks.json",
+	"hooks/codex/hooks.json",
+	"hooks/fixture/lifecycle-mechanics-proof.generated.json",
+	"hooks/fixture/lifecycle-mechanics-proof.source.json",
+	"hooks/native-capability-hook",
+].sort(compareCodeUnits)
+const capabilityAssetFiles = ["assets/composer-icon.svg", "assets/logo.svg"].sort(compareCodeUnits)
+const modelOnlySkillFiles = [
+	"skills/capability-tour/SKILL.md",
+	"skills/capability-tour/references/capability-reviewer.md",
+	"skills/runtime-custody/SKILL.md",
+]
+const allowedPayloadSurfaces = new Set([
+	".claude-plugin",
+	".codex-plugin",
+	"THIRD-PARTY-NOTICES.md",
+	"assets",
+	"bin",
+	"hooks",
+	"runtime",
+	"skills",
+])
 const requiredCapabilities = [
 	"Execute verified Bun code",
 	"Download Bun after approval",
@@ -1644,6 +1666,12 @@ export function validateBunOnlyPayload(root: string): void {
 	const catalog = loadSkillCatalog(root)
 	const inventory = pluginPayloadInventory(root)
 	const inventorySet = new Set(inventory)
+	for (const path of inventory) {
+		const surface = path.split("/", 1)[0]
+		if (!allowedPayloadSurfaces.has(surface)) {
+			throw new Error(`Bun payload closure: unsupported payload surface ${surface}/`)
+		}
+	}
 	const required = [
 		".claude-plugin/plugin.json",
 		".codex-plugin/plugin.json",
@@ -1653,6 +1681,9 @@ export function validateBunOnlyPayload(root: string): void {
 		"runtime/runtime-exec",
 		"runtime/runtime-lock.sh",
 		"runtime/skill-catalog.sh",
+		...capabilityHookFiles,
+		...capabilityAssetFiles,
+		...modelOnlySkillFiles,
 	]
 	const bundleInventory = JSON.parse(
 		readFileSync(join(root, "plugin", "runtime", "bundle-inventory.json"), "utf8"),
@@ -1668,6 +1699,22 @@ export function validateBunOnlyPayload(root: string): void {
 	for (const path of required) {
 		if (!inventorySet.has(path)) throw new Error(`Bun payload closure: missing ${path}`)
 	}
+	const hookFiles = inventory.filter((path) => path.startsWith("hooks/"))
+	if (hookFiles.join("\0") !== capabilityHookFiles.join("\0")) {
+		throw new Error("Bun payload closure: hook sidecar inventory does not match the capability contract")
+	}
+	const assetFiles = inventory.filter((path) => path.startsWith("assets/"))
+	if (assetFiles.join("\0") !== capabilityAssetFiles.join("\0")) {
+		throw new Error("Bun payload closure: asset sidecar inventory does not match the capability contract")
+	}
+	const catalogSkillFiles = Object.keys(catalog.skills)
+		.sort(compareCodeUnits)
+		.map((skillId) => `skills/${skillId}/SKILL.md`)
+	const expectedSkillFiles = [...modelOnlySkillFiles, ...catalogSkillFiles].sort(compareCodeUnits)
+	const skillFiles = inventory.filter((path) => path.startsWith("skills/"))
+	if (skillFiles.join("\0") !== expectedSkillFiles.join("\0")) {
+		throw new Error("Bun payload closure: skill sidecar inventory does not match the catalog and model-only allowlist")
+	}
 
 	const drifted = checkRuntimeCustodyFiles(root)
 	if (drifted.length > 0) {
@@ -1680,7 +1727,11 @@ export function validateBunOnlyPayload(root: string): void {
 	if (launchers.join("\0") !== expectedLaunchers.join("\0")) {
 		throw new Error("Bun payload closure: launcher inventory does not match the skill catalog")
 	}
-	for (const path of ["runtime/runtime-exec", ...expectedLaunchers.map((id) => `bin/${id}`)]) {
+	for (const path of [
+		"runtime/runtime-exec",
+		"hooks/native-capability-hook",
+		...expectedLaunchers.map((id) => `bin/${id}`),
+	]) {
 		if ((statSync(join(root, "plugin", path)).mode & 0o111) === 0) {
 			throw new Error(`Bun payload closure: ${path} is not executable`)
 		}
@@ -1696,14 +1747,46 @@ export function validateBunOnlyPayload(root: string): void {
 			}
 		}
 	}
-	for (const manifestPath of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"]) {
+	// The expected inventory is complete: manifest sidecars, generated runtime
+	// scripts, capability sidecars, and catalog-derived launchers, skills, and
+	// bundles. Anything outside that exact set never ships.
+	const expectedInventory = new Set(required)
+	for (const path of inventory) {
+		if (!expectedInventory.has(path)) {
+			throw new Error(`Bun payload closure: unexpected payload file ${path}`)
+		}
+	}
+	for (const manifestPath of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"] as const) {
 		const manifest = JSON.parse(readFileSync(join(root, "plugin", manifestPath), "utf8")) as {
 			hooks?: unknown
 			description?: unknown
 			interface?: { capabilities?: unknown }
+			[key: string]: unknown
 		}
-		if (manifest.hooks !== undefined) {
-			throw new Error(`Bun payload closure: runtime hooks remain active in ${manifestPath}`)
+		const expectedHooks =
+			manifestPath === ".claude-plugin/plugin.json"
+				? "./hooks/claude/hooks.json"
+				: "./hooks/codex/hooks.json"
+		if (manifest.hooks !== expectedHooks) {
+			throw new Error(`Bun payload closure: invalid hook declaration in ${manifestPath}`)
+		}
+		for (const forbidden of [
+			"agents",
+			"apps",
+			"channels",
+			"commands",
+			"connectors",
+			"extensions",
+			"lspServers",
+			"mcpServers",
+			"monitors",
+			"outputStyles",
+			"settings",
+			"themes",
+		]) {
+			if (manifest[forbidden] !== undefined) {
+				throw new Error(`Bun payload closure: unsupported component ${forbidden} in ${manifestPath}`)
+			}
 		}
 		if (typeof manifest.description !== "string" || !manifest.description.includes("Bun")) {
 			throw new Error(`Bun payload closure: ${manifestPath} does not disclose Bun execution`)

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { loadPluginConfig } from "./plugin-config"
+import { deterministicPluginArchive, payloadInventorySha256 } from "./plugin-files"
 import { copyMarketplaceDistribution, proveHostedHarnessInstall } from "./prove-harness-install"
 
 const root = resolve(import.meta.dir, "..")
@@ -62,6 +63,10 @@ Safety:
 const DEFAULT_HOSTED_RUN_DEADLINE_MS = 10 * 60 * 1000
 const DEFAULT_NETWORK_COMMAND_TIMEOUT_MS = 30 * 1000
 const DEFAULT_HOSTED_POLL_DELAY_MS = 3000
+// Hosted sanitized candidates omit plugin.config.json, so mirror its private
+// strict-semver contract at the archive-name boundary.
+const strictManifestSemver =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*)))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 type Visibility = "PUBLIC" | "PRIVATE"
 type TransportKind = "ssh" | "https"
@@ -142,6 +147,64 @@ export interface CandidateInstallEvidence {
 		version: string
 		cachedPayloadMatches: boolean
 	}
+	/** Package and installed-byte lineage bound to the exact candidate commit. */
+	lineage: CandidateQualificationLineage
+}
+
+/** Exact package and installed-byte lineage required before promoting native claims. */
+export interface CandidateQualificationLineage {
+	sourceCommit: string
+	archiveSha256: string
+	packagedPayloadHash: string
+	installedPayloadHash: string
+}
+
+/** Bind qualification lineage to checksum metadata and the independently hashed installation. */
+export function bindCandidateQualificationLineage(
+	expectedSourceCommit: string,
+	checksums: {
+		sourceCommit?: unknown
+		archiveSha256?: unknown
+		payloadInventorySha256?: unknown
+	},
+	installedPayloadHash: string,
+): CandidateQualificationLineage {
+	if (!/^[a-f0-9]{40}$/.test(expectedSourceCommit) || checksums.sourceCommit !== expectedSourceCommit) {
+		throw new CanaryError(
+			"qualification_lineage_mismatch",
+			"qualification checksum source commit does not match the exact candidate",
+			"use the checksums and installed payload from the exact candidate commit",
+			false,
+		)
+	}
+	if (
+		typeof checksums.archiveSha256 !== "string" ||
+		!/^[a-f0-9]{64}$/.test(checksums.archiveSha256) ||
+		typeof checksums.payloadInventorySha256 !== "string" ||
+		!/^[a-f0-9]{64}$/.test(checksums.payloadInventorySha256) ||
+		!/^[a-f0-9]{64}$/.test(installedPayloadHash)
+	) {
+		throw new CanaryError(
+			"qualification_lineage_invalid",
+			"qualification lineage requires complete SHA-256 package and installed-payload evidence",
+			"record the archive, packaged payload, and installed payload SHA-256 values",
+			false,
+		)
+	}
+	if (installedPayloadHash !== checksums.payloadInventorySha256) {
+		throw new CanaryError(
+			"qualification_lineage_mismatch",
+			"qualification installed payload does not match the packaged payload",
+			"reinstall the exact candidate and hash the selected installed payload",
+			false,
+		)
+	}
+	return {
+		sourceCommit: expectedSourceCommit,
+		archiveSha256: checksums.archiveSha256,
+		packagedPayloadHash: checksums.payloadInventorySha256,
+		installedPayloadHash,
+	}
 }
 
 /** Injectable hosted-I/O seams keep qualification behavior unit-testable without real repositories. */
@@ -182,6 +245,23 @@ export class CanaryError extends Error {
 	) {
 		super(message)
 	}
+}
+
+/** Validate the exact bounded manifest version before using it in archive staging. */
+export function validateLineageManifestVersion(manifestVersion: unknown): string {
+	if (
+		typeof manifestVersion !== "string" ||
+		manifestVersion.length > 64 ||
+		!strictManifestSemver.test(manifestVersion)
+	) {
+		throw new CanaryError(
+			"install_mismatch",
+			"candidate plugin manifest version must be exact semantic versioning and at most 64 characters for lineage packaging",
+			"repair plugin/.claude-plugin/plugin.json before publishing a new immutable candidate ref",
+			false,
+		)
+	}
+	return manifestVersion
 }
 
 /**
@@ -945,7 +1025,47 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 			target.candidateRef.replace(/^refs\/heads\//, ""),
 			sourceSha,
 		)
-		const manifestVersion = proof.preflight.manifestVersion
+		const manifestVersion = validateLineageManifestVersion(proof.preflight.manifestVersion)
+		const manifestName = (
+			JSON.parse(
+				readFileSync(join(checkoutRoot, "plugin", ".claude-plugin", "plugin.json"), "utf8"),
+			) as { name?: unknown }
+		).name
+		if (
+			typeof manifestName !== "string" ||
+			!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifestName) ||
+			manifestName.length > 64
+		) {
+			throw new CanaryError(
+				"install_mismatch",
+				`${target.repository} candidate plugin manifest name must be kebab-case and at most 64 characters for lineage packaging`,
+				`repair plugin/.claude-plugin/plugin.json at ${target.candidateRef}; never rewrite history`,
+				false,
+			)
+		}
+		if (proof.claude.installedPayloadHash !== proof.codex.installedPayloadHash) {
+			throw new CanaryError(
+				"install_mismatch",
+				`${target.repository} native clients installed different payload bytes`,
+				`repair the native install proof and rerun from ${target.candidateRef}; never rewrite history`,
+				false,
+			)
+		}
+		const lineage = bindCandidateQualificationLineage(
+			sourceSha,
+			{
+				sourceCommit: checkoutSha,
+				archiveSha256: deterministicPluginArchive(
+					checkoutRoot,
+					`${manifestName}-${manifestVersion}`,
+				).sha256,
+				payloadInventorySha256: payloadInventorySha256(
+					join(checkoutRoot, "plugin"),
+					proof.preflight.inventory,
+				),
+			},
+			proof.claude.installedPayloadHash,
+		)
 		return {
 			repository: target.repository,
 			candidateRef: target.candidateRef,
@@ -961,6 +1081,7 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 				version: proof.codex.version,
 				cachedPayloadMatches: proof.codex.inventory.join("\n") === proof.preflight.inventory.join("\n"),
 			},
+			lineage,
 		}
 	} catch (error) {
 		if (error instanceof CanaryError) throw error
@@ -1032,7 +1153,7 @@ function assertCandidateInstall(
  * @param targets - Public and private immutable candidate targets
  * @param sourceSha - Recipient source commit bound into the deterministic public fixture
  * @param dependencies - Hosted publication, workflow, and install adapters
- * @returns Hosted runs and native install comparisons without unrelated distribution claims
+ * @returns Hosted runs and native install comparisons, each bound to exact candidate lineage, without unrelated distribution claims
  * @throws {CanaryError} When hosted or native qualification fails
  *
  * @example
@@ -1079,7 +1200,20 @@ export async function qualifyTargets(
 	for (const target of targets) {
 		const evidence = await adapters.install(target, target.candidateSha)
 		assertCandidateInstall(target, evidence)
-		installs.push(evidence)
+		// Re-bind lineage at the qualification seam so emitted claims always carry
+		// checked source, archive, packaged, and installed hashes for this candidate.
+		installs.push({
+			...evidence,
+			lineage: bindCandidateQualificationLineage(
+				target.candidateSha,
+				{
+					sourceCommit: evidence.lineage.sourceCommit,
+					archiveSha256: evidence.lineage.archiveSha256,
+					payloadInventorySha256: evidence.lineage.packagedPayloadHash,
+				},
+				evidence.lineage.installedPayloadHash,
+			),
+		})
 	}
 	for (const target of targets.filter((candidate) => candidate.visibility === "PRIVATE")) {
 		runs.set(target.visibility, await adapters.hostedProof(target, target.candidateSha))

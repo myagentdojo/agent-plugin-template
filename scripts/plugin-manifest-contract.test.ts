@@ -74,6 +74,9 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 		category: config.category,
 		capabilities: config.capabilities,
 		defaultPrompt: config.defaultPrompts,
+		brandColor: config.brandColor,
+		composerIcon: config.composerIcon,
+		logo: config.logo,
 	})
 	expect(config.shortDescription).not.toContain("\n")
 	expect(config.shortDescription.length).toBeLessThanOrEqual(30)
@@ -83,12 +86,16 @@ test("checked-in native manifests satisfy the published harness contracts", () =
 	expect(config.defaultPrompts.every((prompt: string) => prompt.length <= 128)).toBe(true)
 
 	for (const manifest of [claudeManifest, codexManifest]) {
-		expect(manifest).not.toHaveProperty("hooks")
-		for (const field of ["skills"]) {
+		for (const field of ["skills", "hooks"]) {
 			const path = manifest[field]
 			expect(path.startsWith("./"), `${field} must be plugin-relative`).toBe(true)
 			expect(existsSync(join(pluginRoot, path)), `${field} target must exist`).toBe(true)
 		}
+	}
+	for (const field of ["composerIcon", "logo"]) {
+		const path = codexManifest.interface[field]
+		expect(path.startsWith("./"), `${field} must be plugin-relative`).toBe(true)
+		expect(existsSync(join(pluginRoot, path)), `${field} target must exist`).toBe(true)
 	}
 })
 
@@ -96,6 +103,7 @@ test("native marketplace projections preserve identity, source, policy, and acti
 	expect(claudeMarketplace.metadata.version).toBe(config.version)
 	expect(claudeMarketplace.plugins[0]).toMatchObject({
 		name: config.name,
+		displayName: config.displayName,
 		source: "./plugin",
 		defaultEnabled: false,
 	})
@@ -199,6 +207,10 @@ test.each([
 	["multiline prompt", (value: PluginConfig) => (value.defaultPrompts = ["Run\nthis"]), "defaultPrompts"],
 	["duplicate prompt", (value: PluginConfig) => (value.defaultPrompts = ["Run this", " Run   this "]), "defaultPrompts"],
 	["mention prompt", (value: PluginConfig) => (value.defaultPrompts = ["@agent run this"]), "defaultPrompts"],
+	["brand color", (value: PluginConfig) => (value.brandColor = "blue"), "brandColor"],
+	["lowercase brand color", (value: PluginConfig) => (value.brandColor = "#abcdef"), "brandColor"],
+	["composer icon escape", (value: PluginConfig) => (value.composerIcon = "../icon.svg"), "composerIcon"],
+	["logo extension", (value: PluginConfig) => (value.logo = "./assets/logo.png"), "logo"],
 ] as const)("rejects invalid published %s metadata", (_name, mutate, message) => {
 	const invalid = structuredClone(config)
 	mutate(invalid)

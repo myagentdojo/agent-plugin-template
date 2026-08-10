@@ -4,6 +4,8 @@ import { join } from "node:path"
 
 import { expect, test } from "bun:test"
 
+import { classifyReleaseImpact } from "./release-impact"
+
 import {
 	RELEASE_PROJECTION_PATHS,
 	validateReleaseProjection,
@@ -31,13 +33,32 @@ test("one projection policy accepts version-only changes and rejects behavioral 
 	).toThrow("unsupported path")
 })
 
-test("runtime hook files are outside the release projection", () => {
-	expect(() =>
-		validateReleaseProjection(
-			[{ filename: "plugin/hooks/codex/hooks.json", status: "modified" }],
-			() => ({ before: "{}", after: "{}" }),
-		),
-	).toThrow("unsupported path")
+test("static capability sidecars are release-relevant but outside the version projection", () => {
+	for (const path of [
+		"plugin/hooks/codex/hooks.json",
+		"plugin/hooks/fixture/lifecycle-mechanics-proof.source.json",
+		"plugin/skills/capability-tour/SKILL.md",
+		"plugin/skills/capability-tour/references/capability-reviewer.md",
+		"plugin/assets/logo.svg",
+	]) {
+		expect(() =>
+			validateReleaseProjection(
+				[{ filename: path, status: "modified" }],
+				() => ({ before: "before", after: "after" }),
+			),
+		).toThrow("unsupported path")
+		expect(
+			classifyReleaseImpact({
+				title: "chore: change a static capability sidecar",
+				changedFiles: [{ path }],
+				pullRequestIdentity: {
+					headRef: "release-please--branches--main",
+					authorLogin: "github-actions[bot]",
+					expectedAutomationLogin: "github-actions[bot]",
+				},
+			}),
+		).toMatchObject({ payloadChanged: true, isReleasePleaseProjection: false, ok: false })
+	}
 })
 
 test("projection binds every changed candidate blob to the reviewed pull-request head", () => {
