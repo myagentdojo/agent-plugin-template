@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/myagentdojo/agent-plugin-template/compare/v0.2.0...v0.3.0) (2026-08-10)
+
+
+### Features
+
+* add native plugin capability tour with lifecycle hook proof ([#34](https://github.com/myagentdojo/agent-plugin-template/issues/34)) ([bfe8489](https://github.com/myagentdojo/agent-plugin-template/commit/bfe8489434949a4d4003e3b0da29f4237aae8534))
+
 ## [0.2.0](https://github.com/myagentdojo/agent-plugin-template/compare/v0.1.1...v0.2.0) (2026-08-09)
 
 
