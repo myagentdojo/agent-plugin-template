@@ -308,9 +308,10 @@ test("near-limit hostile payloads complete within a bounded wall clock", () => {
 
 test("a renamed manifest identity reaches the receipt and the block reason", () => {
 	const fixture = installedPlugin()
+	const displayName = 'Dojo "Hello" \\ Tools'
 	writeFileSync(
 		join(fixture.pluginRoot, ".claude-plugin", "plugin.json"),
-		'{"name":"dojo-hello","displayName":"Dojo Hello","version":"0.3.0"}\n',
+		`${JSON.stringify({ name: "dojo-hello", displayName, version: "0.3.0" })}\n`,
 	)
 
 	for (const client of ["claude", "codex"] as const) {
@@ -319,7 +320,7 @@ test("a renamed manifest identity reaches the receipt and the block reason", () 
 		expect(start.stderr.toString()).toBe("")
 		expect(JSON.parse(start.stdout.toString())).toMatchObject({
 			hookSpecificOutput: {
-				additionalContext: `Dojo Hello v0.3.0 | ${client} | SessionStart:startup`,
+				additionalContext: `${displayName} v0.3.0 | ${client} | SessionStart:startup`,
 			},
 		})
 	}
@@ -333,7 +334,7 @@ test("a renamed manifest identity reaches the receipt and the block reason", () 
 	expect(stop.stderr.toString()).toBe("")
 	expect(JSON.parse(stop.stdout.toString())).toMatchObject({
 		decision: "block",
-		reason: expect.stringContaining("Dojo Hello v0.3.0 found a mismatch"),
+		reason: expect.stringContaining(`${displayName} v0.3.0 found a mismatch`),
 	})
 })
 

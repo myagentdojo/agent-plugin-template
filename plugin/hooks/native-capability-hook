@@ -61,6 +61,7 @@ top_level_member() {
 	}
 	function parse_string(start,    i,c,e,k,content_length) {
 		parsed_raw = ""
+		parsed_encoded = ""
 		parsed_plain = 1
 		parsed_too_long = 0
 		for (i = start + 1; i <= document_length; i++) {
@@ -68,18 +69,21 @@ top_level_member() {
 			if (c == "\"") {
 				parsed_end = i
 				content_length = i - start - 1
-				if (parsed_plain && content_length > short_string_limit) parsed_too_long = 1
+				if (content_length > short_string_limit) parsed_too_long = 1
 				return 1
 			}
+			if (i - start <= short_string_limit) parsed_encoded = parsed_encoded c
 			if (c == "\\") {
 				parsed_plain = 0
 				i++
 				if (i > document_length) return 0
 				e = charat(i)
+				if (i - start <= short_string_limit) parsed_encoded = parsed_encoded e
 				if (e == "u") {
 					for (k = 1; k <= 4; k++) {
 						i++
 						if (charat(i) !~ /^[0-9A-Fa-f]$/) return 0
+						if (i - start <= short_string_limit) parsed_encoded = parsed_encoded charat(i)
 					}
 				} else if (e !~ /^["\\\/bfnrt]$/) return 0
 				continue
@@ -130,7 +134,7 @@ top_level_member() {
 			if (charat(i) == "]") return 0
 		}
 	}
-	function parse_object(start, depth,    i,key,key_plain,key_too_long,key_end,value_end,value_kind,value_raw,value_plain,value_too_long) {
+	function parse_object(start, depth,    i,key,key_plain,key_too_long,key_end,value_end,value_kind,value_raw,value_encoded,value_plain,value_too_long,kind_matches) {
 		if (depth > nesting_limit) return 0
 		i = skip_whitespace(start + 1)
 		if (charat(i) == "}") { parsed_end = i; return 1 }
@@ -147,14 +151,19 @@ top_level_member() {
 			value_end = parsed_end
 			value_kind = parsed_kind
 			value_raw = parsed_raw
+			value_encoded = parsed_encoded
 			value_plain = parsed_plain
 			value_too_long = parsed_too_long
 			if (depth == 0 && key_plain && !key_too_long && key == target) {
 				matches++
-				if (matches > 1 || value_kind != expected_kind) return 0
+				kind_matches = value_kind == expected_kind || (value_kind == "string" && expected_kind == "encoded-string")
+				if (matches > 1 || !kind_matches) return 0
 				if (expected_kind == "string") {
 					if (!value_plain || value_too_long) return 0
 					target_value = value_raw
+				} else if (expected_kind == "encoded-string") {
+					if (value_too_long) return 0
+					target_value = value_encoded
 				} else target_value = value_raw
 			}
 			i = skip_whitespace(value_end + 1)
@@ -230,6 +239,10 @@ top_level_string() {
 	top_level_member "$1" "$2" string
 }
 
+top_level_encoded_string() {
+	top_level_member "$1" "$2" encoded-string
+}
+
 valid_semver() {
 	awk -v value="$1" '
 	function numeric(value) { return value ~ /^(0|[1-9][0-9]*)$/ }
@@ -280,12 +293,12 @@ manifest_version() {
 # The claude manifest is the one native manifest carrying a top-level
 # displayName; the codex manifest nests its display name inside "interface",
 # beyond this narrow top-level scanner. Every install ships both manifests, so
-# both clients read the same file. A plain top-level string value carries no
-# quotes, backslashes, or control characters, so it embeds safely below.
+# both clients read the same file. Preserve the validated JSON-encoded string
+# content so quotes and backslashes embed safely in the hook JSON below.
 manifest_display_name() {
 	name_manifest=$plugin_root/.claude-plugin/plugin.json
 	[ -f "$name_manifest" ] && [ -r "$name_manifest" ] || return 1
-	display_name=$(top_level_string "$name_manifest" displayName) || return 1
+	display_name=$(top_level_encoded_string "$name_manifest" displayName) || return 1
 	[ "$display_name" != __MISSING__ ] || return 1
 	[ -n "$display_name" ] || return 1
 	printf '%s\n' "$display_name"
