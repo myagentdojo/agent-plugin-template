@@ -471,6 +471,118 @@ test("candidate config cannot redirect trusted canary targets", () => {
 	})
 })
 
+test("trusted template base admits exact first-consumer canary targets", () => {
+	const driver = canaryFixture()
+	const candidate = canaryFixture()
+	writeFileSync(
+		join(driver.temporaryRoot, "plugin.config.json"),
+		readFileSync(join(root, "plugin.config.json"), "utf8"),
+	)
+
+	const result = runTrustedCanary(
+		driver.temporaryRoot,
+		driver,
+		candidate.temporaryRoot,
+		"--dry-run",
+		{
+			GITHUB_REPOSITORY: "myagentdojo/dojo-hello",
+			CANARY_HEAD_REPOSITORY: "myagentdojo/dojo-hello",
+			GITHUB_WORKFLOW_REF:
+				"myagentdojo/dojo-hello/.github/workflows/hosted-canary.yml@refs/heads/main",
+		},
+	)
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		identity: "myagentdojo",
+		targets: [
+			{ repository: "myagentdojo/dojo-hello-public-canary", visibility: "PUBLIC" },
+			{ repository: "myagentdojo/dojo-hello-private-canary", visibility: "PRIVATE" },
+		],
+	})
+})
+
+interface MutableBootstrapCandidate {
+	template: boolean
+	repository: string
+	canary: {
+		owner: string
+		actor: string
+		publicRepository: string
+		privateRepository: string
+	}
+}
+
+test.each([
+	[
+		"redirected target",
+		(config: MutableBootstrapCandidate) => {
+			config.canary.publicRepository = "attacker-public-canary"
+		},
+		{},
+	],
+	[
+		"wrong actor",
+		(config: MutableBootstrapCandidate) => {
+			config.canary.actor = "another-actor"
+		},
+		{},
+	],
+	[
+		"wrong repository URL",
+		(config: MutableBootstrapCandidate) => {
+			config.repository = "https://github.com/myagentdojo/another-repository"
+		},
+		{},
+	],
+	[
+		"partially initialized candidate",
+		(config: MutableBootstrapCandidate) => {
+			config.template = true
+		},
+		{},
+	],
+	[
+		"fork head",
+		(_config: MutableBootstrapCandidate) => {},
+		{ CANARY_HEAD_REPOSITORY: "fork-owner/dojo-hello" },
+	],
+])("trusted template bootstrap rejects %s", (_name, mutate, environment) => {
+	const driver = canaryFixture()
+	const candidate = canaryFixture()
+	writeFileSync(
+		join(driver.temporaryRoot, "plugin.config.json"),
+		readFileSync(join(root, "plugin.config.json"), "utf8"),
+	)
+	const candidateConfigPath = join(candidate.temporaryRoot, "plugin.config.json")
+	const candidateConfig = JSON.parse(
+		readFileSync(candidateConfigPath, "utf8"),
+	) as MutableBootstrapCandidate
+	mutate(candidateConfig)
+	writeFileSync(candidateConfigPath, `${JSON.stringify(candidateConfig, null, 2)}\n`)
+
+	const result = runTrustedCanary(
+		driver.temporaryRoot,
+		driver,
+		candidate.temporaryRoot,
+		"--dry-run",
+		{
+			GITHUB_REPOSITORY: "myagentdojo/dojo-hello",
+			CANARY_HEAD_REPOSITORY: "myagentdojo/dojo-hello",
+			GITHUB_WORKFLOW_REF:
+				"myagentdojo/dojo-hello/.github/workflows/hosted-canary.yml@refs/heads/main",
+			...environment,
+		},
+	)
+
+	expect(result.exitCode).toBe(1)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		category: "canary_target_mismatch",
+		retrySafe: false,
+	})
+	expect(existsSync(driver.log)).toBe(false)
+})
+
 test("public publication uses sanitized bytes while private publication uses the source checkout", async () => {
 	const driver = canaryFixture()
 	const candidate = canaryFixture()
@@ -1060,6 +1172,9 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).toContain("environment: hosted-canary-qualification")
 	expect(workflow).toContain("CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}")
 	expect(workflow).toContain("CANARY_TRUSTED_WORKFLOW_SHA: ${{ github.event.pull_request.base.sha }}")
+	expect(workflow).toContain(
+		"CANARY_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}",
+	)
 	expect(workflow).toContain("GH_TOKEN: ${{ secrets.CANARY_GH_TOKEN }}")
 	expect(workflow).toContain("CANARY_SSH_KNOWN_HOSTS: ${{ secrets.CANARY_SSH_KNOWN_HOSTS }}")
 	expect(workflow).toContain("CANARY_SSH_PRIVATE_KEY: ${{ secrets.CANARY_SSH_PRIVATE_KEY }}")
