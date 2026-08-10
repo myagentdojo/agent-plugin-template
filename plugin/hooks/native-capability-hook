@@ -262,11 +262,11 @@ valid_semver() {
 	BEGIN {
 		if (value == "" || value ~ /[[:space:]]/) exit 1
 		main = value
-		if (index(main, "+")) {
-			if (gsub(/\+/, "+", main) != 1) exit 1
-			split(main, build_parts, "+")
-			main = build_parts[1]
-			if (!identifiers(build_parts[2], 0)) exit 1
+		plus = index(main, "+")
+		if (plus) {
+			build = substr(main, plus + 1)
+			main = substr(main, 1, plus - 1)
+			if (index(build, "+") || !identifiers(build, 0)) exit 1
 		}
 		if (index(main, "-")) {
 			dash = index(main, "-")

@@ -1574,15 +1574,19 @@ test("Bun-only release admission rejects an arbitrary executable sidecar", () =>
 })
 
 test.each([
-	"hooks/native-capability-hook",
-	"assets/logo.svg",
-	"skills/capability-tour/references/capability-reviewer.md",
-] as const)("Bun-only release admission rejects missing capability sidecar %s", (path) => {
+	[
+		"hooks/native-capability-hook",
+		"Bun payload closure: missing hooks/native-capability-hook",
+	],
+	["assets/logo.svg", "Bun payload closure: missing assets/logo.svg"],
+	[
+		"skills/capability-tour/references/capability-reviewer.md",
+		'unsafe plugin payload entry "plugin/skills/capability-tour/references": empty directory',
+	],
+] as const)("Bun-only release admission rejects missing capability sidecar %s", (path, rejection) => {
 	const fixtureRoot = bunPayloadFixture()
 	rmSync(join(fixtureRoot, "plugin", path))
-	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(
-		/Bun payload closure|unsafe plugin payload entry/,
-	)
+	expect(() => validateBunOnlyPayload(fixtureRoot)).toThrow(rejection)
 })
 
 test("Bun-only release admission rejects a non-executable native hook", () => {

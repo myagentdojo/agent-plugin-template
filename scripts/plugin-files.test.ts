@@ -8,6 +8,7 @@ import { afterEach, expect, test } from "bun:test"
 import {
 	compareCodeUnits,
 	copyPluginPayload,
+	deterministicPluginArchive,
 	directoryArchiveEntries,
 	payloadInventorySha256,
 	pluginPayloadInventory,
@@ -220,4 +221,20 @@ test("archive order keeps each directory beside its descendants", () => {
 		"plugin-0.1.0/runtime/a.js",
 		"plugin-0.1.0/runtime.txt",
 	])
+})
+
+test("archive USTAR owner names are canonical across tar implementations", () => {
+	const { sourceRoot } = pluginFixture()
+	const first = deterministicPluginArchive(sourceRoot, "plugin-0.1.0")
+	const second = deterministicPluginArchive(sourceRoot, "plugin-0.1.0")
+	const header = Buffer.from(Bun.gunzipSync(first.bytes)).subarray(0, 512)
+	const headerText = (offset: number) =>
+		header.subarray(offset, offset + 32).toString("utf8").replace(/\0.*$/, "")
+
+	expect(first.bytes).toEqual(second.bytes)
+	expect(first.sha256).toBe(
+		"7c6a87163b7958feb7c806f7ce1b8174d5bb2afa758d89915806fcf084899fe2",
+	)
+	expect(headerText(265)).toBe("root")
+	expect(headerText(297)).toBe("root")
 })

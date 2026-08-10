@@ -185,8 +185,11 @@ const bundles = JSON.parse(
 	readFileSync(join(installedRoot, "runtime", "bundle-inventory.json"), "utf8"),
 )
 for (const surface of [catalog.skills, bundles.bundles]) {
-	if (JSON.stringify(Object.keys(surface).sort()) !== JSON.stringify(["hello-world", "skill-a", "skill-b"])) {
-		throw new Error("capability-tour entered the executable runtime closure")
+	const surfaceKeys = Object.keys(surface).sort()
+	if (JSON.stringify(surfaceKeys) !== JSON.stringify(["hello-world", "skill-a", "skill-b"])) {
+		throw new Error(
+			`capability-tour entered the executable runtime closure: ${JSON.stringify(surfaceKeys)}`,
+		)
 	}
 }
 

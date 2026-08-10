@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 import { validateBunOnlyPayload } from "./build"
@@ -72,7 +72,7 @@ mkdirSync(outputRoot, { recursive: true })
 const archiveArtifact = deterministicPluginArchive(root, packageName)
 const archive = join(outputRoot, `${packageName}.tar.gz`)
 writeFileSync(archive, archiveArtifact.bytes)
-const archiveBytes = statSync(archive).size
+const archiveBytes = archiveArtifact.bytes.length
 const archiveDigest = archiveArtifact.sha256
 const checksums = join(outputRoot, `${packageName}.checksums.json`)
 writeFileSync(

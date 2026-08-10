@@ -18,7 +18,7 @@ Checks:
 1. Read both installed native manifests and their declared hook files.
 2. Confirm both declarations contain only `SessionStart` and `Stop`, target the shared installed handler, and fix the matching client and event arguments.
 3. Compare the packaged lifecycle fixture source and generated projection as exact bytes.
-4. Run the shared handler directly once for `Stop` with the active client and `stop_hook_active` set to false. Capture only pass, mismatch, or operational failure. Do not return raw handler output.
+4. Run `<absolute-installed-plugin-root>/hooks/native-capability-hook Stop <active-client>` directly once, where `<active-client>` is exactly `claude` or `codex`, with `stop_hook_active` set to false. Use the resolved absolute installed-plugin root, not a relative path or source-checkout path. Capture only pass, mismatch, or operational failure. Do not return raw handler output.
 5. Read the skill catalog, bundle inventory, launchers, and installed skill names. Confirm `capability-tour` is model-only and the existing portable skills remain available.
 6. Classify the supplied current native context marker and external qualification receipt without upgrading missing evidence to proof.
 

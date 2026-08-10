@@ -14,7 +14,7 @@ Read the installed Claude and Codex manifests, declared hook files, lifecycle fi
 Keep these evidence layers separate:
 
 - `declaration`: present and valid only when both manifests resolve their client-specific declarations and those declarations contain exactly `SessionStart` and `Stop` commands for the shared installed handler.
-- `direct handler`: run the installed handler directly once for `Stop`, using the active client and `{"stop_hook_active":false}` on stdin. Report only pass, lifecycle fixture mismatch, or operational failure. Direct execution never proves native activation.
+- `direct handler`: run `<absolute-installed-plugin-root>/hooks/native-capability-hook Stop <active-client>` directly once, where `<active-client>` is exactly `claude` or `codex`, using `{"stop_hook_active":false}` on stdin. Use the resolved absolute installed-plugin root, not a relative path or source-checkout path. Report only pass, lifecycle fixture mismatch, or operational failure. Direct execution never proves native activation.
 - `currentSessionHook`: `observed` only when the current session already contains the native `SessionStart` context marker matching the installed identity and active client. Otherwise report `unknown`. Never infer it from manifest presence or direct handler success.
 - `external candidate qualification`: report `qualified` only from a supplied host-owned receipt bound to this exact installed candidate. Otherwise report `unknown` or the supplied non-healthy conclusion.
 - `delegation delivery`: use the rules below.

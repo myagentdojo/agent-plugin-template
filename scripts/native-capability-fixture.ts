@@ -1,7 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { type GeneratedFile, loadPluginConfig } from "./plugin-config"
+import {
+	type GeneratedFile,
+	loadPluginConfig,
+	writeGeneratedFileSet,
+} from "./plugin-config"
 
 const sourcePath = "plugin/hooks/fixture/lifecycle-mechanics-proof.source.json"
 const projectionPath = "plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json"
@@ -69,9 +73,7 @@ export function renderNativeCapabilityFixture(root: string): GeneratedFile[] {
  * ```
  */
 export function writeNativeCapabilityFixture(root: string): GeneratedFile[] {
-	const files = renderNativeCapabilityFixture(root)
-	for (const file of files) writeFileSync(join(root, file.path), file.contents)
-	return files
+	return writeGeneratedFileSet(root, renderNativeCapabilityFixture(root))
 }
 
 /**

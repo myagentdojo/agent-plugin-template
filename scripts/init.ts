@@ -1,7 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { renderNativeCapabilityFixtureFor } from "./native-capability-fixture"
+import {
+	renderNativeCapabilityFixtureFor,
+	writeNativeCapabilityFixture,
+} from "./native-capability-fixture"
 import { type PluginConfig, loadPluginConfig, renderGeneratedFiles, writeGeneratedFiles } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
@@ -196,7 +199,7 @@ const resetFiles = releaseResetFiles(root, config.name)
 if (!options.dryRun) {
 	writeFileSync(resolve(root, "plugin.config.json"), `${JSON.stringify(config, null, 2)}\n`)
 	writeGeneratedFiles(root, config)
-	for (const file of fixtureFiles) writeFileSync(resolve(root, file.path), file.contents)
+	writeNativeCapabilityFixture(root)
 	for (const file of resetFiles) writeFileSync(resolve(root, file.path), file.contents)
 }
 

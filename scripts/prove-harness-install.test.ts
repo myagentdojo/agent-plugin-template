@@ -375,18 +375,34 @@ test("automated install evidence binds bytes without claiming native activation"
 })
 
 test.each([
-	"assets/logo.svg",
-	"skills/capability-tour/references/capability-reviewer.md",
-	"hooks/claude/hooks.json",
-	"hooks/fixture/lifecycle-mechanics-proof.generated.json",
-] as const)("installed capability evidence rejects tampered %s bytes", (path) => {
+	{
+		path: "assets/logo.svg",
+		tamper: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("tampered\n")]),
+		expected: "installed payload hash differs from the candidate payload",
+	},
+	{
+		path: "skills/capability-tour/references/capability-reviewer.md",
+		tamper: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("tampered\n")]),
+		expected: "installed payload hash differs from the candidate payload",
+	},
+	{
+		path: "hooks/claude/hooks.json",
+		tamper: () => Buffer.from("{}\n"),
+		expected: "installed declaration bytes do not match the capability contract",
+	},
+	{
+		path: "hooks/fixture/lifecycle-mechanics-proof.generated.json",
+		tamper: (bytes: Buffer) => Buffer.concat([bytes, Buffer.from("tampered\n")]),
+		expected: "installed lifecycle mechanics proof fixture differs",
+	},
+] as const)("installed capability evidence rejects tampered $path bytes", ({ path, tamper, expected }) => {
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-tamper-"))
 	const pluginRoot = join(temporaryRoot, "plugin")
 	try {
 		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
 		const candidatePayloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
 		const absolutePath = join(pluginRoot, path)
-		writeFileSync(absolutePath, Buffer.concat([readFileSync(absolutePath), Buffer.from("tampered\n")]))
+		writeFileSync(absolutePath, tamper(readFileSync(absolutePath)))
 		expect(() =>
 			proveInstalledCapabilityEvidence(
 				pluginRoot,
@@ -394,7 +410,32 @@ test.each([
 				"a".repeat(40),
 				candidatePayloadHash,
 			),
-		).toThrow()
+		).toThrow(expected)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("installed payload hash is validated before the candidate handler executes", () => {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "installed-capability-handler-tamper-"))
+	const pluginRoot = join(temporaryRoot, "plugin")
+	const marker = join(temporaryRoot, "handler-ran")
+	try {
+		cpSync(join(root, "plugin"), pluginRoot, { recursive: true })
+		const candidatePayloadHash = runtimeClosureEvidence(pluginRoot).payloadHash
+		writeFileSync(
+			join(pluginRoot, "hooks", "native-capability-hook"),
+			`#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`,
+		)
+		expect(() =>
+			proveInstalledCapabilityEvidence(
+				pluginRoot,
+				"claude",
+				"a".repeat(40),
+				candidatePayloadHash,
+			),
+		).toThrow("installed payload hash differs from the candidate payload")
+		expect(existsSync(marker)).toBe(false)
 	} finally {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 	}

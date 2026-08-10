@@ -471,9 +471,8 @@ export function renderGeneratedFiles(config: PluginConfig): GeneratedFile[] {
 	]
 }
 
-/** Write every generated manifest to its deterministic repository path. */
-export function writeGeneratedFiles(root: string, config: PluginConfig): GeneratedFile[] {
-	const files = renderGeneratedFiles(config)
+/** Write rendered files idempotently to deterministic repository paths. */
+export function writeGeneratedFileSet(root: string, files: GeneratedFile[]): GeneratedFile[] {
 	for (const file of files) {
 		const path = join(root, file.path)
 		if (existsSync(path) && readFileSync(path, "utf8") === file.contents) continue
@@ -481,6 +480,11 @@ export function writeGeneratedFiles(root: string, config: PluginConfig): Generat
 		writeFileSync(path, file.contents)
 	}
 	return files
+}
+
+/** Write every generated manifest to its deterministic repository path. */
+export function writeGeneratedFiles(root: string, config: PluginConfig): GeneratedFile[] {
+	return writeGeneratedFileSet(root, renderGeneratedFiles(config))
 }
 
 /** Return generated paths whose checked-in contents differ from canonical metadata. */

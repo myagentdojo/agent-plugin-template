@@ -1631,8 +1631,8 @@ const capabilityHookFiles = [
 	"hooks/fixture/lifecycle-mechanics-proof.generated.json",
 	"hooks/fixture/lifecycle-mechanics-proof.source.json",
 	"hooks/native-capability-hook",
-]
-const capabilityAssetFiles = ["assets/composer-icon.svg", "assets/logo.svg"]
+].sort(compareCodeUnits)
+const capabilityAssetFiles = ["assets/composer-icon.svg", "assets/logo.svg"].sort(compareCodeUnits)
 const modelOnlySkillFiles = [
 	"skills/capability-tour/SKILL.md",
 	"skills/capability-tour/references/capability-reviewer.md",
@@ -1774,6 +1774,7 @@ export function validateBunOnlyPayload(root: string): void {
 			"agents",
 			"apps",
 			"channels",
+			"commands",
 			"connectors",
 			"extensions",
 			"lspServers",

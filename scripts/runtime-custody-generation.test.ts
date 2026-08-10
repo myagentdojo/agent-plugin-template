@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { expect, test } from "bun:test"
 import { fileURLToPath } from "node:url"
 
@@ -22,7 +23,6 @@ test("one Bun version is pinned across packageManager, bun.lock, CI, and the run
 	expect(await Bun.file(new URL("../bun.lock", import.meta.url)).exists()).toBe(true)
 
 	const workflowsDirectory = fileURLToPath(new URL("../.github/workflows/", import.meta.url))
-	const { readdirSync, readFileSync } = await import("node:fs")
 	const workflowFiles = readdirSync(workflowsDirectory).filter((name) => name.endsWith(".yml"))
 	expect(workflowFiles.length).toBeGreaterThan(0)
 	let pinnedWorkflows = 0
@@ -90,7 +90,7 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 			},
 		},
 	})
-	const installedSkills = (await import("node:fs")).readdirSync(
+	const installedSkills = readdirSync(
 		fileURLToPath(new URL("../plugin/skills", import.meta.url)),
 	).sort()
 	expect(installedSkills).toEqual([
@@ -103,7 +103,6 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 	expect(catalog.skills).not.toHaveProperty("capability-tour")
 
 	// One logical catalog owns workspace, SKILL, and runtime identity per skill.
-	const { existsSync } = await import("node:fs")
 	for (const [skillId, skill] of Object.entries(
 		catalog.skills as Record<string, { workspace?: string }>,
 	)) {
@@ -130,7 +129,7 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 		expect(skillDocument).not.toContain("Status: not yet invocable")
 	}
 	expect(generated.filter((file) => file.path.startsWith("plugin/bin/")).length).toBe(3)
-	const launcherNames = (await import("node:fs")).readdirSync(
+	const launcherNames = readdirSync(
 		fileURLToPath(new URL("../plugin/bin", import.meta.url)),
 	).sort()
 	expect(launcherNames).toEqual(["hello-world", "skill-a", "skill-b"])

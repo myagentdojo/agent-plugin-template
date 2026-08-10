@@ -1385,6 +1385,10 @@ export function proveInstalledCapabilityEvidence(
 		throw new Error(`${client} installed lifecycle mechanics proof fixture differs`)
 	}
 	const installedInventory = regularFiles(pluginRoot)
+	const installed = runtimeClosureEvidence(pluginRoot, installedInventory)
+	if (installed.payloadHash !== candidatePayloadHash) {
+		throw new Error(`${client} installed payload hash differs from the candidate payload`)
+	}
 	const installedSkills = installedInventory
 		.filter((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path))
 		.map((path) => path.slice("skills/".length, -"/SKILL.md".length))
@@ -1464,10 +1468,6 @@ export function proveInstalledCapabilityEvidence(
 	const stop = runHandler("Stop", '{"stop_hook_active":false}')
 	if (stop.exitCode !== 0 || stop.stdout.toString() !== "" || stop.stderr.toString() !== "") {
 		throw new Error(`${client} installed direct Stop handler check failed`)
-	}
-	const installed = runtimeClosureEvidence(pluginRoot, installedInventory)
-	if (installed.payloadHash !== candidatePayloadHash) {
-		throw new Error(`${client} installed payload hash differs from the candidate payload`)
 	}
 	let nativeQualification: InstalledCapabilityEvidence["nativeQualification"] = {
 		status: "not-proved",
@@ -1653,6 +1653,7 @@ function resolveCleanPathsCommit(
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: 15_000,
 	})
 	if (status.exitCode !== 0) throw new Error(errors.status)
 	if (status.stdout.toString().trim() !== "") throw new Error(errors.dirty)
@@ -1661,6 +1662,7 @@ function resolveCleanPathsCommit(
 		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: 15_000,
 	})
 	if (head.exitCode !== 0) throw new Error(errors.resolve)
 	const sourceCommit = head.stdout.toString().trim()

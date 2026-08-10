@@ -51,6 +51,11 @@ test("static capability sidecars are release-relevant but outside the version pr
 			classifyReleaseImpact({
 				title: "chore: change a static capability sidecar",
 				changedFiles: [{ path }],
+				pullRequestIdentity: {
+					headRef: "release-please--branches--main",
+					authorLogin: "github-actions[bot]",
+					expectedAutomationLogin: "github-actions[bot]",
+				},
 			}),
 		).toMatchObject({ payloadChanged: true, isReleasePleaseProjection: false, ok: false })
 	}

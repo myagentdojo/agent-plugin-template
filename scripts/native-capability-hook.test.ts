@@ -95,10 +95,15 @@ function treeSnapshot(directory: string): string[] {
 	return entries
 }
 
-function runGenerateCheck(): ReturnType<typeof Bun.spawnSync> {
+function runGenerateCheck(repositoryRoot = root): ReturnType<typeof Bun.spawnSync> {
 	return Bun.spawnSync({
-		cmd: [process.execPath, "run", "generate:check"],
-		cwd: root,
+		cmd: [
+			process.execPath,
+			"run",
+			join(repositoryRoot, "scripts", "generate.ts"),
+			"--check",
+		],
+		cwd: repositoryRoot,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
@@ -384,6 +389,7 @@ test("version metadata requires exactly one top-level strict semver", () => {
 		'{"version":"1.2"}\n',
 		'{"version":"1.2.3-01"}\n',
 		'{"version":"1.2.3+"}\n',
+		'{"version":"1.2.3+build+again"}\n',
 		'{"version":"0.3.0","version":"0.3.1"}\n',
 		'{"nested":{"version":"0.3.0"}}\n',
 		'{"version":"0.3.0"\n',
@@ -533,15 +539,21 @@ test("hostile cwd and PATH cannot execute workspace or user-selected tools or mu
 })
 
 test("generation owns one deterministic LF fixture projection", () => {
+	const temporaryRepositoryParent = mkdtempSync(
+		join(tmpdir(), "native-capability-generation-"),
+	)
+	temporaryRoots.push(temporaryRepositoryParent)
+	const temporaryRepository = join(temporaryRepositoryParent, "repository")
+	cpSync(root, temporaryRepository, { recursive: true })
 	const sourcePath = join(
-		root,
+		temporaryRepository,
 		"plugin",
 		"hooks",
 		"fixture",
 		"lifecycle-mechanics-proof.source.json",
 	)
 	const projectionPath = join(
-		root,
+		temporaryRepository,
 		"plugin",
 		"hooks",
 		"fixture",
@@ -551,29 +563,20 @@ test("generation owns one deterministic LF fixture projection", () => {
 		'{\n  "schemaVersion": 1,\n  "purpose": "Harness Plugin Prototype lifecycle mechanics proof"\n}\n'
 	expect(readFileSync(sourcePath, "utf8")).toBe(expected)
 	expect(readFileSync(projectionPath, "utf8")).toBe(expected)
-	expect(runGenerateCheck().exitCode).toBe(0)
+	expect(runGenerateCheck(temporaryRepository).exitCode).toBe(0)
 
-	const originalProjection = readFileSync(projectionPath)
-	try {
-		writeFileSync(projectionPath, "drifted\r\n")
-		const drift = runGenerateCheck()
-		expect(drift.exitCode).toBe(1)
-		expect(drift.stderr.toString()).toContain(
-			"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
-		)
-	} finally {
-		writeFileSync(projectionPath, originalProjection)
-	}
+	writeFileSync(projectionPath, "drifted\r\n")
+	const drift = runGenerateCheck(temporaryRepository)
+	expect(drift.exitCode).toBe(1)
+	expect(drift.stderr.toString()).toContain(
+		"plugin/hooks/fixture/lifecycle-mechanics-proof.generated.json",
+	)
 
-	const originalSource = readFileSync(sourcePath)
-	try {
-		writeFileSync(sourcePath, expected.replaceAll("\n", "\r\n"))
-		const nonCanonicalSource = runGenerateCheck()
-		expect(nonCanonicalSource.exitCode).toBe(1)
-		expect(nonCanonicalSource.stderr.toString()).toContain(
-			"plugin/hooks/fixture/lifecycle-mechanics-proof.source.json",
-		)
-	} finally {
-		writeFileSync(sourcePath, originalSource)
-	}
+	writeFileSync(projectionPath, expected)
+	writeFileSync(sourcePath, expected.replaceAll("\n", "\r\n"))
+	const nonCanonicalSource = runGenerateCheck(temporaryRepository)
+	expect(nonCanonicalSource.exitCode).toBe(1)
+	expect(nonCanonicalSource.stderr.toString()).toContain(
+		"plugin/hooks/fixture/lifecycle-mechanics-proof.source.json",
+	)
 })

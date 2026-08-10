@@ -25,7 +25,7 @@ export function validateCapabilitySidecars(repositoryRoot: string): string[] {
 		...checkNativeCapabilityFixture(repositoryRoot),
 	]
 	if (drifted.length > 0) {
-		throw new Error(`generated capability sidecar differs from its source: ${drifted[0]}`)
+		throw new Error(`generated capability sidecars differ from their sources: ${drifted.join(", ")}`)
 	}
 	for (const path of STATIC_CAPABILITY_SIDECAR_PATHS) {
 		if (!existsSync(join(repositoryRoot, path))) {

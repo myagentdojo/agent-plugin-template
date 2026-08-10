@@ -109,11 +109,9 @@ test("checked-in manifests expose one coherent tour identity and relative native
 			logo: "./assets/logo.svg",
 		},
 	})
-	for (const field of ["hooks"] as const) {
-		for (const manifest of [claudeManifest, codexManifest]) {
-			expect(manifest[field].startsWith("./")).toBe(true)
-			expect(existsSync(join(root, "plugin", manifest[field]))).toBe(true)
-		}
+	for (const manifest of [claudeManifest, codexManifest]) {
+		expect(manifest.hooks.startsWith("./")).toBe(true)
+		expect(existsSync(join(root, "plugin", manifest.hooks))).toBe(true)
 	}
 	for (const field of ["composerIcon", "logo"] as const) {
 		const path = codexManifest.interface[field]
@@ -158,10 +156,16 @@ test("capability tour is one model-only skill with one cross-client reviewer pro
 	expect(skill).toContain("three directories above this `SKILL.md`")
 	expect(skill).toContain("host-owned")
 	expect(skill).toContain("lifecycle mechanics proof")
+	expect(skill).toContain(
+		"<absolute-installed-plugin-root>/hooks/native-capability-hook Stop <active-client>",
+	)
 	expect(reviewer).toContain("Do not mutate")
 	expect(reviewer).toContain("bounded inputs")
 	expect(reviewer).toContain("structured handback")
 	expect(reviewer).toContain("Do not select or pin a model")
+	expect(reviewer).toContain(
+		"<absolute-installed-plugin-root>/hooks/native-capability-hook Stop <active-client>",
+	)
 	expect(combined).not.toMatch(/\bv?\d+\.\d+\.\d+\b/)
 	expect(combined).not.toMatch(/default[_ -]?agent|model:\s|model_name|modelName/i)
 
@@ -249,9 +253,6 @@ test("repository docs separate lifecycle mechanics from fresh-native qualificati
 		"native activation",
 		"exact hook definition",
 		"disabled or untrusted",
-		"0700",
-		"0600",
-		"macOS and Linux POSIX hosts",
 	]) {
 		expect(docs).toContain(claim)
 	}

@@ -357,7 +357,7 @@ Focused unit tests are required during development, but they do not replace the 
 
 ### Native evidence gate
 
-- Exact source commit, archive checksum, packaged payload hash, and installed payload hash agree.
+- Exact source commit, archive checksum, and payload hashes bind one candidate lineage; only the packaged and installed payload hashes must be equal.
 - Fresh Claude receipt covers discovery, host-corroborated skill-seeded native delegation, shared tour synthesis, SessionStart, host-observed silent Stop, and hooks-disabled fallback.
 - Fresh Codex receipt covers discovery/assets, host-corroborated native subagent-via-skill, explicit exact-definition trust, SessionStart, host-observed silent Stop, and disabled/untrusted fallback.
 - Derived drift receipts identify the source candidate plus distinct derived payload hash and prove first block, active re-entry silence, and zero mutation.

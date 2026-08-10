@@ -204,9 +204,8 @@ export function deterministicPluginArchive(
 						"tar",
 						"--sort=name",
 						"--mtime=@0",
-						"--owner=0",
-						"--group=0",
-						"--numeric-owner",
+						"--owner=root",
+						"--group=root",
 						"--no-xattrs",
 						"--no-acls",
 						"--no-selinux",
@@ -220,17 +219,23 @@ export function deterministicPluginArchive(
 						"-T",
 						fileList,
 					]
-		const tar = Bun.spawnSync({ cmd: tarArguments, stdout: "inherit", stderr: "inherit" })
+		const tar = Bun.spawnSync({ cmd: tarArguments, stdout: "pipe", stderr: "pipe" })
 		if (tar.exitCode !== 0) {
-			throw new Error(`deterministic archive tar failed with exit code ${tar.exitCode}`)
+			const diagnostics = tar.stderr.toString().trim()
+			throw new Error(
+				`deterministic archive tar failed with exit code ${tar.exitCode}${diagnostics ? `: ${diagnostics}` : ""}`,
+			)
 		}
 		const gzip = Bun.spawnSync({
 			cmd: ["gzip", "-n", "-9", "-c", uncompressedArchive],
 			stdout: "pipe",
-			stderr: "inherit",
+			stderr: "pipe",
 		})
 		if (gzip.exitCode !== 0) {
-			throw new Error(`deterministic archive gzip failed with exit code ${gzip.exitCode}`)
+			const diagnostics = gzip.stderr.toString().trim()
+			throw new Error(
+				`deterministic archive gzip failed with exit code ${gzip.exitCode}${diagnostics ? `: ${diagnostics}` : ""}`,
+			)
 		}
 		const bytes = Buffer.from(gzip.stdout)
 		return { bytes, sha256: createHash("sha256").update(bytes).digest("hex") }

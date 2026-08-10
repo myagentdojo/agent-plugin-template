@@ -63,6 +63,10 @@ Safety:
 const DEFAULT_HOSTED_RUN_DEADLINE_MS = 10 * 60 * 1000
 const DEFAULT_NETWORK_COMMAND_TIMEOUT_MS = 30 * 1000
 const DEFAULT_HOSTED_POLL_DELAY_MS = 3000
+// Hosted sanitized candidates omit plugin.config.json, so mirror its private
+// strict-semver contract at the archive-name boundary.
+const strictManifestSemver =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:(?:0|[1-9]\d*)|(?:\d*[A-Za-z-][0-9A-Za-z-]*)))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 type Visibility = "PUBLIC" | "PRIVATE"
 type TransportKind = "ssh" | "https"
@@ -241,6 +245,23 @@ export class CanaryError extends Error {
 	) {
 		super(message)
 	}
+}
+
+/** Validate the exact bounded manifest version before using it in archive staging. */
+export function validateLineageManifestVersion(manifestVersion: unknown): string {
+	if (
+		typeof manifestVersion !== "string" ||
+		manifestVersion.length > 64 ||
+		!strictManifestSemver.test(manifestVersion)
+	) {
+		throw new CanaryError(
+			"install_mismatch",
+			"candidate plugin manifest version must be exact semantic versioning and at most 64 characters for lineage packaging",
+			"repair plugin/.claude-plugin/plugin.json before publishing a new immutable candidate ref",
+			false,
+		)
+	}
+	return manifestVersion
 }
 
 /**
@@ -1004,7 +1025,7 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 			target.candidateRef.replace(/^refs\/heads\//, ""),
 			sourceSha,
 		)
-		const manifestVersion = proof.preflight.manifestVersion
+		const manifestVersion = validateLineageManifestVersion(proof.preflight.manifestVersion)
 		const manifestName = (
 			JSON.parse(
 				readFileSync(join(checkoutRoot, "plugin", ".claude-plugin", "plugin.json"), "utf8"),

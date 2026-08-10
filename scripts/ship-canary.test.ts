@@ -25,6 +25,7 @@ import {
 	classifyPublishingSystemChanges,
 	createSanitizedPublicCandidate,
 	qualifyTargets,
+	validateLineageManifestVersion,
 	type CandidateInstallEvidence,
 	type Target,
 } from "./ship-canary"
@@ -68,6 +69,15 @@ test("candidate qualification lineage rejects a different source or installed pa
 		bindCandidateQualificationLineage(sourceCommit, checksums, "5".repeat(64)),
 	).toThrow("installed payload")
 })
+
+test.each(["1.2", "01.2.3", "1.2.3/../../escape", `1.2.3+${"a".repeat(64)}`])(
+	"lineage packaging rejects unsafe manifest version %s",
+	(manifestVersion) => {
+		expect(() => validateLineageManifestVersion(manifestVersion)).toThrow(
+			"manifest version must be exact semantic versioning and at most 64 characters",
+		)
+	},
+)
 
 function executable(path: string, contents: string): void {
 	writeFileSync(path, contents)
