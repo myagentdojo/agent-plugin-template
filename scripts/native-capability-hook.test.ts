@@ -59,7 +59,7 @@ function runHook(
 	handler: string,
 	event: "SessionStart" | "Stop",
 	client: "claude" | "codex",
-	input: string,
+	input: string | Uint8Array,
 	options: { cwd?: string; env?: Record<string, string> } = {},
 ) {
 	return Bun.spawnSync({
@@ -260,6 +260,39 @@ test("ambiguous Stop guards fail open with one bounded warning", () => {
 			expectFailsOpen(runHook(fixture.handler, "Stop", client, input))
 		}
 	}
+})
+
+test("invalid UTF-8 Stop payloads fail open before fixture mismatch blocking", () => {
+	const fixture = installedPlugin()
+	writeFileSync(
+		join(fixture.pluginRoot, "hooks", "fixture", "lifecycle-mechanics-proof.generated.json"),
+		"drifted\n",
+	)
+	const prefix = Buffer.from('{"stop_hook_active":false,"x":"')
+	const suffix = Buffer.from('"}')
+
+	for (const invalidBytes of [
+		Buffer.from([0x80]),
+		Buffer.from([0xff]),
+		Buffer.from([0xc0, 0x80]),
+		Buffer.from([0xed, 0xa0, 0x80]),
+		Buffer.from([0xf4, 0x90, 0x80, 0x80]),
+		Buffer.from([0xe2, 0x82]),
+	]) {
+		const input = Buffer.concat([prefix, invalidBytes, suffix])
+		for (const client of ["claude", "codex"] as const) {
+			expectFailsOpen(runHook(fixture.handler, "Stop", client, input))
+		}
+	}
+
+	const validUnicode = runHook(
+		fixture.handler,
+		"Stop",
+		"claude",
+		'{"stop_hook_active":false,"x":"é€🙂"}',
+	)
+	expect(validUnicode.stderr.toString()).toBe("")
+	expect(JSON.parse(validUnicode.stdout.toString())).toMatchObject({ decision: "block" })
 })
 
 test("oversized input fails open after reading only 1 MiB plus one overflow byte", () => {

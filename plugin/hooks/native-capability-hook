@@ -26,7 +26,7 @@ SessionStart:claude|SessionStart:codex|Stop:claude|Stop:codex) ;;
 *) warn ;;
 esac
 
-for required_tool in awk dd mktemp rm wc; do
+for required_tool in awk dd mktemp od rm wc; do
 	command -v "$required_tool" >/dev/null 2>&1 || warn
 done
 temporary_directory=$(mktemp -d /tmp/harness-native-capability-hook.XXXXXX 2>/dev/null) || warn
@@ -47,11 +47,71 @@ while [ "$input_size" -lt 1048577 ]; do
 done
 [ "$input_size" -le 1048576 ] || warn
 
+# Validate Unicode scalar-value UTF-8 before the byte-oriented JSON parser can
+# authorize output. POSIX od keeps this independent of host locale and awk
+# multibyte behavior.
+valid_utf8() {
+	utf8_bytes=$temporary_directory/utf8.bytes
+	od -An -t u1 -v "$1" >"$utf8_bytes" 2>/dev/null || return 1
+	awk '
+	{
+		for (byte_index = 1; byte_index <= NF; byte_index++) {
+			byte = $byte_index + 0
+			if (remaining > 0) {
+				minimum = 128
+				maximum = 191
+				if (first_continuation) {
+					minimum = first_minimum
+					maximum = first_maximum
+					first_continuation = 0
+				}
+				if (byte < minimum || byte > maximum) exit 1
+				remaining--
+				continue
+			}
+			first_continuation = 0
+			if (byte <= 127) continue
+			if (byte >= 194 && byte <= 223) {
+				remaining = 1
+			} else if (byte == 224) {
+				remaining = 2
+				first_continuation = 1
+				first_minimum = 160
+				first_maximum = 191
+			} else if ((byte >= 225 && byte <= 236) || (byte >= 238 && byte <= 239)) {
+				remaining = 2
+			} else if (byte == 237) {
+				remaining = 2
+				first_continuation = 1
+				first_minimum = 128
+				first_maximum = 159
+			} else if (byte == 240) {
+				remaining = 3
+				first_continuation = 1
+				first_minimum = 144
+				first_maximum = 191
+			} else if (byte >= 241 && byte <= 243) {
+				remaining = 3
+			} else if (byte == 244) {
+				remaining = 3
+				first_continuation = 1
+				first_minimum = 128
+				first_maximum = 143
+			} else {
+				exit 1
+			}
+		}
+	}
+	END { if (remaining != 0) exit 1 }
+	' "$utf8_bytes"
+}
+
 # Validate one JSON object and extract one unescaped top-level member. Both hook
 # inputs and manifests use this parser so malformed unrelated members cannot
 # authorize a Stop block or produce startup context. Input and nesting caps keep
 # hostile payloads bounded; any unsupported or uncertain input fails open.
 top_level_member() {
+	valid_utf8 "$1" || return 2
 	awk -v target="$2" -v expected_kind="$3" '
 	function whitespace(c) { return c == " " || c == "\t" || c == "\r" || c == "\n" }
 	function charat(i) { return char_indexed ? chars[i] : substr(document, i, 1) }
