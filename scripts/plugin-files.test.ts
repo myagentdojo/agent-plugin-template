@@ -223,7 +223,7 @@ test("archive order keeps each directory beside its descendants", () => {
 	])
 })
 
-test("archive USTAR owner names are canonical across tar implementations", () => {
+test("in-process USTAR bytes are platform canonical", () => {
 	const { sourceRoot } = pluginFixture()
 	const first = deterministicPluginArchive(sourceRoot, "plugin-0.1.0")
 	const second = deterministicPluginArchive(sourceRoot, "plugin-0.1.0")
@@ -233,8 +233,37 @@ test("archive USTAR owner names are canonical across tar implementations", () =>
 
 	expect(first.bytes).toEqual(second.bytes)
 	expect(first.sha256).toBe(
-		"7c6a87163b7958feb7c806f7ce1b8174d5bb2afa758d89915806fcf084899fe2",
+		"116a569020e91b24e5994dae842f0a4fe3bfd90bb0ee7f20c4c66f3e38b805ae",
 	)
 	expect(headerText(265)).toBe("root")
 	expect(headerText(297)).toBe("root")
+})
+
+test("USTAR prefix fields preserve representable long paths", () => {
+	const { sourceRoot, pluginRoot } = pluginFixture()
+	const directory = `nested-${"p".repeat(80)}`
+	const file = `${"f".repeat(30)}.txt`
+	fileSystem.mkdirSync(join(pluginRoot, directory))
+	fileSystem.writeFileSync(join(pluginRoot, directory, file), "long path\n")
+
+	const archive = deterministicPluginArchive(sourceRoot, "plugin-0.1.0")
+	const listing = Bun.spawnSync({
+		cmd: ["tar", "-tzf", "-"],
+		stdin: archive.bytes,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(listing.exitCode, listing.stderr.toString()).toBe(0)
+	expect(listing.stdout.toString()).toContain(`plugin-0.1.0/${directory}/${file}\n`)
+})
+
+test("USTAR packaging rejects an unrepresentable path component", () => {
+	const { sourceRoot, pluginRoot } = pluginFixture()
+	const file = "x".repeat(101)
+	fileSystem.writeFileSync(join(pluginRoot, file), "too long\n")
+
+	expect(() => deterministicPluginArchive(sourceRoot, "plugin-0.1.0")).toThrow(
+		"USTAR path cannot be represented",
+	)
 })

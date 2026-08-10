@@ -11,7 +11,6 @@ import {
 	rmSync,
 	statSync,
 	utimesSync,
-	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
@@ -39,6 +38,83 @@ function framedLength(length: number): Buffer {
 	const frame = Buffer.allocUnsafe(8)
 	frame.writeBigUInt64BE(BigInt(length))
 	return frame
+}
+
+const USTAR_BLOCK_BYTES = 512
+
+function writeUstarText(header: Buffer, offset: number, width: number, value: string): void {
+	const bytes = Buffer.from(value, "utf8")
+	if (bytes.length > width) throw new Error(`USTAR field exceeds ${width} bytes: ${value}`)
+	bytes.copy(header, offset)
+}
+
+function writeUstarOctal(header: Buffer, offset: number, width: number, value: number): void {
+	const octal = value.toString(8)
+	if (octal.length > width - 1) throw new Error(`USTAR numeric field exceeds ${width} bytes`)
+	writeUstarText(header, offset, width, `${octal.padStart(width - 1, "0")}\0`)
+}
+
+function splitUstarPath(relativePath: string): { name: string; prefix: string } {
+	if (Buffer.byteLength(relativePath, "utf8") <= 100) return { name: relativePath, prefix: "" }
+	for (
+		let slash = relativePath.lastIndexOf("/");
+		slash > 0;
+		slash = relativePath.lastIndexOf("/", slash - 1)
+	) {
+		const prefix = relativePath.slice(0, slash)
+		const name = relativePath.slice(slash + 1)
+		if (
+			name.length > 0 &&
+			Buffer.byteLength(name, "utf8") <= 100 &&
+			Buffer.byteLength(prefix, "utf8") <= 155
+		) {
+			return { name, prefix }
+		}
+	}
+	throw new Error(`USTAR path cannot be represented: ${relativePath}`)
+}
+
+function ustarHeader(
+	relativePath: string,
+	status: { isDirectory(): boolean; mode: number; size: number },
+): Buffer {
+	const header = Buffer.alloc(USTAR_BLOCK_BYTES)
+	const { name, prefix } = splitUstarPath(relativePath)
+	writeUstarText(header, 0, 100, name)
+	writeUstarOctal(header, 100, 8, status.mode & 0o777)
+	writeUstarOctal(header, 108, 8, 0)
+	writeUstarOctal(header, 116, 8, 0)
+	writeUstarOctal(header, 124, 12, status.isDirectory() ? 0 : status.size)
+	writeUstarOctal(header, 136, 12, 0)
+	header.fill(0x20, 148, 156)
+	header[156] = status.isDirectory() ? 0x35 : 0x30
+	writeUstarText(header, 257, 6, "ustar\0")
+	writeUstarText(header, 263, 2, "00")
+	writeUstarText(header, 265, 32, "root")
+	writeUstarText(header, 297, 32, "root")
+	writeUstarOctal(header, 329, 8, 0)
+	writeUstarOctal(header, 337, 8, 0)
+	writeUstarText(header, 345, 155, prefix)
+	let checksum = 0
+	for (const byte of header) checksum += byte
+	writeUstarText(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `)
+	return header
+}
+
+function deterministicUstar(stagingRoot: string, entries: readonly string[]): Buffer {
+	const chunks: Buffer[] = []
+	for (const relativePath of entries) {
+		const absolutePath = join(stagingRoot, relativePath)
+		const status = statSync(absolutePath)
+		chunks.push(ustarHeader(relativePath, status))
+		if (status.isDirectory()) continue
+		const contents = readFileSync(absolutePath)
+		chunks.push(contents)
+		const padding = (USTAR_BLOCK_BYTES - (contents.length % USTAR_BLOCK_BYTES)) % USTAR_BLOCK_BYTES
+		if (padding > 0) chunks.push(Buffer.alloc(padding))
+	}
+	chunks.push(Buffer.alloc(USTAR_BLOCK_BYTES * 2))
+	return Buffer.concat(chunks)
 }
 
 /** Hash an ordered payload inventory with collision-free path/body framing. */
@@ -170,64 +246,10 @@ export function deterministicPluginArchive(
 			chmodSync(absolutePath, status.isDirectory() ? 0o755 : status.mode & 0o111 ? 0o755 : 0o644)
 			utimesSync(absolutePath, epoch, epoch)
 		}
-		const fileList = join(stagingRoot, "entries.bin")
-		writeFileSync(fileList, Buffer.from(`${entries.join("\0")}\0`))
-		const uncompressedArchive = join(stagingRoot, `${packageName}.tar`)
-		const tarArguments =
-			process.platform === "darwin"
-				? [
-						"tar",
-						"-cf",
-						uncompressedArchive,
-						"--format",
-						"ustar",
-						"--uid",
-						"0",
-						"--gid",
-						"0",
-						"--uname",
-						"root",
-						"--gname",
-						"root",
-						"--no-xattrs",
-						"--no-acls",
-						"--no-fflags",
-						"--no-mac-metadata",
-						"--no-recursion",
-						"--null",
-						"-C",
-						stagingRoot,
-						"-T",
-						fileList,
-					]
-				: [
-						"tar",
-						"--sort=name",
-						"--mtime=@0",
-						"--owner=root",
-						"--group=root",
-						"--no-xattrs",
-						"--no-acls",
-						"--no-selinux",
-						"--format=ustar",
-						"--no-recursion",
-						"--null",
-						"-cf",
-						uncompressedArchive,
-						"-C",
-						stagingRoot,
-						"-T",
-						fileList,
-					]
-		const tar = Bun.spawnSync({ cmd: tarArguments, stdout: "pipe", stderr: "pipe" })
-		if (tar.exitCode !== 0) {
-			const diagnostics = tar.stderr.toString().trim()
-			throw new Error(
-				`deterministic archive tar failed with exit code ${tar.exitCode}${diagnostics ? `: ${diagnostics}` : ""}`,
-			)
-		}
+		const uncompressedArchive = deterministicUstar(stagingRoot, entries)
 		const gzip = Bun.spawnSync({
-			cmd: ["gzip", "-n", "-9", "-c", uncompressedArchive],
+			cmd: ["gzip", "-n", "-9", "-c"],
+			stdin: uncompressedArchive,
 			stdout: "pipe",
 			stderr: "pipe",
 		})
