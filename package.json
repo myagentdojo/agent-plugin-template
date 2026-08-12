@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "test": "bun test",
+    "update": "bun run scripts/update.ts",
     "init": "bun run scripts/init.ts",
     "generate": "bun run scripts/generate.ts",
     "generate:check": "bun run scripts/generate.ts --check",

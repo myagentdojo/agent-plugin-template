@@ -28,6 +28,8 @@ test("replacement guidance preserves the documented refresh operations", async (
 	const readme = await Bun.file(readmeUrl).text()
 	expect(readme).toContain("claude plugin marketplace update PLUGIN_NAME")
 	expect(readme).toContain("codex plugin marketplace upgrade PLUGIN_NAME")
+	expect(readme).toContain("bun run update -- --harness codex")
+	expect(readme).toContain("It does not select a newer Release")
 	expect(readme).toContain("Automatic Codex marketplace refresh is unspecified")
 	expect(readme).toContain("A pinned immutable tag should resolve to the same bytes")
 })

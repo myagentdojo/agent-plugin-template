@@ -536,7 +536,8 @@ function jsonCommand<T>(
 	}
 }
 
-function regularFiles(root: string): string[] {
+/** List one tree as sorted, regular-file-only relative paths. */
+export function regularFileInventory(root: string): string[] {
 	const inventory: string[] = []
 	function walk(directory: string): void {
 		for (const entry of readdirSync(directory).sort()) {
@@ -573,7 +574,7 @@ function snapshotFixture(repositoryRoot: string, requestedRef: string, message: 
 	const indexPath = join(repositoryRoot, `.fixture-index-${requestedRef}`)
 	const environment = gitEnvironment(indexPath)
 	rmSync(indexPath, { force: true })
-	for (const relativePath of regularFiles(repositoryRoot).filter((path) => path !== ".git")) {
+	for (const relativePath of regularFileInventory(repositoryRoot).filter((path) => path !== ".git")) {
 		if (relativePath.startsWith(".git/")) continue
 		const absolutePath = join(repositoryRoot, relativePath)
 		const blob = command(["git", "hash-object", "-w", "--", absolutePath], {
@@ -712,8 +713,9 @@ function createFixtureRelease(sourceRoot: string, temporaryRoot: string): Fixtur
 	}
 }
 
-function comparePayload(checkout: TaggedCheckout, installedPath: string): string[] {
-	const installedInventory = regularFiles(installedPath)
+/** Compare one installed payload byte-for-byte with its detached tagged checkout. */
+export function comparePayload(checkout: TaggedCheckout, installedPath: string): string[] {
+	const installedInventory = regularFileInventory(installedPath)
 	if (installedInventory.join("\n") !== checkout.inventory.join("\n")) {
 		throw new Error("installed payload inventory differs from tagged plugin inventory")
 	}
@@ -1328,7 +1330,7 @@ export function assertReplacementAdmission(
  */
 export function runtimeClosureEvidence(
 	pluginRoot: string,
-	inventory: string[] = regularFiles(pluginRoot),
+	inventory: string[] = regularFileInventory(pluginRoot),
 ): {
 	version: string
 	inventoryHash: string
@@ -1384,7 +1386,7 @@ export function proveInstalledCapabilityEvidence(
 	if (!fixtureSource.equals(fixtureProjection)) {
 		throw new Error(`${client} installed lifecycle mechanics proof fixture differs`)
 	}
-	const installedInventory = regularFiles(pluginRoot)
+	const installedInventory = regularFileInventory(pluginRoot)
 	const installed = runtimeClosureEvidence(pluginRoot, installedInventory)
 	if (installed.payloadHash !== candidatePayloadHash) {
 		throw new Error(`${client} installed payload hash differs from the candidate payload`)

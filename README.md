@@ -9,7 +9,7 @@ Build one Git-distributed plugin for Claude Code and Codex.
 - Publish from GitHub Releases, not npm.
 - Develop through each harness's native plugin workflow.
 
-Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or a setup command. The first use with a missing runtime requires one approved repair; warm use works offline.
+Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or a setup command. The first use with a missing runtime requires one approved repair; warm use works offline. Maintainers running `bun run update -- --target latest` also need GitHub CLI read access for Release discovery. Explicit target tags use the configured Git credential path directly.
 
 The operator verification recipes also use a POSIX shell, `jq`, `awk`, and `diff`.
 
@@ -238,39 +238,33 @@ claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-restored.json"
 
 Verify the restored version, scope, active cache bytes, enabled state, and persistent plugin data. Never delete the persistent plugin data directory. Private background refresh uses the configured Git credential path; a fetch failure keeps the prior installed cache. Run `claude plugin marketplace update PLUGIN_NAME` for a manual same-source refresh, then inspect before replacement.
 
-### Codex replacement
+### Codex production update
 
-Capture marketplace and plugin JSON first. Record `PRIOR_CODEX_SOURCE`, `PRIOR_CODEX_REF`, and `PRIOR_ENABLED`. Preflight both the target and restoration refs before removal:
-
-```sh
-codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-before.json"
-codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-before.json"
-codex plugin remove PLUGIN_NAME@PLUGIN_NAME --json
-codex plugin marketplace remove PLUGIN_NAME --json
-codex plugin marketplace add "$TARGET_CODEX_SOURCE" --ref "$TARGET_CODEX_REF" --json > "$PREFLIGHT_ROOT/codex-marketplace-target-add.json"
-codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-target.json"
-codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-target-add.json"
-codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-target.json"
-```
-
-Inspect the marketplace JSON and installed root before plugin add. Then inspect the plugin JSON and installed path. Require the target source/ref, version, and byte equality with the detached target checkout.
-
-If any step after removal fails, restore the exact prior source and ref immediately:
+Use the repository-owned command for every production upgrade or rollback. No arguments show concise help. A normal invocation is read-only and previews the selected Release, the captured prior state, exact side effects, and recovery plan:
 
 ```sh
-codex plugin remove PLUGIN_NAME@PLUGIN_NAME --json || true
-codex plugin marketplace remove PLUGIN_NAME --json || true
-codex plugin marketplace add "$PRIOR_CODEX_SOURCE" --ref "$PRIOR_CODEX_REF" --json > "$PREFLIGHT_ROOT/codex-marketplace-restored-add.json"
-codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-restored-add.json"
-codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-restored.json"
-codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-restored.json"
+bun run update -- --harness codex
+bun run update -- --harness codex --target vX.Y.Z
 ```
 
-Verify the restored source, ref, version, cache bytes, and enabled state. Codex CLI currently has no documented plugin enable/disable subcommand; restore a differing enabled state in the Codex plugin settings and confirm it with `codex plugin list --json` before continuing.
+`--target latest` is the default. It selects the highest stable GitHub Release and excludes drafts and prereleases. An explicit stable `vX.Y.Z` tag keeps the run deterministic. The command resolves the selector once, peels the tag to one commit, and preflights both target and restoration Releases through the current Git transport before any removal.
 
-For the target install, start a fresh isolated task, confirm skill discovery, and exercise the missing-runtime repair/retry journey when the reviewed Bun identity changed. A new Bun version plus executable digest requires fresh approval; archive-only metadata changes do not change the approved runtime identity.
+Review the preview, then authorize that exact target:
 
-`codex plugin marketplace upgrade PLUGIN_NAME` is the documented explicit CLI operation for refreshing the configured Git snapshot. A pinned immutable tag should resolve to the same bytes. Automatic Codex marketplace refresh is unspecified; never rely on it to move or restore a release.
+```sh
+bun run update -- --harness codex --target vX.Y.Z --apply
+bun run update -- --harness codex --target vX.Y.Z --apply --json --no-input
+```
+
+Apply removes the prior Plugin Installation and Marketplace, adds the same source pinned to the selected tag, verifies the Marketplace checkout before installation, installs the Plugin Payload, then checks configured ref, exact tag, peeled commit, manifest version, installed path, policy, enabled state, payload bytes, and selected-Release functional proof. An already-current Release returns `changed: false` without native remove or add commands.
+
+The command blocks before mutation for unowned, ambiguous, sparse, disabled, non-stable, uncredentialed, unsafe, or unrestorable state. Codex CLI has no supported plugin enable/disable subcommand, so a disabled installation needs an administrator-owned replacement path. After a recoverable post-removal failure, the command attempts one exact restoration and verifies it. An unverified state returns `transactionState: "unknown"`, `retrySafety: "inspect_required"`, and never retries automatically.
+
+JSON mode emits one result on stdout. Diagnostics stay on stderr. The result includes run correlation, selected and prior Release evidence, resulting ref/version/path, transaction state, completed side effects, retry safety, proof lineage, and one next safe action. Preview reports `proof.status: "target_preflight"` and leaves the live Marketplace and Plugin Installation on their prior Release; only a no-op or verified apply reports `proof.status: "installed_match"`. Fresh-install qualification stays separate from in-place-update proof.
+
+`codex plugin marketplace upgrade PLUGIN_NAME` refreshes the configured Git snapshot only. It does not select a newer Release. A pinned immutable tag should resolve to the same bytes. Automatic Codex marketplace refresh is unspecified; never rely on a zero-error refresh result as release-selection evidence.
+
+After a successful update, start a fresh isolated task, confirm skill discovery, and exercise the missing-runtime repair/retry journey when the reviewed Bun identity changed. A new Bun version plus executable digest requires fresh approval; archive-only metadata changes do not change the approved runtime identity.
 
 ## Develop locally
 
@@ -513,6 +507,8 @@ Release machinery is based on [Release Please](https://github.com/googleapis/rel
 - `bun run prove:runtime-platform -- --target <target>`: acquire the reviewed target asset, execute the packaged skill, and prove warm offline reuse.
 - `bun run prove:distribution`: build twice, compare package bytes, extract the payload, prove Bun-only closure, and verify cold read-only guidance.
 - `bun run prove:dx`: verify canonical marketplace paths and native development boundaries.
+- `bun test scripts/update.test.ts`: prove preview, selection, native replacement, false-success rejection, exact recovery, and unknown-state handling.
+- `RUN_HOSTED_CODEX_UPDATE=1 bun test scripts/update-hosted.test.ts`: run the fixed `v0.1.0` to `v0.1.1` scenario twice through fresh native Codex homes and hosted Git. Set `CODEX_UPDATE_HOSTED_SOURCE` to qualify a credentialed private SSH or HTTPS transport separately.
 - `bun run prove:all`: complete local gate.
 
 ## Public and private canaries
