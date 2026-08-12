@@ -4,7 +4,7 @@ Use this guide when changing a production plugin installation in Claude Code or 
 
 Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or setup command. First use with a missing runtime requires one approved repair; warm use works offline.
 
-The verification recipes also use a POSIX shell, `jq`, `awk`, and `diff`.
+The verification recipes also use a POSIX shell, `curl`, `jq`, `awk`, and `diff`.
 
 ## Preflight a release tag
 
@@ -30,11 +30,19 @@ test -z "$(git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin |
 git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin > "$PREFLIGHT_ROOT/payload-inventory.txt"
 ```
 
-For private SSH, verify GitHub's published host-key fingerprint, accept that key through an interactive SSH connection, and load the repository key before preflight:
+For private SSH, obtain GitHub's published Ed25519 host key over trusted HTTPS, isolate it in an explicit known-hosts file, and load the repository key before preflight:
 
 ```sh
+GITHUB_KNOWN_HOSTS="$PREFLIGHT_ROOT/github-known-hosts"
+curl --fail --silent --show-error https://api.github.com/meta \
+  | jq -r '.ssh_keys[] | select(startswith("ssh-ed25519 ")) | "github.com " + .' \
+  > "$GITHUB_KNOWN_HOSTS"
+test -s "$GITHUB_KNOWN_HOSTS"
+chmod 600 "$GITHUB_KNOWN_HOSTS"
+GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS"
+export GIT_SSH_COMMAND
 set +e
-SSH_GREETING=$(ssh -T git@github.com 2>&1)
+SSH_GREETING=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$GITHUB_KNOWN_HOSTS" -T git@github.com 2>&1)
 SSH_STATUS=$?
 set -e
 printf '%s\n' "$SSH_GREETING"
@@ -42,7 +50,7 @@ if test "$SSH_STATUS" -ne 1; then
   echo "unexpected GitHub SSH greeting status: $SSH_STATUS" >&2
   exit 1
 fi
-ssh-keygen -F github.com
+ssh-keygen -F github.com -f "$GITHUB_KNOWN_HOSTS"
 ssh-add -l
 TAG=vX.Y.Z
 FETCH_URL=git@github.com:OWNER/REPOSITORY.git
@@ -50,7 +58,7 @@ REMOTE_TAG=$(git ls-remote --refs "$FETCH_URL" "refs/tags/$TAG")
 test -n "$REMOTE_TAG"
 ```
 
-GitHub's successful SSH authentication greeting may exit with status 1 because it does not provide shell access. Verify the account named by the greeting before continuing.
+GitHub's successful SSH authentication greeting may exit with status 1 because it does not provide shell access. Verify the account named by the greeting before continuing. Launch Claude Code or Codex from this shell so subsequent Git operations inherit the same `GIT_SSH_COMMAND` and explicit known-hosts file.
 
 For private HTTPS, configure a Git credential helper, then prove it can fetch the tag:
 
@@ -192,7 +200,7 @@ fi
 claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-restored.json"
 ```
 
-Verify the restored version, scope, active cache bytes, enabled state, and persistent plugin data. Keep the persistent plugin data directory. Private background refresh uses the configured Git credential path; a fetch failure keeps the prior installed cache. Run `claude plugin marketplace update PLUGIN_NAME` for a manual same-source refresh, then inspect before replacement.
+Verify the restored version, scope, active cache bytes, enabled state, and persistent plugin data. Keep the persistent plugin data directory. Private background refresh uses the configured Git credential path. Set `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1` in Claude Code's launch environment before starting the client. With it, a failed marketplace pull retains the last-known-good clone. Without it, Claude Code deletes and re-clones the marketplace after a failed pull, so prior marketplace cache retention is not guaranteed. Run `claude plugin marketplace update PLUGIN_NAME` for a manual same-source refresh, then inspect before replacement.
 
 ### Codex replacement
 

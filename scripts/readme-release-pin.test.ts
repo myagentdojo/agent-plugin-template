@@ -76,6 +76,13 @@ test("replacement guidance preserves the documented refresh operations", async (
 	expect(installing).toContain("codex plugin marketplace upgrade PLUGIN_NAME")
 	expect(installing).toContain("Automatic Codex marketplace refresh is unspecified")
 	expect(installing).toContain("A pinned immutable tag should resolve to the same bytes")
+	expect(installing).toContain("`CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1`")
+	expect(installing).toContain(
+		"With it, a failed marketplace pull retains the last-known-good clone.",
+	)
+	expect(installing).toContain(
+		"Without it, Claude Code deletes and re-clones the marketplace after a failed pull",
+	)
 })
 
 test("release preflight peels annotated tags and accepts only GitHub SSH status 1", async () => {
@@ -91,6 +98,16 @@ test("release preflight peels annotated tags and accepts only GitHub SSH status 
 	expect(preflight).toContain("SSH_STATUS=$?")
 	expect(preflight).toContain('if test "$SSH_STATUS" -ne 1; then')
 	expect(preflight).toContain("exit 1")
+	expect(preflight).toContain("https://api.github.com/meta")
+	expect(preflight).toContain('select(startswith("ssh-ed25519 "))')
+	expect(preflight).toContain("StrictHostKeyChecking=yes")
+	expect(preflight).toContain('UserKnownHostsFile="$GITHUB_KNOWN_HOSTS"')
+	expect(preflight).toContain("export GIT_SSH_COMMAND")
+	expect(preflight).toContain('ssh-keygen -F github.com -f "$GITHUB_KNOWN_HOSTS"')
+	expect(preflight).toContain("ssh-add -l")
+	expect(preflight.indexOf("https://api.github.com/meta")).toBeLessThan(
+		preflight.indexOf("SSH_GREETING="),
+	)
 })
 
 test("pull-request policy remains in its declared owner", async () => {
@@ -112,7 +129,13 @@ test("release setup binds the narrow automation identities", async () => {
 	expect(setup).toContain("Release automation requires `RELEASE_PLEASE_TOKEN`")
 	expect(setup).toContain("it does not fall back to `GITHUB_TOKEN`")
 	expect(setup).toContain("both the release-impact gate and publication admission bind that identity")
+	expect(setup).toContain(
+		"proves repository configuration and required environment, variable, and secret names",
+	)
+	expect(setup).toContain("never reads secret values or proves real credential access")
 	expect(setup).toContain("token-backed GitHub API identity and SSH Git identity")
+	expect(setup).toContain("rotate the stored token before expiry or revocation")
+	expect(setup).not.toContain("GitHub App token")
 	expect(setup).not.toContain("HTTPS Git identity")
 })
 
