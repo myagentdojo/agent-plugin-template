@@ -13,11 +13,17 @@ import {
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test"
 
 const root = new URL("..", import.meta.url).pathname
 const temporaryRoots: string[] = []
 const hermeticBunPath = `${dirname(process.execPath)}:/usr/bin:/bin`
+const helperProcessTimeoutMs = 30_000
+const updateProcessTimeoutMs = 90_000
+const updateTestTimeoutMs = 120_000
+const nativeCodexTest = Bun.which("codex") ? test : test.skip
+
+setDefaultTimeout(updateTestTimeoutMs)
 
 afterEach(() => {
 	for (const temporaryRoot of temporaryRoots.splice(0)) {
@@ -33,6 +39,7 @@ function run(arguments_: string[], environment: Record<string, string> = {}): Re
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: updateProcessTimeoutMs,
 	})
 }
 
@@ -43,6 +50,7 @@ function git(arguments_: string[], cwd: string): string {
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: helperProcessTimeoutMs,
 	})
 	if (result.exitCode !== 0) throw new Error(result.stderr.toString())
 	return result.stdout.toString().trim()
@@ -134,6 +142,7 @@ function releaseProof(checkoutRoot: string): ReturnType<typeof Bun.spawnSync> {
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: helperProcessTimeoutMs,
 	})
 }
 
@@ -252,6 +261,7 @@ function nativeCodexJson<T>(
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
+		timeout: helperProcessTimeoutMs,
 	})
 	if (result.exitCode !== 0) throw new Error(result.stderr.toString())
 	return JSON.parse(result.stdout.toString()) as T
@@ -318,7 +328,7 @@ function faultingCodexEnvironment(
 	const wrapperPath = join(temporaryRoot, "codex")
 	writeFileSync(
 		wrapperPath,
-		`#!/usr/bin/env bun\nimport { appendFileSync, existsSync } from "node:fs"\nconst args = process.argv.slice(2)\nconst command = args.join(" ")\nappendFileSync(process.env.UPDATE_TEST_COMMAND_LOG, command + "\\n")\nconst phase = process.env.UPDATE_TEST_FAIL_PHASE\nconst injected = existsSync(process.env.UPDATE_TEST_FAIL_MARKER)\nconst matches = (phase === "after_plugin_remove" && command.startsWith("plugin remove ")) || (phase === "after_marketplace_remove" && command.startsWith("plugin marketplace remove ")) || (phase === "after_marketplace_add" && command.startsWith("plugin marketplace add ") && args.includes("v0.1.1")) || (phase === "after_plugin_add" && command.startsWith("plugin add "))\nif (injected && process.env.UPDATE_TEST_FAIL_RECOVERY === "1" && command.startsWith("plugin marketplace add ") && args.includes("v0.1.0")) { console.error("injected recovery failure"); process.exit(75) }\nlet delegatedArgs = args\nif (!injected && phase === "stale_marketplace_add" && command.startsWith("plugin marketplace add ") && args.includes("v0.1.1")) { delegatedArgs = args.map((value) => value === "v0.1.1" ? "v0.1.0" : value); await Bun.write(process.env.UPDATE_TEST_FAIL_MARKER, phase) }\nconst result = Bun.spawnSync({ cmd: [process.env.UPDATE_TEST_REAL_CODEX, ...delegatedArgs], env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" })\nif (!injected && matches && result.exitCode === 0) { await Bun.write(process.env.UPDATE_TEST_FAIL_MARKER, phase); console.error("injected failure " + phase); process.exit(74) }\nprocess.stdout.write(result.stdout)\nprocess.stderr.write(result.stderr)\nprocess.exit(result.exitCode)\n`,
+		`#!/usr/bin/env bun\nimport { appendFileSync, existsSync } from "node:fs"\nconst args = process.argv.slice(2)\nconst command = args.join(" ")\nappendFileSync(process.env.UPDATE_TEST_COMMAND_LOG, command + "\\n")\nconst phase = process.env.UPDATE_TEST_FAIL_PHASE\nconst injected = existsSync(process.env.UPDATE_TEST_FAIL_MARKER)\nconst matches = (phase === "after_plugin_remove" && command.startsWith("plugin remove ")) || (phase === "after_marketplace_remove" && command.startsWith("plugin marketplace remove ")) || (phase === "after_marketplace_add" && command.startsWith("plugin marketplace add ") && args.includes("v0.1.1")) || (phase === "after_plugin_add" && command.startsWith("plugin add "))\nif (injected && process.env.UPDATE_TEST_FAIL_RECOVERY === "1" && command.startsWith("plugin marketplace add ") && args.includes("v0.1.0")) { console.error("injected recovery failure"); process.exit(75) }\nlet delegatedArgs = args\nif (!injected && phase === "stale_marketplace_add" && command.startsWith("plugin marketplace add ") && args.includes("v0.1.1")) { delegatedArgs = args.map((value) => value === "v0.1.1" ? "v0.1.0" : value); await Bun.write(process.env.UPDATE_TEST_FAIL_MARKER, phase) }\nconst result = Bun.spawnSync({ cmd: [process.env.UPDATE_TEST_REAL_CODEX, ...delegatedArgs], env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 })\nif (!injected && matches && result.exitCode === 0) { await Bun.write(process.env.UPDATE_TEST_FAIL_MARKER, phase); console.error("injected failure " + phase); process.exit(74) }\nprocess.stdout.write(result.stdout)\nprocess.stderr.write(result.stderr)\nprocess.exit(result.exitCode)\n`,
 	)
 	chmodSync(wrapperPath, 0o755)
 	return {
@@ -527,7 +537,22 @@ test("apply is a successful no-op when the selected immutable Release is current
 	expect(existsSync(fixture.mutationMarker)).toBe(false)
 })
 
-test("apply replaces the old immutable Release through the real native Codex CLI", () => {
+test("apply human output reports an unchanged current immutable Release", () => {
+	const fixture = updateFixture()
+	const result = run(["--harness", "codex", "--target", "v0.1.0", "--apply", "--no-input"], {
+		CODEX_HOME: fixture.codeHome,
+		PATH: fixture.path,
+		UPDATE_TEST_MUTATION_MARKER: fixture.mutationMarker,
+		UPDATE_TEST_STATE: fixture.statePath,
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(result.stdout.toString()).toStartWith("Unchanged: v0.1.0 -> v0.1.0\n")
+	expect(result.stdout.toString()).not.toContain("Updated:")
+	expect(existsSync(fixture.mutationMarker)).toBe(false)
+})
+
+nativeCodexTest("apply replaces the old immutable Release through the real native Codex CLI", () => {
 	const fixture = nativeUpdateFixture()
 	const result = run(
 		["--harness", "codex", "--target", "v0.1.1", "--apply", "--json", "--no-input"],
@@ -577,7 +602,7 @@ test("apply replaces the old immutable Release through the real native Codex CLI
 	)
 })
 
-test("latest selects the highest stable GitHub Release and excludes drafts and prereleases", () => {
+nativeCodexTest("latest selects the highest stable GitHub Release and excludes drafts and prereleases", () => {
 	const fixture = nativeUpdateFixture()
 	const environment = releaseApiEnvironment(fixture.environment, [
 		{ tag_name: "v9.0.0", draft: true, prerelease: false },
@@ -607,7 +632,7 @@ test("latest selects the highest stable GitHub Release and excludes drafts and p
 	expect(pluginList.installed[0]?.version).toBe("0.1.0")
 })
 
-test("latest fails closed when GitHub reports no stable Release", () => {
+nativeCodexTest("latest fails closed when GitHub reports no stable Release", () => {
 	const fixture = nativeUpdateFixture()
 	const environment = releaseApiEnvironment(fixture.environment, [
 		{ tag_name: "v9.0.0", draft: true, prerelease: false },
@@ -634,7 +659,7 @@ test("latest fails closed when GitHub reports no stable Release", () => {
 	expect(pluginList.installed[0]?.version).toBe("0.1.0")
 })
 
-test("disabled Plugin Installation blocks before mutation because Codex cannot restore it", () => {
+nativeCodexTest("disabled Plugin Installation blocks before mutation because Codex cannot restore it", () => {
 	const fixture = nativeUpdateFixture()
 	const configPath = join(fixture.codeHome, "config.toml")
 	writeFileSync(
@@ -689,7 +714,7 @@ test("workspace or managed Marketplace state outside CODEX_HOME requires adminis
 	expect(existsSync(fixture.mutationMarker)).toBe(false)
 })
 
-test("missing explicit Release tag fails before changing the active installation", () => {
+nativeCodexTest("missing explicit Release tag fails before changing the active installation", () => {
 	const fixture = nativeUpdateFixture()
 	const result = run(
 		["--harness", "codex", "--target", "v9.9.9", "--json", "--no-input"],
@@ -711,7 +736,7 @@ test("missing explicit Release tag fails before changing the active installation
 	expect(pluginList.installed[0]?.version).toBe("0.1.0")
 })
 
-test("explicit tag whose manifest version differs fails before mutation", () => {
+nativeCodexTest("explicit tag whose manifest version differs fails before mutation", () => {
 	const fixture = nativeUpdateFixture()
 	git(["tag", "v0.1.2", fixture.targetCommit], fixture.repositoryRoot)
 	const result = run(
@@ -728,7 +753,7 @@ test("explicit tag whose manifest version differs fails before mutation", () => 
 	})
 })
 
-test("selected tag movement between preflight and mutation binding fails closed", () => {
+nativeCodexTest("selected tag movement between preflight and mutation binding fails closed", () => {
 	const fixture = nativeUpdateFixture()
 	const environment = movingTagEnvironment(fixture.environment, fixture.repositoryRoot)
 	const result = run(
@@ -752,7 +777,7 @@ test("selected tag movement between preflight and mutation binding fails closed"
 	expect(pluginList.installed[0]?.version).toBe("0.1.0")
 })
 
-test("unsafe target Plugin Payload fails admission before mutation", () => {
+nativeCodexTest("unsafe target Plugin Payload fails admission before mutation", () => {
 	const fixture = nativeUpdateFixture()
 	writeRelease(fixture.repositoryRoot, "0.1.2", "unsafe runtime\n")
 	symlinkSync(
@@ -782,7 +807,7 @@ test("unsafe target Plugin Payload fails admission before mutation", () => {
 	expect(pluginList.installed[0]?.version).toBe("0.1.0")
 })
 
-test("missing current Marketplace ref blocks before target preflight", () => {
+nativeCodexTest("missing current Marketplace ref blocks before target preflight", () => {
 	const fixture = nativeUpdateFixture()
 	const configPath = join(fixture.codeHome, "config.toml")
 	writeFileSync(
@@ -803,7 +828,7 @@ test("missing current Marketplace ref blocks before target preflight", () => {
 	})
 })
 
-test("unproved restoration Release blocks before removing the active installation", () => {
+nativeCodexTest("unproved restoration Release blocks before removing the active installation", () => {
 	const fixture = nativeUpdateFixture()
 	git(["tag", "--delete", "v0.1.0"], fixture.repositoryRoot)
 	const result = run(
@@ -830,7 +855,7 @@ test("unproved restoration Release blocks before removing the active installatio
 	expect(pluginList.installed[0]?.version).toBe("0.1.0")
 })
 
-test("zero-error native add that leaves the old ref is rejected and restored", () => {
+nativeCodexTest("zero-error native add that leaves the old ref is rejected and restored", () => {
 	const fixture = nativeUpdateFixture()
 	const fault = faultingCodexEnvironment(fixture.environment, "stale_marketplace_add")
 	const result = run(
@@ -856,7 +881,7 @@ test("zero-error native add that leaves the old ref is rejected and restored", (
 	)
 })
 
-test.each([
+nativeCodexTest.each([
 	"after_plugin_remove",
 	"after_marketplace_remove",
 	"after_marketplace_add",
@@ -893,7 +918,7 @@ test.each([
 	)
 })
 
-test("unverified restoration returns unknown state and never retries the target mutation", () => {
+nativeCodexTest("unverified restoration returns unknown state and never retries the target mutation", () => {
 	const fixture = nativeUpdateFixture()
 	const fault = faultingCodexEnvironment(fixture.environment, "after_marketplace_add", true)
 	const result = run(

@@ -143,5 +143,5 @@ hostedTest.each([1, 2])(
 			rmSync(temporaryRoot, { recursive: true, force: true })
 		}
 	},
-	60_000,
+	240_000,
 )

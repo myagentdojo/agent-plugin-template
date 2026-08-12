@@ -212,8 +212,10 @@ export function main(arguments_: string[]): number {
 		})
 		if (invocation.json) process.stdout.write(`${JSON.stringify(result)}\n`)
 		else {
+			const status =
+				result.transactionState === "no_op" ? "Unchanged" : result.mode === "preview" ? "Preview" : "Updated"
 			process.stdout.write(
-				`${result.mode === "preview" ? "Preview" : "Updated"}: ${result.prior.ref} -> ${result.selectedRelease.tag}\n${result.nextAction}\n`,
+				`${status}: ${result.prior.ref} -> ${result.selectedRelease.tag}\n${result.nextAction}\n`,
 			)
 		}
 		return 0

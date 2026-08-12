@@ -25,6 +25,29 @@ import { payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 const STABLE_RELEASE_TAG = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/
 const FULL_COMMIT = /^[a-f0-9]{40}$/
 
+type CommandPhase =
+	| "local_inspection"
+	| "remote_fetch"
+	| "functional_proof"
+	| "native_mutation"
+	| "recovery"
+
+const COMMAND_TIMEOUT_MS: Readonly<Record<CommandPhase, number>> = {
+	local_inspection: 10_000,
+	remote_fetch: 60_000,
+	functional_proof: 120_000,
+	native_mutation: 60_000,
+	recovery: 60_000,
+}
+
+const COMMAND_PHASE_LABEL: Readonly<Record<CommandPhase, string>> = {
+	local_inspection: "local inspection",
+	remote_fetch: "remote discovery or fetch",
+	functional_proof: "functional proof",
+	native_mutation: "native mutation",
+	recovery: "recovery",
+}
+
 interface CommandResult {
 	exitCode: number
 	stdout: string
@@ -211,6 +234,8 @@ export class CodexProductionUpdateError extends Error {
 	readonly sideEffects: string[]
 	/** One current safe continuation. */
 	readonly nextAction: string
+	/** Internal command phase whose bounded execution expired. */
+	readonly timedOutPhase?: CommandPhase
 
 	/**
 	 * Create one redacted production-update failure.
@@ -233,6 +258,7 @@ export class CodexProductionUpdateError extends Error {
 			retrySafety?: "safe" | "unsafe" | "inspect_required"
 			sideEffects?: string[]
 			nextAction?: string
+			timedOutPhase?: CommandPhase
 		} = {},
 	) {
 		super(message)
@@ -243,6 +269,7 @@ export class CodexProductionUpdateError extends Error {
 		this.retrySafety = options.retrySafety ?? "safe"
 		this.sideEffects = options.sideEffects ?? []
 		this.nextAction = options.nextAction ?? "Inspect the current Codex Plugin Installation."
+		this.timedOutPhase = options.timedOutPhase
 	}
 }
 
@@ -253,8 +280,10 @@ function command(
 		environment: Record<string, string | undefined>
 		category: string
 		label: string
+		phase: CommandPhase
 	},
 ): CommandResult {
+	const timeout = COMMAND_TIMEOUT_MS[options.phase]
 	const result = Bun.spawnSync({
 		cmd: commandArguments,
 		cwd: options.cwd,
@@ -262,12 +291,32 @@ function command(
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
-		timeout: 30_000,
+		timeout,
 	})
 	const output = {
 		exitCode: result.exitCode,
 		stdout: result.stdout.toString(),
 		stderr: result.stderr.toString(),
+	}
+	if (result.exitedDueToTimeout) {
+		const diagnostic =
+			options.phase === "recovery"
+				? "exact restoration remains unverified"
+				: options.phase === "native_mutation"
+					? "recovery must verify the exact prior Release before retry"
+					: "the command stopped before its phase completed"
+		throw new CodexProductionUpdateError(
+			options.category,
+			`${options.label} timed out during ${COMMAND_PHASE_LABEL[options.phase]} after ${timeout / 1_000} seconds; ${diagnostic}`,
+			{
+				timedOutPhase: options.phase,
+				retrySafety: options.phase === "recovery" ? "inspect_required" : "safe",
+				nextAction:
+					options.phase === "recovery"
+						? "Inspect the same Codex Marketplace and Plugin Installation before retrying."
+						: undefined,
+			},
+		)
 	}
 	if (output.exitCode !== 0) {
 		throw new CodexProductionUpdateError(
@@ -360,6 +409,7 @@ function assertPayloadMatches(
 function inspectCurrentState(
 	repositoryRoot: string,
 	environment: Record<string, string | undefined>,
+	commandPhase: CommandPhase = "local_inspection",
 ): CurrentCodexState {
 	const codexExecutable = Bun.which("codex")
 	if (!codexExecutable) {
@@ -374,6 +424,7 @@ function inspectCurrentState(
 			environment,
 			category: "current_state",
 			label: "Codex Marketplace inspection",
+			phase: commandPhase,
 		},
 	)
 	const pluginList = jsonCommand<CodexPluginList>(
@@ -383,6 +434,7 @@ function inspectCurrentState(
 			environment,
 			category: "current_state",
 			label: "Codex Plugin Installation inspection",
+			phase: commandPhase,
 		},
 	)
 	const marketplace = marketplaceList.marketplaces.find((entry) => entry.name === pluginName)
@@ -475,12 +527,14 @@ function inspectCurrentState(
 		environment,
 		category: "current_state",
 		label: "Marketplace checkout revision inspection",
+		phase: commandPhase,
 	}).stdout.trim()
 	const peeledTagCommit = command(["git", "rev-parse", `refs/tags/${ref}^{commit}`], {
 		cwd: marketplace.root,
 		environment,
 		category: "current_state",
 		label: "Marketplace tag inspection",
+		phase: commandPhase,
 	}).stdout.trim()
 	const capturedCommit = configuredCommit ?? metadata?.revision ?? checkoutCommit
 	if (
@@ -573,24 +627,28 @@ function preflightRelease(
 		environment,
 		category,
 		label: "Detached Release checkout initialization",
+		phase: "local_inspection",
 	})
 	command(["git", "remote", "add", "origin", source], {
 		cwd: checkoutRoot,
 		environment,
 		category,
 		label: "Release Git source configuration",
+		phase: "local_inspection",
 	})
 	command(["git", "fetch", "--quiet", "--no-tags", "origin", `refs/tags/${tag}:refs/tags/${tag}`], {
 		cwd: checkoutRoot,
 		environment,
 		category,
 		label: "Immutable Release fetch",
+		phase: "remote_fetch",
 	})
 	const resolvedSha = command(["git", "rev-parse", `refs/tags/${tag}^{commit}`], {
 		cwd: checkoutRoot,
 		environment,
 		category,
 		label: "Release tag peeling",
+		phase: "local_inspection",
 	}).stdout.trim()
 	if (!FULL_COMMIT.test(resolvedSha)) {
 		throw new CodexProductionUpdateError(category, "Release tag did not peel to one commit")
@@ -600,6 +658,7 @@ function preflightRelease(
 		environment,
 		category,
 		label: "Detached Release checkout",
+		phase: "local_inspection",
 	})
 	const codexManifest = readJson<{ name?: unknown; version?: unknown }>(
 		join(checkoutRoot, "plugin", ".codex-plugin", "plugin.json"),
@@ -676,12 +735,14 @@ function assertTagStillBound(
 		environment,
 		category: "release_preflight",
 		label: "Release binding verification initialization",
+		phase: "local_inspection",
 	})
 	command(["git", "remote", "add", "origin", source], {
 		cwd: verificationRoot,
 		environment,
 		category: "release_preflight",
 		label: "Release binding source configuration",
+		phase: "local_inspection",
 	})
 	command(
 		["git", "fetch", "--quiet", "--no-tags", "origin", `refs/tags/${release.requestedRef}:refs/tags/${release.requestedRef}`],
@@ -690,6 +751,7 @@ function assertTagStillBound(
 			environment,
 			category: "release_preflight",
 			label: "Release binding verification fetch",
+			phase: "remote_fetch",
 		},
 	)
 	const currentCommit = command(
@@ -699,6 +761,7 @@ function assertTagStillBound(
 			environment,
 			category: "release_preflight",
 			label: "Release binding verification peel",
+			phase: "local_inspection",
 		},
 	).stdout.trim()
 	if (currentCommit !== release.resolvedSha) {
@@ -743,6 +806,7 @@ function runSelectedReleaseFunctionalProof(
 		},
 		category: "release_lineage",
 		label: "Selected Release functional proof",
+		phase: "functional_proof",
 	})
 }
 
@@ -828,12 +892,14 @@ function nativeJson<T>(
 	repositoryRoot: string,
 	environment: Record<string, string | undefined>,
 	label: string,
+	phase: "native_mutation" | "recovery" = "native_mutation",
 ): T {
 	return jsonCommand<T>([codexExecutable, ...arguments_], {
 		cwd: repositoryRoot,
 		environment,
-		category: "native_mutation",
+		category: phase === "recovery" ? "recovery" : "native_mutation",
 		label,
+		phase,
 	})
 }
 
@@ -843,15 +909,17 @@ function bestEffortNativeJson(
 	repositoryRoot: string,
 	environment: Record<string, string | undefined>,
 ): void {
-	Bun.spawnSync({
-		cmd: [codexExecutable, ...arguments_],
-		cwd: repositoryRoot,
-		env: environment,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-		timeout: 30_000,
-	})
+	try {
+		command([codexExecutable, ...arguments_], {
+			cwd: repositoryRoot,
+			environment,
+			category: "recovery",
+			label: "Recovery cleanup",
+			phase: "recovery",
+		})
+	} catch {
+		// Cleanup is opportunistic. Exact restoration and verification below remain authoritative.
+	}
 }
 
 function verifyReleaseState(
@@ -945,6 +1013,7 @@ function verifySelectedMarketplace(
 		environment,
 		category: "postcondition",
 		label: "Target Marketplace checkout inspection",
+		phase: "local_inspection",
 	}).stdout.trim()
 	const tagCommit = command(
 		["git", "rev-parse", `refs/tags/${target.requestedRef}^{commit}`],
@@ -953,6 +1022,7 @@ function verifySelectedMarketplace(
 			environment,
 			category: "postcondition",
 			label: "Target Marketplace tag inspection",
+			phase: "local_inspection",
 		},
 	).stdout.trim()
 	const exactTag = command(["git", "describe", "--tags", "--exact-match", "HEAD"], {
@@ -960,6 +1030,7 @@ function verifySelectedMarketplace(
 		environment,
 		category: "postcondition",
 		label: "Target Marketplace exact-tag inspection",
+		phase: "local_inspection",
 	}).stdout.trim()
 	if (
 		checkoutCommit !== target.resolvedSha ||
@@ -1001,6 +1072,7 @@ function restorePriorRelease(
 		repositoryRoot,
 		environment,
 		"Prior Marketplace restoration",
+		"recovery",
 	)
 	const addResult = nativeJson<CodexPluginAddResult>(
 		codexExecutable,
@@ -1008,8 +1080,9 @@ function restorePriorRelease(
 		repositoryRoot,
 		environment,
 		"Prior Plugin Installation restoration",
+		"recovery",
 	)
-	const restored = inspectCurrentState(repositoryRoot, environment)
+	const restored = inspectCurrentState(repositoryRoot, environment, "recovery")
 	verifyReleaseState(restored, restoration, current.source, current.enabled, addResult.installedPath)
 	try {
 		assertExactHarnessRecovery(recoverySnapshot(current), recoverySnapshot(restored), "Codex")
@@ -1084,6 +1157,7 @@ function resolveLatestStableRelease(
 			environment,
 			category: "release_selection",
 			label: "GitHub Release discovery",
+			phase: "remote_fetch",
 		},
 	)
 	const pages = Array.isArray(response) ? response : []
@@ -1330,7 +1404,7 @@ export function runCodexProductionUpdate(
 						sideEffects: mutationSideEffects,
 						nextAction: "Start a fresh Codex task and exercise the selected Plugin Release.",
 					}
-				} catch {
+				} catch (mutationError) {
 					try {
 						restorePriorRelease(
 							current,
@@ -1340,7 +1414,10 @@ export function runCodexProductionUpdate(
 						)
 						throw new CodexProductionUpdateError(
 							"mutation_failed_restored",
-							"Target update failed; the exact prior Release was restored and verified",
+							mutationError instanceof CodexProductionUpdateError &&
+								mutationError.timedOutPhase === "native_mutation"
+								? "Target update timed out during native mutation; the exact prior Release was restored and verified"
+								: "Target update failed; the exact prior Release was restored and verified",
 							{
 								changed: true,
 								transactionState: "restored",
@@ -1361,7 +1438,10 @@ export function runCodexProductionUpdate(
 						}
 						throw new CodexProductionUpdateError(
 							"mutation_state_unknown",
-							"Target update and exact restoration could not be verified; automatic retry stopped",
+							recoveryError instanceof CodexProductionUpdateError &&
+								recoveryError.timedOutPhase === "recovery"
+								? "Recovery timed out; target update and exact restoration could not be verified; automatic retry stopped"
+								: "Target update and exact restoration could not be verified; automatic retry stopped",
 							{
 								changed: true,
 								transactionState: "unknown",
@@ -1410,6 +1490,7 @@ export function runCodexProductionUpdate(
 				retrySafety: error.retrySafety,
 				sideEffects: [...completedSideEffects],
 				nextAction: error.nextAction,
+				timedOutPhase: error.timedOutPhase,
 			})
 		}
 		throw error

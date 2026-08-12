@@ -9,7 +9,7 @@ Build one Git-distributed plugin for Claude Code and Codex.
 - Publish from GitHub Releases, not npm.
 - Develop through each harness's native plugin workflow.
 
-Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or a setup command. The first use with a missing runtime requires one approved repair; warm use works offline. Maintainers running `bun run update -- --target latest` also need GitHub CLI read access for Release discovery. Explicit target tags use the configured Git credential path directly.
+Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or a setup command. The first use with a missing runtime requires one approved repair; warm use works offline. Maintainers running `bun run update -- --harness codex --target latest` also need GitHub CLI read access for Release discovery. Explicit target tags use the configured Git credential path directly.
 
 The operator verification recipes also use a POSIX shell, `jq`, `awk`, and `diff`.
 
