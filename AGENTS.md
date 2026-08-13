@@ -34,3 +34,17 @@ Build one Git-distributed plugin payload for Claude Code and Codex. Keep shared 
 - Preserve the consumer contract: no user-managed Bun, Node.js, Python, npm, or setup command.
 
 Initialization, development, installation, replacement, qualification, or release: start at `README.md`'s **Choose a path** index.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `myagentdojo/agent-plugin-template`, managed with `gh` or process-scoped `ghh` for concurrent agents. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles use their default label strings. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Multi-context: `CONTEXT-MAP.md` at the root points at each context's `CONTEXT.md`. See `docs/agents/domain.md`.
