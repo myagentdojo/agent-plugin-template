@@ -623,7 +623,22 @@ test("release maintenance fails loudly with the exact resume command when a cand
 	// A swallowed API failure would read as "nothing stranded" and let
 	// maintenance stop silently again, defeating the detection entirely.
 	expect(strandedStep).toContain("set -euo pipefail")
-	expect(strandedStep).not.toContain("|| true")
+	expect(strandedStep).not.toMatch(/issues\?state=closed[^\n]*\n[^\n]*\n[^\n]*\|\| true/)
+	expect(strandedStep).not.toMatch(/--jq '\[\.\[\][^\n]*\|\| true\)/)
+})
+
+test("release workflow proves tag absence from a 404, never from an exit code", () => {
+	const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+
+	// gh exits 1 for auth, rate-limit, and network failures too, so an exit-code
+	// probe would let a transient failure read as "tag absent".
+	expect(workflow).not.toMatch(/git\/ref\/tags\/[^"]*"\s*>\/dev\/null 2>&1/)
+	expect(workflow).toContain('status=$(jq -r \'.status // empty\' <<< "$response"')
+	expect(workflow).toContain('if [[ "$status" == "404" ]]; then')
+	expect(workflow).toContain("Could not prove whether tag")
+	// Every absence decision routes through the helper.
+	expect(workflow.match(/tag_absent\(\) \{/g)).toHaveLength(3)
+	expect(workflow.match(/! tag_absent "/g)).toHaveLength(4)
 })
 
 test("release workflow fails closed when the requested terminal operation is skipped", () => {

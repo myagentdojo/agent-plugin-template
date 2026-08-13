@@ -675,6 +675,8 @@ function validateRepository(repositoryRoot: string) {
 		"admitPublicationCandidate",
 		"validateResumeCandidateBinding",
 		'if [[ "$OPERATION" == "resume" ]]',
+		'if [[ "$status" == "404" ]]; then',
+		"Could not prove whether tag",
 		"publication-candidate-${RESUME_SHA}",
 		"Resume requires the persisted publication candidate",
 		"Detect a merged release candidate stranded before its tag",

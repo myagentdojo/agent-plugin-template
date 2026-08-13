@@ -71,6 +71,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
+          # Only a proven 404 is absence; anything else must fail closed.
+          tag_absent() {
+            local response status
+            response=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>&1) && return 1
+            status=$(jq -r '.status // empty' <<< "$response" 2>/dev/null || true)
+            if [[ "$status" == "404" ]]; then
+              return 0
+            fi
+            echo "Could not prove whether tag $1 exists: ${response}" >&2
+            exit 1
+          }
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]; then
               echo "Manual release operations must run from refs/heads/${BASE_BRANCH}, not ${GITHUB_REF}." >&2
@@ -112,7 +124,7 @@ jobs:
 
               version=$(jq -er '.version | select(type == "string" and length > 0)' persisted-candidate.json)
               release_tag="v${version}"
-              if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" >/dev/null 2>&1; then
+              if ! tag_absent "$release_tag"; then
                 echo "Candidate tag ${release_tag} already exists; use manual incomplete-publication repair." >&2
                 exit 1
               fi
@@ -405,7 +417,7 @@ jobs:
           version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${GITHUB_SHA}" --jq .content \
             | tr -d '\n' | base64 --decode | jq -r .version)
           release_tag="v${version}"
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" >/dev/null 2>&1; then
+          if ! tag_absent "$release_tag"; then
             echo "Candidate tag ${release_tag} already exists; use manual incomplete-publication repair." >&2
             exit 1
           fi
@@ -548,6 +560,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
+          # Only a proven 404 is absence; anything else must fail closed.
+          tag_absent() {
+            local response status
+            response=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>&1) && return 1
+            status=$(jq -r '.status // empty' <<< "$response" 2>/dev/null || true)
+            if [[ "$status" == "404" ]]; then
+              return 0
+            fi
+            echo "Could not prove whether tag $1 exists: ${response}" >&2
+            exit 1
+          }
           # Let this API failure propagate. Swallowing it would read as
           # "nothing stranded" and let maintenance stop silently again.
           stranded=$(gh api --paginate \
@@ -560,7 +584,7 @@ jobs:
             [[ -n "$merged_at" && "$merge_commit_sha" =~ ^[0-9a-f]{40}$ ]] || continue
             version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${merge_commit_sha}" --jq .content \
               | tr -d '\n' | base64 --decode | jq -r .version)
-            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${version}" >/dev/null 2>&1; then
+            if ! tag_absent "v${version}"; then
               continue
             fi
             echo "Release PR #${pr_number} merged at ${merge_commit_sha} but v${version} was never tagged." >&2
@@ -820,6 +844,18 @@ jobs:
           EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
         run: |
           set -euo pipefail
+          # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
+          # Only a proven 404 is absence; anything else must fail closed.
+          tag_absent() {
+            local response status
+            response=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>&1) && return 1
+            status=$(jq -r '.status // empty' <<< "$response" 2>/dev/null || true)
+            if [[ "$status" == "404" ]]; then
+              return 0
+            fi
+            echo "Could not prove whether tag $1 exists: ${response}" >&2
+            exit 1
+          }
           checkout_sha=$(git rev-parse HEAD)
           if [[ "$checkout_sha" != "$CANDIDATE_SHA" ]]; then
             echo "Release admission replay is not checked out at the proven candidate SHA." >&2
@@ -933,7 +969,7 @@ jobs:
               '
           else
             publish_tag_exists=false
-            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            if ! tag_absent "$RELEASE_TAG"; then
               publish_tag_exists=true
             fi
             PUBLISH_REPOSITORY="$GITHUB_REPOSITORY" \
