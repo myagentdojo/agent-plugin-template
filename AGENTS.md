@@ -4,7 +4,8 @@ Build one Git-distributed plugin payload for Claude Code and Codex. Keep shared 
 
 ## Owners
 
-- Metadata or identity: edit `plugin.config.json`; run `bun run generate`. Release Please owns version bumps through the generated release PR.
+- Plugin metadata: edit `plugin.config.json`; run `bun run generate`.
+- Release identity or version: route through `scripts/init.ts` or the generated release PR. `.github/release-please-config.json` owns the Release Please package name.
 - Skill workflow: edit `plugin/skills/<id>/`.
 - Portable implementation: edit dependency-free commands in `runtime/src/`; edit dependency-bearing workspace code in `packages/<id>/src/`; register bundles in `runtime/skill-catalog.json`.
 - Runtime custody: edit the engine in `plugin/runtime/runtime-exec` or the approved runtime identity in `runtime/runtime.lock.json`; preserve `docs/adr/0005-shared-runtime-custody.md` and `docs/adr/0006-single-bun-runtime-tier.md`.
