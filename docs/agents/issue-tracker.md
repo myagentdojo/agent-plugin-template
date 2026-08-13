@@ -1,11 +1,20 @@
 # Issue tracker: GitHub
 
-Issues and specs for this repo live as GitHub issues in `myagentdojo/agent-plugin-template`. Use the `gh` CLI for all operations.
+Issues and specs for this repo live as GitHub issues in `myagentdojo/agent-plugin-template`. Use `gh` from a dedicated account session or `ghh` for a process-scoped account.
+
+Commands below use `gh`. On shared hosts or during concurrent agent work, replace that prefix with `ghh exec --account myagentdojo --`. For example:
+
+```sh
+gh issue view <number> --json comments,labels
+ghh exec --account myagentdojo -- issue view <number> --json comments,labels
+```
+
+Never run `gh auth switch` from a concurrent agent session. It changes shared CLI state and can redirect another process's GitHub operation.
 
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **Read an issue**: `gh issue view <number> --json comments,labels --jq '{labels: [.labels[].name], comments: [.comments[].body]}'`.
 - **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
@@ -13,7 +22,7 @@ Issues and specs for this repo live as GitHub issues in `myagentdojo/agent-plugi
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone. This clone's `origin` uses the `github-myagentdojo` SSH alias, which resolves to `github.com`; `gh` still resolves the repo correctly.
 
-PR and API writes require the `myagentdojo` account. See `docs/pull-requests-and-ci.md` for the repository's PR and CI completion boundary.
+PR and API writes require the `myagentdojo` account. Verify ambient `gh` identity before a write, or use the process-scoped `ghh exec --account myagentdojo --` form. See `docs/pull-requests-and-ci.md` for the repository's PR and CI completion boundary.
 
 ## Pull requests as a triage surface
 
@@ -33,7 +42,7 @@ Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Run `gh issue view <number> --json comments,labels --jq '{labels: [.labels[].name], comments: [.comments[].body]}'`, using the `ghh` prefix on a shared host.
 
 ## Wayfinding operations
 

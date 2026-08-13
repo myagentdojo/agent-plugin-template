@@ -16,7 +16,7 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 
 This repo has no `src/` — workspace contexts live under `packages/`:
 
-```
+```text
 /
 ├── CONTEXT-MAP.md
 ├── CONTEXT.md                         ← system-wide glossary

@@ -39,7 +39,7 @@ Initialization, development, installation, replacement, qualification, or releas
 
 ### Issue tracker
 
-Issues live as GitHub issues in `myagentdojo/agent-plugin-template`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues live as GitHub issues in `myagentdojo/agent-plugin-template`, managed with `gh` or process-scoped `ghh` for concurrent agents. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
