@@ -603,8 +603,13 @@ test("release maintenance fails loudly with the exact resume command when a cand
 		"      - name: Detect a merged release candidate stranded before its tag\n",
 	)
 	expect(strandedStepStart).toBeGreaterThan(-1)
-	const strandedStep = maintainJob.slice(strandedStepStart)
 	const releasePleaseStep = maintainJob.indexOf("googleapis/release-please-action")
+	// Bound the step so assertions cannot pass on unrelated later steps.
+	const strandedStep = maintainJob.slice(
+		strandedStepStart,
+		maintainJob.indexOf("      # skip-github-release is set", strandedStepStart),
+	)
+	expect(strandedStep).not.toBe("")
 
 	// Detection must precede Release Please, whose own abort message is silent.
 	expect(maintainJob.indexOf("Detect a merged release candidate stranded before its tag")).toBeLessThan(
@@ -615,6 +620,10 @@ test("release maintenance fails loudly with the exact resume command when a cand
 	expect(strandedStep).toContain("-f operation=resume")
 	expect(strandedStep).toContain("-f candidate_sha=")
 	expect(strandedStep).toContain("exit 1")
+	// A swallowed API failure would read as "nothing stranded" and let
+	// maintenance stop silently again, defeating the detection entirely.
+	expect(strandedStep).toContain("set -euo pipefail")
+	expect(strandedStep).not.toContain("|| true")
 })
 
 test("release workflow fails closed when the requested terminal operation is skipped", () => {

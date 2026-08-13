@@ -24,9 +24,9 @@ const releaseEnvironmentRepair =
 const hostedCanaryRepair =
 	"Settings > Environments > hosted-canary-qualification: create the environment and add secrets CANARY_GH_TOKEN, CANARY_SSH_KNOWN_HOSTS, and CANARY_SSH_PRIVATE_KEY"
 const hostedCanaryKeyRotationRepair =
-	"rotate the canary key: generate a dedicated purpose key, register its public half first under the CANARY_SSH_KEY_TITLE title, then update the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
-const hostedCanaryKeyTitleRepair =
-	"Settings > Secrets and variables > Actions: add variable CANARY_SSH_KEY_TITLE naming the deploy key that carries the canary public half"
+	"rotate the canary key: generate a dedicated purpose key, register its public half on the canary actor account first, then update the CANARY_SSH_PUBLIC_KEY variable and the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
+const hostedCanaryKeyBindingRepair =
+	"Settings > Secrets and variables > Actions: add variable CANARY_SSH_PUBLIC_KEY holding the public half of CANARY_SSH_PRIVATE_KEY"
 
 const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
 export const REQUIRED_HOSTED_CANARY_SECRETS = [
@@ -617,14 +617,28 @@ export function classifyReleaseEnvironmentProtection(environment: unknown): Read
 	)
 }
 
-/** Registered public half of the canary admission credential. */
+/**
+ * Registered public half of the canary admission credential.
+ *
+ * The credential belongs to `canary.actor`, not to this repository, so the
+ * registration is read from that user's SSH keys. Repository deploy keys are a
+ * different object and never carry it.
+ */
 export interface CanaryKeyRegistration {
-	/** Deploy-key titles GitHub still lists, across every page. */
-	registeredKeyTitles: string[]
-	/** Title recorded by CANARY_SSH_KEY_TITLE that identifies the canary key. */
-	expectedKeyTitle: string
-	/** Whether every deploy-key page was read; a truncated list cannot prove absence. */
+	/** Public keys the canary actor still registers, across every page. */
+	registeredPublicKeys: string[]
+	/** Public half recorded by CANARY_SSH_PUBLIC_KEY. Not a secret. */
+	expectedPublicKey: string
+	/** Actor whose keys were read, for an unambiguous repair message. */
+	actor: string
+	/** Whether every key page was read; a truncated list cannot prove absence. */
 	registrationComplete: boolean
+}
+
+/** Compare SSH public keys by type and material, ignoring comment and spacing. */
+function canonicalPublicKey(key: string): string {
+	const [type, material] = key.trim().split(/\s+/)
+	return type && material ? `${type} ${material}` : ""
 }
 
 /**
@@ -682,10 +696,11 @@ export function classifyHostedCanaryConfiguration(
 	}
 	if (
 		!isRecord(keyRegistration) ||
-		!Array.isArray(keyRegistration.registeredKeyTitles) ||
-		keyRegistration.registeredKeyTitles.some((title) => typeof title !== "string") ||
+		!Array.isArray(keyRegistration.registeredPublicKeys) ||
+		keyRegistration.registeredPublicKeys.some((key) => typeof key !== "string") ||
 		typeof keyRegistration.registrationComplete !== "boolean" ||
-		typeof keyRegistration.expectedKeyTitle !== "string"
+		typeof keyRegistration.expectedPublicKey !== "string" ||
+		typeof keyRegistration.actor !== "string"
 	) {
 		return {
 			name: "hosted-canary-configuration",
@@ -699,29 +714,34 @@ export function classifyHostedCanaryConfiguration(
 		return {
 			name: "hosted-canary-configuration",
 			status: "unavailable",
-			detail: "GitHub returned an incomplete deploy-key list; credential lifecycle is unproven",
+			detail: `GitHub returned an incomplete key list for ${keyRegistration.actor}; credential lifecycle is unproven`,
 			repair: hostedCanaryKeyRotationRepair,
 		}
 	}
-	if (keyRegistration.expectedKeyTitle.length === 0) {
+	const expectedPublicKey = canonicalPublicKey(keyRegistration.expectedPublicKey)
+	if (expectedPublicKey === "") {
 		return missing(
 			"hosted-canary-configuration",
-			"Hosted-canary qualification is missing variable CANARY_SSH_KEY_TITLE; the registered public half cannot be bound to CANARY_SSH_PRIVATE_KEY",
-			hostedCanaryKeyTitleRepair,
+			"Hosted-canary qualification is missing variable CANARY_SSH_PUBLIC_KEY; the registered public half cannot be bound to CANARY_SSH_PRIVATE_KEY",
+			hostedCanaryKeyBindingRepair,
 		)
 	}
-	// Any deploy key proves only that some key exists. Bind the exact canary key,
-	// or a rotation that deletes it stays green while SSH admission fails.
-	if (!keyRegistration.registeredKeyTitles.includes(keyRegistration.expectedKeyTitle)) {
+	// Any registered key proves only that the actor has some key. Bind the exact
+	// canary key, or a rotation that deletes it stays green while SSH admission fails.
+	if (
+		!keyRegistration.registeredPublicKeys
+			.map(canonicalPublicKey)
+			.includes(expectedPublicKey)
+	) {
 		return missing(
 			"hosted-canary-configuration",
-			`${HOSTED_CANARY_ENVIRONMENT} retains CANARY_SSH_PRIVATE_KEY, but no registered deploy key is titled ${keyRegistration.expectedKeyTitle}; SSH admission will fail`,
+			`${HOSTED_CANARY_ENVIRONMENT} retains CANARY_SSH_PRIVATE_KEY, but ${keyRegistration.actor} no longer registers its CANARY_SSH_PUBLIC_KEY half; SSH admission will fail`,
 			hostedCanaryKeyRotationRepair,
 		)
 	}
 	return ready(
 		"hosted-canary-configuration",
-		`${HOSTED_CANARY_ENVIRONMENT}, all required secret names, and the registered ${keyRegistration.expectedKeyTitle} public half are configured`,
+		`${HOSTED_CANARY_ENVIRONMENT}, all required secret names, and the public half registered by ${keyRegistration.actor} are configured`,
 	)
 }
 
@@ -1082,34 +1102,37 @@ function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 		return apiFailure("hosted-canary-configuration", secrets, hostedCanaryRepair)
 	}
 	// A secret name proves a value exists, not that its public half survives.
-	// Paginate: the canary key can sit past the first page of deploy keys.
-	const deployKeys = readApi(`repos/${repository}/keys?per_page=100`, true)
-	if (!deployKeys.ok) {
-		return apiFailure("hosted-canary-configuration", deployKeys, hostedCanaryKeyRotationRepair)
+	// The credential belongs to the canary actor, not to this repository, so read
+	// that user's keys; repository deploy keys never carry it.
+	const actor = loadPluginConfig(root).canary.actor
+	const actorKeys = readApi(`users/${actor}/keys?per_page=100`, true)
+	if (!actorKeys.ok) {
+		return apiFailure("hosted-canary-configuration", actorKeys, hostedCanaryKeyRotationRepair)
 	}
 	const variables = readApi(`repos/${repository}/actions/variables?per_page=100`, true)
 	if (!variables.ok) {
-		return apiFailure("hosted-canary-configuration", variables, hostedCanaryKeyTitleRepair)
+		return apiFailure("hosted-canary-configuration", variables, hostedCanaryKeyBindingRepair)
 	}
-	const keyPages = Array.isArray(deployKeys.data) ? deployKeys.data : undefined
+	const keyPages = Array.isArray(actorKeys.data) ? actorKeys.data : undefined
 	// --slurp yields one array per page; a malformed entry must fail closed, never be dropped.
-	const registeredKeyTitles = keyPages
+	const registeredPublicKeys = keyPages
 		?.flatMap((page) => (Array.isArray(page) ? page : [undefined]))
-		.map((entry) => (isRecord(entry) && typeof entry.title === "string" ? entry.title : undefined))
+		.map((entry) => (isRecord(entry) && typeof entry.key === "string" ? entry.key : undefined))
 	const registrationComplete =
-		registeredKeyTitles !== undefined && registeredKeyTitles.every((title) => title !== undefined)
-	const expectedKeyTitle = Array.isArray(variables.data)
+		registeredPublicKeys !== undefined && registeredPublicKeys.every((key) => key !== undefined)
+	const expectedPublicKey = Array.isArray(variables.data)
 		? variables.data
 				.flatMap((page) => (Array.isArray(page?.variables) ? page.variables : []))
-				.find((entry) => isRecord(entry) && entry.name === "CANARY_SSH_KEY_TITLE")?.value
+				.find((entry) => isRecord(entry) && entry.name === "CANARY_SSH_PUBLIC_KEY")?.value
 		: undefined
 	return classifyHostedCanaryConfiguration(
 		environment.data,
 		secrets.data,
-		registeredKeyTitles
+		registeredPublicKeys
 			? {
-					registeredKeyTitles: registeredKeyTitles.filter((title) => title !== undefined),
-					expectedKeyTitle: typeof expectedKeyTitle === "string" ? expectedKeyTitle : "",
+					registeredPublicKeys: registeredPublicKeys.filter((key) => key !== undefined),
+					expectedPublicKey: typeof expectedPublicKey === "string" ? expectedPublicKey : "",
+					actor,
 					registrationComplete,
 				}
 			: undefined,

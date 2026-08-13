@@ -85,8 +85,9 @@ test("reports ready when every publication safeguard is proven", () => {
 			{ name: "hosted-canary-qualification" },
 			{ secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) },
 			{
-				registeredKeyTitles: ["hosted-canary-qualification"],
-				expectedKeyTitle: "hosted-canary-qualification",
+				registeredPublicKeys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICanary"],
+				expectedPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICanary",
+				actor: "myagentdojo",
 				registrationComplete: true,
 			},
 		),
@@ -331,9 +332,12 @@ describe("release environment required reviewers", () => {
 describe("hosted-canary qualification configuration", () => {
 	const environment = { name: "hosted-canary-qualification" }
 	const secrets = { secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) }
+	const canaryPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICanary"
+	const otherPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIUnrelated"
 	const canaryKey = {
-		registeredKeyTitles: ["hosted-canary-qualification"],
-		expectedKeyTitle: "hosted-canary-qualification",
+		registeredPublicKeys: [canaryPublicKey],
+		expectedPublicKey: canaryPublicKey,
+		actor: "myagentdojo",
 		registrationComplete: true,
 	}
 
@@ -360,51 +364,67 @@ describe("hosted-canary qualification configuration", () => {
 	test("reports a stranded private key whose registered public half was deleted", () => {
 		const check = classifyHostedCanaryConfiguration(environment, secrets, {
 			...canaryKey,
-			registeredKeyTitles: [],
+			registeredPublicKeys: [],
 		})
 
 		expect(check).toMatchObject({ status: "missing" })
-		expect(check.detail).toContain("hosted-canary-qualification")
+		expect(check.detail).toContain("myagentdojo")
 		expect(check.repair).toContain("rotate")
 	})
 
-	test("rejects an unrelated deploy key standing in for the canary key", () => {
+	test("rejects an unrelated registered key standing in for the canary key", () => {
 		const check = classifyHostedCanaryConfiguration(environment, secrets, {
 			...canaryKey,
-			registeredKeyTitles: ["some-other-service", "backup-deploy-key"],
+			registeredPublicKeys: [otherPublicKey],
 		})
 
 		expect(check).toMatchObject({ status: "missing" })
-		expect(check.detail).toContain("hosted-canary-qualification")
+		expect(check.detail).toContain("CANARY_SSH_PUBLIC_KEY")
 	})
 
-	test("accepts only the deploy key titled by CANARY_SSH_KEY_TITLE", () => {
+	test("accepts the canary key alongside the actor's unrelated keys", () => {
 		expect(
 			classifyHostedCanaryConfiguration(environment, secrets, {
 				...canaryKey,
-				registeredKeyTitles: ["some-other-service", "hosted-canary-qualification"],
+				registeredPublicKeys: [otherPublicKey, canaryPublicKey],
 			}),
 		).toMatchObject({ status: "ready", repair: "" })
 	})
 
-	test("reports a missing CANARY_SSH_KEY_TITLE binding variable", () => {
-		const check = classifyHostedCanaryConfiguration(environment, secrets, {
-			...canaryKey,
-			expectedKeyTitle: "",
-		})
-
-		expect(check).toMatchObject({ status: "missing" })
-		expect(check.detail).toContain("CANARY_SSH_KEY_TITLE")
-	})
-
-	test("fails closed when the deploy-key list was truncated", () => {
+	test("matches the canary key regardless of comment or spacing", () => {
 		expect(
 			classifyHostedCanaryConfiguration(environment, secrets, {
 				...canaryKey,
-				registeredKeyTitles: [],
+				registeredPublicKeys: [`${canaryPublicKey}  canary@host`],
+			}),
+		).toMatchObject({ status: "ready" })
+	})
+
+	test("reports a missing CANARY_SSH_PUBLIC_KEY binding variable", () => {
+		const check = classifyHostedCanaryConfiguration(environment, secrets, {
+			...canaryKey,
+			expectedPublicKey: "",
+		})
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.detail).toContain("CANARY_SSH_PUBLIC_KEY")
+	})
+
+	test("fails closed when the actor key list was truncated", () => {
+		expect(
+			classifyHostedCanaryConfiguration(environment, secrets, {
+				...canaryKey,
+				registeredPublicKeys: [],
 				registrationComplete: false,
 			}),
 		).toMatchObject({ status: "unavailable" })
+	})
+
+	test("reads the canary actor's keys, never this repository's deploy keys", () => {
+		const source = readFileSync(join(root, "scripts", "repository-readiness.ts"), "utf8")
+
+		expect(source).toContain("users/${actor}/keys")
+		expect(source).not.toContain("repos/${repository}/keys")
 	})
 
 	test("fails closed when the registered public half cannot be read", () => {

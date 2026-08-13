@@ -548,9 +548,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Let this API failure propagate. Swallowing it would read as
+          # "nothing stranded" and let maintenance stop silently again.
           stranded=$(gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/issues?state=closed&labels=autorelease:%20pending&per_page=100" \
-            --jq '[.[] | select(.pull_request != null) | .number] | .[]' || true)
+            --jq '[.[] | select(.pull_request != null) | .number] | .[]')
           for pr_number in $stranded; do
             release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
             merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
