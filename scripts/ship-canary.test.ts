@@ -1149,7 +1149,7 @@ test("untrusted PR workflow always reports without canary credentials", () => {
 
 test("privileged canary workflow executes trusted code and treats the PR checkout as data", () => {
 	const workflow = readFileSync(join(root, ".github", "workflows", "hosted-canary.yml"), "utf8")
-	const readme = readFileSync(join(root, "README.md"), "utf8")
+	const releaseSetup = readFileSync(join(root, "docs", "release-setup.md"), "utf8")
 
 	expect(workflow).toContain("pull_request_target:")
 	expect(workflow).not.toContain("checks: write")
@@ -1195,8 +1195,8 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 	expect(workflow).not.toContain("gh auth setup-git")
 	expect(workflow).toContain('git remote set-url origin "git@github.com:${GITHUB_REPOSITORY}.git"')
 	expect(workflow).not.toContain("CHECK_RUN_ID")
-	expect(readme).toContain("token-backed GitHub API identity and SSH Git identity")
-	expect(readme).not.toContain("HTTPS Git identity")
+	expect(releaseSetup).toContain("token-backed GitHub API identity and SSH Git identity")
+	expect(releaseSetup).not.toContain("HTTPS Git identity")
 })
 
 test("hosted canary workflow gives fork authors a same-repository qualification path", () => {
