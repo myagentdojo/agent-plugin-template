@@ -84,7 +84,11 @@ test("reports ready when every publication safeguard is proven", () => {
 		classifyHostedCanaryConfiguration(
 			{ name: "hosted-canary-qualification" },
 			{ secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) },
-			{ registeredKeyFingerprints: ["SHA256:abcdef"] },
+			{
+				registeredKeyTitles: ["hosted-canary-qualification"],
+				expectedKeyTitle: "hosted-canary-qualification",
+				registrationComplete: true,
+			},
 		),
 		classifyRequiredStatusChecks({ strict: true, contexts: REQUIRED_STATUS_CHECKS }),
 		classifyWorkflowAdminPermissions([
@@ -327,12 +331,15 @@ describe("release environment required reviewers", () => {
 describe("hosted-canary qualification configuration", () => {
 	const environment = { name: "hosted-canary-qualification" }
 	const secrets = { secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) }
+	const canaryKey = {
+		registeredKeyTitles: ["hosted-canary-qualification"],
+		expectedKeyTitle: "hosted-canary-qualification",
+		registrationComplete: true,
+	}
 
 	test("accepts the environment with all required secret names", () => {
 		expect(
-			classifyHostedCanaryConfiguration(environment, secrets, {
-				registeredKeyFingerprints: ["SHA256:abcdef"],
-			}),
+			classifyHostedCanaryConfiguration(environment, secrets, canaryKey),
 		).toMatchObject({
 			name: "hosted-canary-configuration",
 			status: "ready",
@@ -352,20 +359,52 @@ describe("hosted-canary qualification configuration", () => {
 
 	test("reports a stranded private key whose registered public half was deleted", () => {
 		const check = classifyHostedCanaryConfiguration(environment, secrets, {
-			registeredKeyFingerprints: [],
+			...canaryKey,
+			registeredKeyTitles: [],
 		})
 
 		expect(check).toMatchObject({ status: "missing" })
-		expect(check.detail).toContain("public half")
+		expect(check.detail).toContain("hosted-canary-qualification")
 		expect(check.repair).toContain("rotate")
 	})
 
-	test("accepts a secret whose registered public half is still present", () => {
+	test("rejects an unrelated deploy key standing in for the canary key", () => {
+		const check = classifyHostedCanaryConfiguration(environment, secrets, {
+			...canaryKey,
+			registeredKeyTitles: ["some-other-service", "backup-deploy-key"],
+		})
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.detail).toContain("hosted-canary-qualification")
+	})
+
+	test("accepts only the deploy key titled by CANARY_SSH_KEY_TITLE", () => {
 		expect(
 			classifyHostedCanaryConfiguration(environment, secrets, {
-				registeredKeyFingerprints: ["SHA256:abcdef"],
+				...canaryKey,
+				registeredKeyTitles: ["some-other-service", "hosted-canary-qualification"],
 			}),
 		).toMatchObject({ status: "ready", repair: "" })
+	})
+
+	test("reports a missing CANARY_SSH_KEY_TITLE binding variable", () => {
+		const check = classifyHostedCanaryConfiguration(environment, secrets, {
+			...canaryKey,
+			expectedKeyTitle: "",
+		})
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.detail).toContain("CANARY_SSH_KEY_TITLE")
+	})
+
+	test("fails closed when the deploy-key list was truncated", () => {
+		expect(
+			classifyHostedCanaryConfiguration(environment, secrets, {
+				...canaryKey,
+				registeredKeyTitles: [],
+				registrationComplete: false,
+			}),
+		).toMatchObject({ status: "unavailable" })
 	})
 
 	test("fails closed when the registered public half cannot be read", () => {

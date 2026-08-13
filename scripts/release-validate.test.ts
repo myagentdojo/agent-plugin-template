@@ -587,7 +587,10 @@ test("release workflow resumes a proven merged candidate stranded before its tag
 	)
 
 	// Resume must never create an ad hoc tag outside the admitted record.
-	expect(workflow).not.toContain('git tag -a "$RELEASE_TAG" "$RESUME_SHA"')
+	expect(resumeBranch).not.toContain("git tag")
+	expect(resumeBranch).not.toContain("git push")
+	expect(workflow.match(/tag -a "\$RELEASE_TAG"/g)).toHaveLength(1)
+	expect(workflow).toContain('tag -a "$RELEASE_TAG" "$CANDIDATE_SHA" -F persisted-candidate.json')
 })
 
 test("release maintenance fails loudly with the exact resume command when a candidate is stranded", () => {
@@ -596,12 +599,13 @@ test("release maintenance fails loudly with the exact resume command when a cand
 		workflow.indexOf("\n  maintain:\n"),
 		workflow.indexOf("\n  candidate:\n"),
 	)
-	const strandedStep = maintainJob.slice(
-		maintainJob.indexOf("      - name: Detect a merged release candidate stranded before its tag\n"),
+	const strandedStepStart = maintainJob.indexOf(
+		"      - name: Detect a merged release candidate stranded before its tag\n",
 	)
+	expect(strandedStepStart).toBeGreaterThan(-1)
+	const strandedStep = maintainJob.slice(strandedStepStart)
 	const releasePleaseStep = maintainJob.indexOf("googleapis/release-please-action")
 
-	expect(strandedStep).not.toBe("")
 	// Detection must precede Release Please, whose own abort message is silent.
 	expect(maintainJob.indexOf("Detect a merged release candidate stranded before its tag")).toBeLessThan(
 		releasePleaseStep,

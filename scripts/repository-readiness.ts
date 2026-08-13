@@ -24,7 +24,9 @@ const releaseEnvironmentRepair =
 const hostedCanaryRepair =
 	"Settings > Environments > hosted-canary-qualification: create the environment and add secrets CANARY_GH_TOKEN, CANARY_SSH_KNOWN_HOSTS, and CANARY_SSH_PRIVATE_KEY"
 const hostedCanaryKeyRotationRepair =
-	"rotate the canary key: generate a dedicated purpose key, register its public half first, then update the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
+	"rotate the canary key: generate a dedicated purpose key, register its public half first under the CANARY_SSH_KEY_TITLE title, then update the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
+const hostedCanaryKeyTitleRepair =
+	"Settings > Secrets and variables > Actions: add variable CANARY_SSH_KEY_TITLE naming the deploy key that carries the canary public half"
 
 const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
 export const REQUIRED_HOSTED_CANARY_SECRETS = [
@@ -617,8 +619,12 @@ export function classifyReleaseEnvironmentProtection(environment: unknown): Read
 
 /** Registered public half of the canary admission credential. */
 export interface CanaryKeyRegistration {
-	/** Fingerprints GitHub still lists for the canary key purpose. */
-	registeredKeyFingerprints: string[]
+	/** Deploy-key titles GitHub still lists, across every page. */
+	registeredKeyTitles: string[]
+	/** Title recorded by CANARY_SSH_KEY_TITLE that identifies the canary key. */
+	expectedKeyTitle: string
+	/** Whether every deploy-key page was read; a truncated list cannot prove absence. */
+	registrationComplete: boolean
 }
 
 /**
@@ -676,8 +682,10 @@ export function classifyHostedCanaryConfiguration(
 	}
 	if (
 		!isRecord(keyRegistration) ||
-		!Array.isArray(keyRegistration.registeredKeyFingerprints) ||
-		keyRegistration.registeredKeyFingerprints.some((fingerprint) => typeof fingerprint !== "string")
+		!Array.isArray(keyRegistration.registeredKeyTitles) ||
+		keyRegistration.registeredKeyTitles.some((title) => typeof title !== "string") ||
+		typeof keyRegistration.registrationComplete !== "boolean" ||
+		typeof keyRegistration.expectedKeyTitle !== "string"
 	) {
 		return {
 			name: "hosted-canary-configuration",
@@ -686,16 +694,34 @@ export function classifyHostedCanaryConfiguration(
 			repair: hostedCanaryKeyRotationRepair,
 		}
 	}
-	if (keyRegistration.registeredKeyFingerprints.length === 0) {
+	// A truncated key list cannot prove the canary key is absent.
+	if (!keyRegistration.registrationComplete) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned an incomplete deploy-key list; credential lifecycle is unproven",
+			repair: hostedCanaryKeyRotationRepair,
+		}
+	}
+	if (keyRegistration.expectedKeyTitle.length === 0) {
 		return missing(
 			"hosted-canary-configuration",
-			`${HOSTED_CANARY_ENVIRONMENT} retains CANARY_SSH_PRIVATE_KEY with no registered public half; SSH admission will fail`,
+			"Hosted-canary qualification is missing variable CANARY_SSH_KEY_TITLE; the registered public half cannot be bound to CANARY_SSH_PRIVATE_KEY",
+			hostedCanaryKeyTitleRepair,
+		)
+	}
+	// Any deploy key proves only that some key exists. Bind the exact canary key,
+	// or a rotation that deletes it stays green while SSH admission fails.
+	if (!keyRegistration.registeredKeyTitles.includes(keyRegistration.expectedKeyTitle)) {
+		return missing(
+			"hosted-canary-configuration",
+			`${HOSTED_CANARY_ENVIRONMENT} retains CANARY_SSH_PRIVATE_KEY, but no registered deploy key is titled ${keyRegistration.expectedKeyTitle}; SSH admission will fail`,
 			hostedCanaryKeyRotationRepair,
 		)
 	}
 	return ready(
 		"hosted-canary-configuration",
-		`${HOSTED_CANARY_ENVIRONMENT}, all required secret names, and a registered public half are configured`,
+		`${HOSTED_CANARY_ENVIRONMENT}, all required secret names, and the registered ${keyRegistration.expectedKeyTitle} public half are configured`,
 	)
 }
 
@@ -1056,19 +1082,37 @@ function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 		return apiFailure("hosted-canary-configuration", secrets, hostedCanaryRepair)
 	}
 	// A secret name proves a value exists, not that its public half survives.
-	const deployKeys = readApi(`repos/${repository}/keys`)
+	// Paginate: the canary key can sit past the first page of deploy keys.
+	const deployKeys = readApi(`repos/${repository}/keys?per_page=100`, true)
 	if (!deployKeys.ok) {
 		return apiFailure("hosted-canary-configuration", deployKeys, hostedCanaryKeyRotationRepair)
 	}
-	const registeredKeyFingerprints = Array.isArray(deployKeys.data)
-		? deployKeys.data.flatMap((entry) =>
-				isRecord(entry) && typeof entry.key === "string" ? [entry.key] : [],
-			)
+	const variables = readApi(`repos/${repository}/actions/variables?per_page=100`, true)
+	if (!variables.ok) {
+		return apiFailure("hosted-canary-configuration", variables, hostedCanaryKeyTitleRepair)
+	}
+	const keyPages = Array.isArray(deployKeys.data) ? deployKeys.data : undefined
+	// --slurp yields one array per page; a malformed entry must fail closed, never be dropped.
+	const registeredKeyTitles = keyPages
+		?.flatMap((page) => (Array.isArray(page) ? page : [undefined]))
+		.map((entry) => (isRecord(entry) && typeof entry.title === "string" ? entry.title : undefined))
+	const registrationComplete =
+		registeredKeyTitles !== undefined && registeredKeyTitles.every((title) => title !== undefined)
+	const expectedKeyTitle = Array.isArray(variables.data)
+		? variables.data
+				.flatMap((page) => (Array.isArray(page?.variables) ? page.variables : []))
+				.find((entry) => isRecord(entry) && entry.name === "CANARY_SSH_KEY_TITLE")?.value
 		: undefined
 	return classifyHostedCanaryConfiguration(
 		environment.data,
 		secrets.data,
-		registeredKeyFingerprints ? { registeredKeyFingerprints } : undefined,
+		registeredKeyTitles
+			? {
+					registeredKeyTitles: registeredKeyTitles.filter((title) => title !== undefined),
+					expectedKeyTitle: typeof expectedKeyTitle === "string" ? expectedKeyTitle : "",
+					registrationComplete,
+				}
+			: undefined,
 	)
 }
 
