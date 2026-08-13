@@ -133,7 +133,7 @@ Local proof completes when the current worktree contains only the intended diff 
 plugin/
 ├── .claude-plugin/plugin.json
 ├── .codex-plugin/plugin.json
-├── skills/{hello-world,runtime-custody,skill-a,skill-b}/SKILL.md
+├── skills/{capability-tour,hello-world,runtime-custody,skill-a,skill-b}/SKILL.md
 ├── bin/{hello-world,skill-a,skill-b}
 ├── THIRD-PARTY-NOTICES.md
 └── runtime/
@@ -170,6 +170,7 @@ Use [`CONTEXT.md`](CONTEXT.md) for canonical language. The architecture rational
 - `bun run build`: regenerate the Bun hello-world bundle, workspace bundles, notices, and inventory.
 - `bun run prove:runtime-custody`: exercise missing, repair, corruption, concurrency, hostile-environment, and pass-through behavior.
 - `bun run prove:runtime-platform -- --target <target>`: acquire the reviewed target asset, execute the packaged skill, and prove warm offline reuse.
+- `bun run prove:harness-install -- --require-native --fixture-acknowledged`: install the tagged payload in isolated Claude and Codex homes and prove package bytes, declarations, installed bytes, and direct handler mechanics. It does not prove native activation, hook trust, UI presentation, or delegation; those need the receipts in `docs/native-capability-qualification.md`.
 - `bun run prove:distribution`: build twice, compare package bytes, extract the payload, prove Bun-only closure, and verify cold read-only guidance.
 - `bun run prove:dx`: verify canonical marketplace paths and native development boundaries.
 - `bun run prove:all`: complete local gate.

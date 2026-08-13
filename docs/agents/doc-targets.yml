@@ -1,0 +1,99 @@
+# What must be read to check each document's claims.
+#
+# Consumed by the `docs-drift` skill: each `targets` entry becomes one agent with
+# its artifacts named, so a doc that specifies a workflow is checked by reading
+# that workflow rather than by hoping a scanner finds it.
+#
+# Claim density does not track file size. docs/publishing.md is 31 lines and
+# carries ~28 checkable assertions about release.yml; docs/adr/0004 is 213 lines
+# and carries none that are current.
+
+targets:
+  # Runbooks that narrate a workflow step by step. Highest density, highest churn.
+  docs/publishing.md:
+    - .github/workflows/release.yml
+  docs/release-repair.md:
+    - .github/workflows/release.yml
+  docs/pull-requests-and-ci.md:
+    - .github/workflows/plugin-ci.yml
+    - .github/workflows/pull-request-title.yml
+    - .github/workflows/release-impact.yml
+    - .github/workflows/codex-review-gate.yml
+
+  # ADR 0003 is a living contract spec rather than a stable decision: it names the
+  # nine-field candidate record and the repair contract that release.yml implements.
+  docs/adr/0003-reviewed-versioned-releases.md:
+    - .github/workflows/release.yml
+    - scripts/release-validate.ts
+    - scripts/repository-readiness.ts
+
+  # Required-check NAMES are greppable here. The GitHub settings state they
+  # describe is not - that half is out of scope and the agent should say so.
+  docs/release-setup.md:
+    - scripts/repository-readiness.ts
+    - .github/workflows/hosted-canary.yml
+
+  # ADRs whose claims bind to generated payload rather than to prose.
+  docs/adr/0005-shared-runtime-custody.md:
+    - runtime/runtime.lock.json
+    - runtime/skill-catalog.json
+    - plugin/runtime/runtime-exec
+  docs/adr/0007-workspace-authoring-bundled-distribution.md:
+    - packages/skill-a/package.json
+    - packages/skill-b/package.json
+    - plugin/runtime/bundle-inventory.json
+  docs/adr/0008-native-plugin-capability-tour.md:
+    - plugin/hooks/native-capability-hook
+    - plugin/hooks/claude/hooks.json
+    - plugin/hooks/codex/hooks.json
+
+  # Payload docs. capability-tour/SKILL.md enumerates the skills in prose;
+  # scripts/native-capability-surface.test.ts now guards that line, but the rest
+  # of the file is unguarded.
+  plugin/skills/capability-tour/SKILL.md:
+    - runtime/skill-catalog.json
+    - plugin/runtime/bundle-inventory.json
+  plugin/skills/runtime-custody/SKILL.md:
+    - plugin/runtime/runtime-exec
+  plugin/THIRD-PARTY-NOTICES.md:
+    - packages/skill-a/package.json
+    - packages/skill-b/package.json
+    - plugin/runtime/bundle-inventory.json
+
+  # Path-and-command indexes. Mostly covered by the deterministic reference lens;
+  # listed so their script and version claims get read too.
+  AGENTS.md:
+    - package.json
+  # The architecture tree and proof-command list make claims no config file can
+  # settle: that capability-tour ships, and what prove:harness-install checks.
+  README.md:
+    - package.json
+    - runtime/runtime.lock.json
+    - plugin/skills/capability-tour/SKILL.md
+    - scripts/prove-harness-install.ts
+
+  # The glossary is stipulative and not checkable, but "Capability boundaries"
+  # makes real claims: default-disabled install, and the negative claim that the
+  # tour adds no MCP, standalone agent, or telemetry.
+  CONTEXT.md:
+    - .claude-plugin/marketplace.json
+    - plugin/.codex-plugin/plugin.json
+
+# Deliberately uncovered: docs/releasing.md is a link index, docs/adr/0001 and
+# 0006 are stable rationale, and hello-world / skill-a / skill-b SKILL.md claim
+# only that bin/<id> exists - already covered by the reference lens and enforced
+# at build time. capability-reviewer.md is checked with its parent SKILL.md.
+
+# No artifact in this repo can settle these. Reported, never scanned - zero
+# findings for them means nothing.
+unverifiable:
+  docs/installing.md: external Claude and Codex CLI surface, flags, and JSON output shapes
+  docs/canary-qualification.md: hosted CI run installing real clients
+  docs/native-capability-qualification.md: human-recorded receipts from fresh client profiles
+  CHANGELOG.md: PR numbers and compare URLs resolve only against the forge
+
+# Correctly stale. Superseded ADRs and historical plans record history.
+frozen:
+  - docs/adr/0002-*
+  - docs/adr/0004-*
+  - docs/plans/**
