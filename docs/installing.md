@@ -2,7 +2,7 @@
 
 Use this guide when changing a production plugin installation in Claude Code or Codex.
 
-Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or setup command. First use with a missing runtime requires one approved repair; warm use works offline.
+Consumers need Claude Code or Codex and Git access to the repository. They do not need a user-managed Bun, Node.js, Python, npm, or setup command. First use with a missing runtime requires one approved repair; warm use works offline. Maintainers running `bun run update -- --harness codex --target latest` also need GitHub CLI read access for Release discovery. Explicit target tags use the configured Git credential path directly.
 
 The verification recipes also use a POSIX shell, `curl`, `jq`, `awk`, and `diff`.
 
@@ -12,9 +12,9 @@ Inspect a release before changing either client. Set `FETCH_URL` to the same Git
 
 ```sh
 set -eu
-TAG=vX.Y.Z
-FETCH_URL=https://github.com/OWNER/REPOSITORY.git
-PREFLIGHT_ROOT=$(mktemp -d)
+: "${TAG:=vX.Y.Z}"
+: "${FETCH_URL:=https://github.com/OWNER/REPOSITORY.git}"
+: "${PREFLIGHT_ROOT:=$(mktemp -d)}"
 git clone --filter=blob:none --no-checkout "$FETCH_URL" "$PREFLIGHT_ROOT/repository"
 git -C "$PREFLIGHT_ROOT/repository" fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
 REMOTE_SHA=$(git -C "$PREFLIGHT_ROOT/repository" rev-parse "refs/tags/$TAG^{commit}")
@@ -24,8 +24,8 @@ test "$(git -C "$PREFLIGHT_ROOT/repository" rev-parse HEAD)" = "$REMOTE_SHA"
 VERSION=${TAG#v}
 test "$(jq -r .version "$PREFLIGHT_ROOT/repository/plugin/.claude-plugin/plugin.json")" = "$VERSION"
 test "$(jq -r .version "$PREFLIGHT_ROOT/repository/plugin/.codex-plugin/plugin.json")" = "$VERSION"
-jq -e '.plugins[0].defaultEnabled == false' "$PREFLIGHT_ROOT/repository/.claude-plugin/marketplace.json"
-jq -e '.plugins[0].policy.installation == "AVAILABLE" and .plugins[0].policy.authentication == "ON_INSTALL"' "$PREFLIGHT_ROOT/repository/.agents/plugins/marketplace.json"
+jq -e '.plugins | length == 1 and .[0].defaultEnabled == false' "$PREFLIGHT_ROOT/repository/.claude-plugin/marketplace.json"
+jq -e '.plugins | length == 1 and .[0].policy.installation == "AVAILABLE" and .[0].policy.authentication == "ON_INSTALL"' "$PREFLIGHT_ROOT/repository/.agents/plugins/marketplace.json"
 test -z "$(git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin | awk '$1 == "120000"')"
 git -C "$PREFLIGHT_ROOT/repository" ls-tree -r "$REMOTE_SHA" plugin > "$PREFLIGHT_ROOT/payload-inventory.txt"
 ```
@@ -164,7 +164,14 @@ Official references: [build Codex plugins](https://developers.openai.com/plugins
 
 ## Upgrade and roll back
 
-An upgrade and a rollback use the same replacement operation. Set the target to the newer tag for an upgrade or the older tag for a rollback. First capture current JSON state. Run the detached preflight above for both the target tag and the current restoration tag. Stop before uninstalling anything if either tag, commit, credential path, policy, payload, prior cache, or removal authority cannot be proved. Managed, workspace-installed, or non-removable plugins require an administrator.
+An upgrade and a rollback use the same replacement operation. Set the target to the newer tag for an upgrade or the older tag for a rollback. First capture current JSON state. Run the detached preflight above twice: retain the selected target under `TARGET_PREFLIGHT_ROOT`, and retain the current restoration Release under `RESTORE_PREFLIGHT_ROOT`. Stop before uninstalling anything if either tag, commit, credential path, policy, payload, prior cache, or removal authority cannot be proved. Managed, workspace-installed, or non-removable plugins require an administrator.
+
+```sh
+TARGET_PREFLIGHT_ROOT=$(mktemp -d)
+RESTORE_PREFLIGHT_ROOT=$(mktemp -d)
+# Run the complete preflight with PREFLIGHT_ROOT=$TARGET_PREFLIGHT_ROOT and TAG=$TARGET_TAG.
+# Run it again with PREFLIGHT_ROOT=$RESTORE_PREFLIGHT_ROOT and TAG=$RESTORE_TAG.
+```
 
 ### Claude Code replacement
 
@@ -183,7 +190,7 @@ claude plugin enable PLUGIN_NAME@PLUGIN_NAME --scope "$SCOPE"
 claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-target-active.json"
 ```
 
-Inspect the target marketplace JSON before install. After enablement, require the target version, intended scope, host-selected active cache path, and `diff -qr` equality with the target checkout. Ignore orphan cache directories that the host did not select.
+Inspect the target marketplace JSON before install. After enablement, require the target version, intended scope, host-selected active cache path, and `diff -qr` equality with `$TARGET_PREFLIGHT_ROOT/repository/plugin`. Ignore orphan cache directories that the host did not select.
 
 If any step after uninstall fails, restore before doing other work:
 
@@ -200,40 +207,34 @@ fi
 claude plugin list --json > "$PREFLIGHT_ROOT/claude-plugins-restored.json"
 ```
 
-Verify the restored version, scope, active cache bytes, enabled state, and persistent plugin data. Keep the persistent plugin data directory. Private background refresh uses the configured Git credential path. Set `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1` in Claude Code's launch environment before starting the client. With it, a failed marketplace pull retains the last-known-good clone. Without it, Claude Code deletes and re-clones the marketplace after a failed pull, so prior marketplace cache retention is not guaranteed. Run `claude plugin marketplace update PLUGIN_NAME` for a manual same-source refresh, then inspect before replacement.
+Verify the restored version, scope, active cache bytes against `$RESTORE_PREFLIGHT_ROOT/repository/plugin`, enabled state, and persistent plugin data. Keep the persistent plugin data directory. Private background refresh uses the configured Git credential path. Set `CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1` in Claude Code's launch environment before starting the client. With it, a failed marketplace pull retains the last-known-good clone. Without it, Claude Code deletes and re-clones the marketplace after a failed pull, so prior marketplace cache retention is not guaranteed. Run `claude plugin marketplace update PLUGIN_NAME` for a manual same-source refresh, then inspect before replacement.
 
-### Codex replacement
+### Codex production update
 
-Capture marketplace and plugin JSON first. Record `PRIOR_CODEX_SOURCE`, `PRIOR_CODEX_REF`, and `PRIOR_ENABLED`. Preflight both the target and restoration refs before removal:
-
-```sh
-codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-before.json"
-codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-before.json"
-codex plugin remove PLUGIN_NAME@PLUGIN_NAME --json
-codex plugin marketplace remove PLUGIN_NAME --json
-codex plugin marketplace add "$TARGET_CODEX_SOURCE" --ref "$TARGET_CODEX_REF" --json > "$PREFLIGHT_ROOT/codex-marketplace-target-add.json"
-codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-target.json"
-codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-target-add.json"
-codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-target.json"
-```
-
-Inspect the marketplace JSON and installed root before plugin add. Then inspect the plugin JSON and installed path. Require the target source/ref, version, and byte equality with the detached target checkout.
-
-If any step after removal fails, restore the exact prior source and ref immediately:
+Use the repository-owned command for every production upgrade or rollback. No arguments show concise help. A normal invocation is read-only and prints the prior ref, selected Release, and next action. JSON mode provides the detailed preview contract, including captured prior state, exact side effects, and recovery plan:
 
 ```sh
-codex plugin remove PLUGIN_NAME@PLUGIN_NAME --json || true
-codex plugin marketplace remove PLUGIN_NAME --json || true
-codex plugin marketplace add "$PRIOR_CODEX_SOURCE" --ref "$PRIOR_CODEX_REF" --json > "$PREFLIGHT_ROOT/codex-marketplace-restored-add.json"
-codex plugin add PLUGIN_NAME@PLUGIN_NAME --json > "$PREFLIGHT_ROOT/codex-plugin-restored-add.json"
-codex plugin marketplace list --json > "$PREFLIGHT_ROOT/codex-marketplaces-restored.json"
-codex plugin list --json > "$PREFLIGHT_ROOT/codex-plugins-restored.json"
+bun run update -- --harness codex
+bun run update -- --harness codex --target vX.Y.Z
 ```
 
-Verify the restored source, ref, version, cache bytes, and enabled state. Codex CLI currently has no documented plugin enable/disable subcommand; restore a differing enabled state in the Codex plugin settings and confirm it with `codex plugin list --json` before continuing.
+`--target latest` is the default. It selects the highest stable GitHub Release and excludes drafts and prereleases. An explicit stable `vX.Y.Z` tag keeps the run deterministic. The command resolves the selector once, peels the tag to one commit, and preflights both target and restoration Releases through the current Git transport before removal.
 
-For the target install, start a fresh isolated task, confirm skill discovery, and exercise the missing-runtime repair/retry journey when the reviewed Bun identity changed. A new Bun version plus executable digest requires fresh approval; archive-only metadata changes do not change the approved runtime identity.
+Review the preview, then authorize that exact target:
 
-`codex plugin marketplace upgrade PLUGIN_NAME` is the documented explicit CLI operation for refreshing the configured Git snapshot. A pinned immutable tag should resolve to the same bytes. Automatic Codex marketplace refresh is unspecified; never rely on it to move or restore a release.
+```sh
+bun run update -- --harness codex --target vX.Y.Z --apply
+bun run update -- --harness codex --target vX.Y.Z --apply --json --no-input
+```
 
-Replacement completes when the target or restored source, immutable ref, version, enabled state, installed bytes, and skill invocation all match the selected preflight checkout.
+Apply removes the prior Plugin Installation and Marketplace, adds the same source pinned to the selected tag, verifies the Marketplace checkout before installation, installs the Plugin Payload, then checks configured ref, exact tag, peeled commit, manifest version, installed path, policy, enabled state, payload bytes, and selected-Release functional proof. An already-current Release returns `changed: false` without native remove or add commands.
+
+The command blocks before mutation for unowned, ambiguous, sparse, disabled, non-stable, uncredentialed, unsafe, or unrestorable state. Codex CLI has no supported plugin enable/disable subcommand, so a disabled installation needs an administrator-owned replacement path. After a recoverable post-removal failure, the command attempts one exact restoration and verifies it. An unverified state returns `transactionState: "unknown"`, `retrySafety: "inspect_required"`, and never retries automatically.
+
+JSON mode emits one result on stdout. Diagnostics stay on stderr. The result includes run correlation, selected and prior Release evidence, resulting ref/version/path, transaction state, completed side effects, retry safety, proof lineage, and one next safe action. Preview reports `proof.status: "target_preflight"` and leaves the live Marketplace and Plugin Installation on their prior Release; only a no-op or verified apply reports `proof.status: "installed_match"`. Fresh-install qualification stays separate from in-place-update proof.
+
+`codex plugin marketplace upgrade PLUGIN_NAME` refreshes the configured Git snapshot only. It does not select a newer Release. A pinned immutable tag should resolve to the same bytes. Automatic Codex marketplace refresh is unspecified; never rely on a zero-error refresh result as release-selection evidence.
+
+After a successful update, start a fresh isolated task, confirm skill discovery, and exercise the missing-runtime repair/retry journey when the reviewed Bun identity changed. A new Bun version plus executable digest requires fresh approval; archive-only metadata changes do not change the approved runtime identity.
+
+Replacement completes when the target state matches `$TARGET_PREFLIGHT_ROOT` or the restored state matches `$RESTORE_PREFLIGHT_ROOT`: source, immutable ref, version, enabled state, installed bytes, and skill invocation must agree with that retained checkout.

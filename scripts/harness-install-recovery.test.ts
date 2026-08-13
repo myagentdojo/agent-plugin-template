@@ -14,6 +14,12 @@ const prior: HarnessRecoverySnapshot = {
 	enabled: false,
 	scope: "project",
 	persistentData: "project marker\n",
+	commit: "a".repeat(40),
+	installedPath: "/host/cache/plugin/0.1.0",
+	marketplaceRoot: "/host/marketplaces/plugin",
+	installPolicy: "AVAILABLE",
+	authPolicy: "ON_INSTALL",
+	payloadHash: "b".repeat(64),
 }
 
 test("post-mutation failure enters the recovery handler and returns its restored value", () => {
@@ -56,6 +62,12 @@ test.each([
 	["enabled", true],
 	["scope", "user"],
 	["persistentData", "changed\n"],
+	["commit", "c".repeat(40)],
+	["installedPath", "/wrong/cache"],
+	["marketplaceRoot", "/wrong/marketplace"],
+	["installPolicy", "REQUIRED"],
+	["authPolicy", "ON_USE"],
+	["payloadHash", "d".repeat(64)],
 ] as const)("exact recovery rejects mismatched %s", (field, value) => {
 	expect(() =>
 		provePostMutationRecovery(prior, {

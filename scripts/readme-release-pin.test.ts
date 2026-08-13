@@ -74,6 +74,8 @@ test("replacement guidance preserves the documented refresh operations", async (
 	const installing = await Bun.file(installingUrl).text()
 	expect(installing).toContain("claude plugin marketplace update PLUGIN_NAME")
 	expect(installing).toContain("codex plugin marketplace upgrade PLUGIN_NAME")
+	expect(installing).toContain("bun run update -- --harness codex")
+	expect(installing).toContain("It does not select a newer Release")
 	expect(installing).toContain("Automatic Codex marketplace refresh is unspecified")
 	expect(installing).toContain("A pinned immutable tag should resolve to the same bytes")
 	expect(installing).toContain("`CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1`")

@@ -17,7 +17,16 @@ test("template CLI discovery and rendered help expose the same public commands",
 		init: "bun run scripts/init.ts",
 		"release:validate": "bun run scripts/release-validate.ts",
 		"ship:canary": "bun run scripts/ship-canary.ts",
+		update: "bun run scripts/update.ts",
 	})
+
+	const updateHelp = run(["update", "--", "--help"])
+	expect(updateHelp.exitCode).toBe(0)
+	expect(updateHelp.stdout.toString()).toContain("Preview by default")
+	expect(updateHelp.stdout.toString()).toContain("--target latest|vX.Y.Z")
+	expect(updateHelp.stdout.toString()).toContain("--apply")
+	expect(updateHelp.stdout.toString()).toContain("refreshes the configured ref")
+	expect(updateHelp.stdout.toString()).toContain("selects a newer immutable Release")
 
 	const initHelp = run(["init", "--", "--help"])
 	expect(initHelp.exitCode).toBe(0)

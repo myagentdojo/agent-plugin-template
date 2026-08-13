@@ -27,6 +27,18 @@ export interface HarnessRecoverySnapshot {
 	scope?: "user" | "project" | "local"
 	/** Exact persistent marker contents when the harness owns persistent data. */
 	persistentData?: string
+	/** Peeled immutable commit when the harness exposes Git lineage. */
+	commit?: string
+	/** Host-selected installed payload path when reported. */
+	installedPath?: string
+	/** Host-selected Marketplace checkout path when reported. */
+	marketplaceRoot?: string
+	/** Native installation policy when reported. */
+	installPolicy?: string
+	/** Native authentication policy when reported. */
+	authPolicy?: string
+	/** Hash of the complete installed payload inventory and bytes when available. */
+	payloadHash?: string
 }
 
 /**
@@ -89,6 +101,12 @@ export function assertExactHarnessRecovery(
 		"enabled",
 		"scope",
 		"persistentData",
+		"commit",
+		"installedPath",
+		"marketplaceRoot",
+		"installPolicy",
+		"authPolicy",
+		"payloadHash",
 	] as const) {
 		if (restored[field] !== prior[field]) {
 			throw new Error(`${harness} recovery did not restore prior ${field}`)
