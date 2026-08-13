@@ -264,6 +264,46 @@ test("repository docs separate lifecycle mechanics from fresh-native qualificati
 	expect(capability).not.toMatch(/\bv?\d+\.\d+\.\d+\b/)
 })
 
+test("fresh-native qualification runbook owns privacy, lineage, bounded cells, and completion", () => {
+	const qualification = readFileSync(
+		join(root, "docs", "native-capability-qualification.md"),
+		"utf8",
+	)
+
+	for (const privacyClaim of [
+		"$XDG_STATE_HOME/agent-plugin-template/runtime-custody/",
+		"`0700`",
+		"`0600`",
+		"`umask 077`",
+		"Never promote paths, prompts, transcript text, session data, environment dumps, or raw host receipts.",
+	]) {
+		expect(qualification).toContain(privacyClaim)
+	}
+	for (const lineageClaim of [
+		"exact source candidate SHA",
+		"archive SHA-256",
+		"packaged payload hash",
+		"independently measured installed payload hash",
+		"The packaged and installed hashes must match.",
+	]) {
+		expect(qualification).toContain(lineageClaim)
+	}
+	for (const boundedCell of [
+		"Fresh discovery and branded UI identity.",
+		"Skill-seeded generic native delegation",
+		"One native `SessionStart` receipt",
+		"Host-observed zero-output clean `Stop` completion.",
+		"disposable candidate-derived drift copy",
+		"Silent `stop_hook_active: true` re-entry",
+		"Capability-tour and existing-skill operation when hooks are disabled or untrusted",
+	]) {
+		expect(qualification).toContain(boundedCell)
+	}
+	expect(qualification).toContain(
+		"Qualification completes when every bounded cell has a result, every promoted claim is bound to the same candidate, packaged and installed payload hashes match, and the raw receipts remain private.",
+	)
+})
+
 test("recursive package copy preserves the complete payload inventory", () => {
 	const installation = mkdtempSync(join(tmpdir(), "capability-tour-payload-"))
 	const installedRoot = join(installation, "plugin")
