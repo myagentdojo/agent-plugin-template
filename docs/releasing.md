@@ -8,7 +8,7 @@ Use the runbook that matches the current job:
 | Configure GitHub release automation | [Configure release automation](release-setup.md) |
 | Record candidate-bound evidence from fresh clients | [Qualify fresh native capabilities](native-capability-qualification.md) |
 | Publish an admitted candidate | [Publish a release](publishing.md) |
-| Maintain the release PR or repair an incomplete publication | [Maintain or repair release state](release-repair.md) |
+| Maintain the release PR, resume a stranded candidate, or repair an incomplete publication | [Maintain, resume, or repair release state](release-repair.md) |
 | Qualify publishing-system changes in public and private repositories | [Qualify public and private canaries](canary-qualification.md) |
 
 The root [README](../README.md) owns plugin creation and extension. The [installation guide](installing.md) owns production installation, upgrade, replacement, and rollback.

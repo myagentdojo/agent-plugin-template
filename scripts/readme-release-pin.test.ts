@@ -25,7 +25,7 @@ test("README routes each branch directly to its owner", async () => {
 		"[Configure release automation](docs/release-setup.md)",
 		"[Qualify fresh native capabilities](docs/native-capability-qualification.md)",
 		"[Publish a release](docs/publishing.md)",
-		"[Maintain or repair release state](docs/release-repair.md)",
+		"[Maintain, resume, or repair release state](docs/release-repair.md)",
 		"[Qualify public and private canaries](docs/canary-qualification.md)",
 	]) {
 		expect(readme).toContain(pointer)
@@ -44,7 +44,7 @@ test("maintainer index preserves one pointer per operator branch", async () => {
 		"[Configure release automation](release-setup.md)",
 		"[Qualify fresh native capabilities](native-capability-qualification.md)",
 		"[Publish a release](publishing.md)",
-		"[Maintain or repair release state](release-repair.md)",
+		"[Maintain, resume, or repair release state](release-repair.md)",
 		"[Qualify public and private canaries](canary-qualification.md)",
 	]) {
 		expect(index).toContain(pointer)
@@ -163,8 +163,14 @@ test("release repair preserves exact operations and a complete terminal bound", 
 	expect(repair).toContain("it only updates the standing release PR and never publishes")
 	expect(repair).toContain("`repair` requires `release_tag`")
 	expect(repair).toContain("exact existing `vX.Y.Z` tag")
-	expect(repair).toContain("This repairs an incomplete publication; it does not create a new release.")
+	expect(repair).toContain("it repairs an incomplete publication and does not create a new release")
+	expect(repair).toContain("`resume` requires `candidate_sha`")
+	expect(repair).toContain("no tag yet means `resume`; an existing tag means `repair`")
+	expect(repair).toContain("Resume never mints a fresh admission")
+	expect(repair).toContain("requires the target tag to be absent")
+	expect(repair).toContain("Resume completes when the immutable tag targets the admitted candidate")
 	expect(repair.match(/-f operation=maintenance/g)).toHaveLength(1)
+	expect(repair.match(/-f operation=resume/g)).toHaveLength(1)
 	expect(repair.match(/-f operation=repair/g)).toHaveLength(2)
 	expect(repair).toContain("Repair completes when the immutable tag still targets the admitted candidate")
 	expect(repair).toContain("the GitHub Release targets that commit")

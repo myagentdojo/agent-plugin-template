@@ -84,6 +84,7 @@ test("reports ready when every publication safeguard is proven", () => {
 		classifyHostedCanaryConfiguration(
 			{ name: "hosted-canary-qualification" },
 			{ secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) },
+			{ registeredKeyFingerprints: ["SHA256:abcdef"] },
 		),
 		classifyRequiredStatusChecks({ strict: true, contexts: REQUIRED_STATUS_CHECKS }),
 		classifyWorkflowAdminPermissions([
@@ -328,7 +329,11 @@ describe("hosted-canary qualification configuration", () => {
 	const secrets = { secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })) }
 
 	test("accepts the environment with all required secret names", () => {
-		expect(classifyHostedCanaryConfiguration(environment, secrets)).toMatchObject({
+		expect(
+			classifyHostedCanaryConfiguration(environment, secrets, {
+				registeredKeyFingerprints: ["SHA256:abcdef"],
+			}),
+		).toMatchObject({
 			name: "hosted-canary-configuration",
 			status: "ready",
 			repair: "",
@@ -343,6 +348,30 @@ describe("hosted-canary qualification configuration", () => {
 		expect(check).toMatchObject({ status: "missing" })
 		expect(check.detail).toContain("CANARY_GH_TOKEN")
 		expect(JSON.stringify(check)).not.toContain("must-not-leak")
+	})
+
+	test("reports a stranded private key whose registered public half was deleted", () => {
+		const check = classifyHostedCanaryConfiguration(environment, secrets, {
+			registeredKeyFingerprints: [],
+		})
+
+		expect(check).toMatchObject({ status: "missing" })
+		expect(check.detail).toContain("public half")
+		expect(check.repair).toContain("rotate")
+	})
+
+	test("accepts a secret whose registered public half is still present", () => {
+		expect(
+			classifyHostedCanaryConfiguration(environment, secrets, {
+				registeredKeyFingerprints: ["SHA256:abcdef"],
+			}),
+		).toMatchObject({ status: "ready", repair: "" })
+	})
+
+	test("fails closed when the registered public half cannot be read", () => {
+		expect(classifyHostedCanaryConfiguration(environment, secrets, undefined)).toMatchObject({
+			status: "unavailable",
+		})
 	})
 
 	test.each([

@@ -468,6 +468,58 @@ export function validateRepairBinding(
 	return { tag: input.tag, commit: input.checkoutSha, version: input.manifestVersion }
 }
 
+/** GitHub-derived facts required to resume a merged candidate stranded before its tag. */
+export interface ResumeCandidateBindingInput extends CandidateTopology {
+	/** Untrusted publication record recovered from the persisted pre-proof artifact. */
+	candidate: unknown
+	/** Current GitHub owner/repository identity. */
+	repository: string
+	/** Trusted release base branch policy. */
+	expectedBaseBranch: string
+	/** Trusted automation logins allowed to own the release pull request. */
+	expectedAutomationIdentities: string[]
+	/** Pull-request and projection facts re-derived from GitHub for this resume. */
+	trustedCandidate: ReleasePullRequestCandidate
+	/** Merged candidate commit being resumed. */
+	candidateSha: string
+	/** Version read from the candidate manifest. */
+	manifestVersion: string
+	/** Whether the candidate version tag already exists remotely. */
+	tagExists: boolean
+}
+
+/**
+ * Bind a pre-tag resume to the admission its original run already persisted.
+ *
+ * Resume never mints a new admission. It replays the original record against
+ * freshly derived GitHub facts, so a candidate that was never admitted, was
+ * rebound, or has since been tagged cannot reach protected publication.
+ *
+ * @param input - Persisted record plus GitHub-derived publication facts
+ * @returns The resumed tag, commit, and version
+ * @throws {Error} When the candidate is missing, rebound, mismatched, or already tagged
+ */
+export function validateResumeCandidateBinding(
+	input: ResumeCandidateBindingInput,
+): { tag: string; commit: string; version: string } {
+	const candidate = parsePublicationCandidateRecord(input.candidate)
+	admitCandidate({
+		repository: input.repository,
+		expectedBaseBranch: input.expectedBaseBranch,
+		expectedAutomationIdentities: input.expectedAutomationIdentities,
+		githubSha: input.candidateSha,
+		candidateParentShas: input.candidateParentShas,
+		trustedBaseSha: input.trustedBaseSha,
+		mergedPrBaseSha: input.mergedPrBaseSha,
+		reviewedPrHeadSha: input.reviewedPrHeadSha,
+		manifestVersion: input.manifestVersion,
+		tagExists: input.tagExists,
+		candidates: [input.trustedCandidate],
+		priorRecord: candidate,
+	}, true)
+	return { tag: candidate.tag, commit: candidate.mergeCommit, version: candidate.version }
+}
+
 /** Bind a manual repair to its original immutable publication admission record. */
 export function validateRepairCandidateBinding(
 	input: RepairCandidateBindingInput,
@@ -621,6 +673,12 @@ function validateRepository(repositoryRoot: string) {
 		"reviewed_pr_head_sha",
 		"trusted_base_sha",
 		"admitPublicationCandidate",
+		"validateResumeCandidateBinding",
+		'if [[ "$OPERATION" == "resume" ]]',
+		"publication-candidate-${RESUME_SHA}",
+		"Resume requires the persisted publication candidate",
+		"Detect a merged release candidate stranded before its tag",
+		"-f operation=resume",
 		"scripts/release-projection.ts",
 		"bun run prove:all",
 		"git diff --exit-code -- plugin/",

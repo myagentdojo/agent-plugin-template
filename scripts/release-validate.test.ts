@@ -19,6 +19,7 @@ import {
 	validateCapabilitySidecars,
 	validateRepairCandidateBinding,
 	validateRepairBinding,
+	validateResumeCandidateBinding,
 } from "./release-validate"
 
 const root = resolve(import.meta.dir, "..")
@@ -335,6 +336,10 @@ test("release workflow is pinned and publishes proven assets after validation", 
 		workflow.indexOf("      - name: Resolve unique candidate or immutable repair tag\n"),
 		workflow.indexOf("\n\n          associated_prs="),
 	)
+	// The repair branch owns its own ordering; resume resolves before it.
+	const repairOnlyStep = repairValidationStep.slice(
+		repairValidationStep.indexOf('if [[ "$OPERATION" != "repair" ]]'),
+	)
 	const publishResolutionStep = workflow.slice(
 		workflow.indexOf("          associated_prs="),
 		workflow.indexOf("      - name: Persist publication candidate before proof\n"),
@@ -376,15 +381,15 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("admitted_automation_identity")
 	expect(workflow).not.toContain('--expected-automation-login "$admitted_automation_identity"')
 	expect(workflow).toContain("scripts/release-projection.ts")
-	const historicalPolicyCheckout = repairValidationStep.indexOf(
+	const historicalPolicyCheckout = repairOnlyStep.indexOf(
 		'git checkout --detach "$trusted_base_sha"',
 	)
-	const historicalPolicyExecution = repairValidationStep.indexOf("bun run scripts/release-projection.ts")
-	const currentAdmissionCheckout = repairValidationStep.indexOf(
+	const historicalPolicyExecution = repairOnlyStep.indexOf("bun run scripts/release-projection.ts")
+	const currentAdmissionCheckout = repairOnlyStep.indexOf(
 		'git checkout --detach "$workflow_policy_sha"',
 	)
-	const currentAdmissionExecution = repairValidationStep.indexOf("validateRepairCandidateBinding")
-	const provenanceGuard = repairValidationStep.indexOf('if [[ -z "$merged_at"')
+	const currentAdmissionExecution = repairOnlyStep.indexOf("validateRepairCandidateBinding")
+	const provenanceGuard = repairOnlyStep.indexOf('if [[ -z "$merged_at"')
 	const dispatchBaseGuard = repairValidationStep.indexOf(
 		'if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]',
 	)
@@ -407,7 +412,7 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).toContain("PUSH_BEFORE_SHA: ${{ github.event.before }}")
 	expect(workflow).toContain("PUSH_FORCED: ${{ github.event.forced }}")
 	expect(workflow).toContain('if [[ "$PUSH_FORCED" != "false" ]]')
-	expect(workflow.match(/candidate_parent_shas=/g)).toHaveLength(3)
+	expect(workflow.match(/candidate_parent_shas=/g)).toHaveLength(4)
 	expect(publishResolutionStep).toContain('trusted_base_sha="$PUSH_BEFORE_SHA"')
 	expect(publishResolutionStep).toContain('merged_pr_base_sha=$(jq -r .base.sha <<< "$release_pr")')
 	expect(publishResolutionStep).toContain('reviewed_pr_head_sha=$(jq -r .head.sha <<< "$release_pr")')
@@ -478,13 +483,13 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(candidateJob).toContain("    permissions:\n      actions: read\n      contents: read\n")
 	expect(candidateJob).toContain("persist-credentials: false")
 	expect(normalizePredicate(parsedWorkflow.jobs.compatibility.if)).toBe(
-		"needs.resolve.outputs.mode == 'publish'",
+		"needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'resume'",
 	)
 	expect(normalizePredicate(parsedWorkflow.jobs.package.if)).toBe(
-		"always() && needs.resolve.result == 'success' && needs.candidate.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair') && (needs.compatibility.result == 'success' || (needs.resolve.outputs.mode == 'repair' && needs.compatibility.result == 'skipped'))",
+		"always() && needs.resolve.result == 'success' && needs.candidate.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'resume' || needs.resolve.outputs.mode == 'repair') && (needs.compatibility.result == 'success' || (needs.resolve.outputs.mode == 'repair' && needs.compatibility.result == 'skipped'))",
 	)
 	expect(normalizePredicate(parsedWorkflow.jobs.release.if)).toBe(
-		"always() && needs.resolve.result == 'success' && needs.package.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair')",
+		"always() && needs.resolve.result == 'success' && needs.package.result == 'success' && (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'resume' || needs.resolve.outputs.mode == 'repair')",
 	)
 	expect(workflow.match(/--dir "\$RUNNER_TEMP\/platform-candidate"/g)).toHaveLength(2)
 	expect(maintainJob).toContain("persist-credentials: false")
@@ -506,7 +511,8 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(repairValidationStep).toContain('gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"')
 	expect(repairValidationStep).toContain("trusted-repair-candidate.json")
 	expect(repairValidationStep).toContain("validateRepairCandidateBinding")
-	expect(repairValidationStep).not.toContain("actions/artifacts")
+	// Repair recovers its admission from the annotated tag, never from artifact retention.
+	expect(repairOnlyStep).not.toContain("actions/artifacts")
 	expect(persistedCandidateStep).toContain('if [[ "$MODE" == "repair" ]]')
 	expect(persistedCandidateStep).toContain("git for-each-ref --format='%(contents)'")
 	expect(finalReleaseJob).toContain("    needs:\n      - resolve\n      - package\n")
@@ -531,6 +537,80 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(workflow).not.toContain("ref: ${{ inputs.release_tag || github.sha }}")
 	expect(workflow).not.toContain("*.provenance.json")
 	expect(workflow).not.toContain("endswith($repository)")
+})
+
+test("release workflow resumes a proven merged candidate stranded before its tag", () => {
+	const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+	const parsedWorkflow = Bun.YAML.parse(workflow) as {
+		on: { workflow_dispatch: { inputs: { operation: { options: string[] } } } }
+		jobs: Record<string, { if?: string }>
+	}
+	const normalizePredicate = (predicate: string | undefined) => predicate?.replace(/\s+/g, " ")
+	const resolveStep = workflow.slice(
+		workflow.indexOf("      - name: Resolve unique candidate or immutable repair tag\n"),
+		workflow.indexOf("      - name: Persist publication candidate before proof\n"),
+	)
+	const resumeBranch = resolveStep.slice(
+		resolveStep.indexOf('if [[ "$OPERATION" == "resume" ]]'),
+		resolveStep.indexOf('if [[ "$OPERATION" != "repair" ]]'),
+	)
+
+	expect(parsedWorkflow.on.workflow_dispatch.inputs.operation.options).toEqual([
+		"maintenance",
+		"resume",
+		"repair",
+	])
+	expect(resolveStep).toContain('if [[ "$OPERATION" == "resume" ]]')
+	expect(resumeBranch).toContain("mode=resume")
+
+	// Resume must reuse the original admission, never mint a fresh one.
+	expect(resumeBranch).toContain("publication-candidate-${RESUME_SHA}")
+	expect(resumeBranch).toContain("Resume requires the persisted publication candidate")
+	expect(resumeBranch).not.toContain("admitPublicationCandidate")
+	expect(resumeBranch).toContain("validateResumeCandidateBinding")
+
+	// The target tag must still be absent; a tagged candidate belongs to repair.
+	expect(resumeBranch).toContain("already exists; use manual incomplete-publication repair")
+
+	// Resume reaches publication through the same proof and protected environment.
+	expect(normalizePredicate(parsedWorkflow.jobs.candidate.if)).toContain(
+		"needs.resolve.outputs.mode == 'resume'",
+	)
+	expect(normalizePredicate(parsedWorkflow.jobs.compatibility.if)).toContain(
+		"needs.resolve.outputs.mode == 'resume'",
+	)
+	expect(normalizePredicate(parsedWorkflow.jobs.package.if)).toContain(
+		"needs.resolve.outputs.mode == 'resume'",
+	)
+	expect(normalizePredicate(parsedWorkflow.jobs.release.if)).toContain(
+		"needs.resolve.outputs.mode == 'resume'",
+	)
+
+	// Resume must never create an ad hoc tag outside the admitted record.
+	expect(workflow).not.toContain('git tag -a "$RELEASE_TAG" "$RESUME_SHA"')
+})
+
+test("release maintenance fails loudly with the exact resume command when a candidate is stranded", () => {
+	const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8")
+	const maintainJob = workflow.slice(
+		workflow.indexOf("\n  maintain:\n"),
+		workflow.indexOf("\n  candidate:\n"),
+	)
+	const strandedStep = maintainJob.slice(
+		maintainJob.indexOf("      - name: Detect a merged release candidate stranded before its tag\n"),
+	)
+	const releasePleaseStep = maintainJob.indexOf("googleapis/release-please-action")
+
+	expect(strandedStep).not.toBe("")
+	// Detection must precede Release Please, whose own abort message is silent.
+	expect(maintainJob.indexOf("Detect a merged release candidate stranded before its tag")).toBeLessThan(
+		releasePleaseStep,
+	)
+	expect(strandedStep).toContain("autorelease:%20pending")
+	expect(strandedStep).toContain("git/ref/tags/")
+	expect(strandedStep).toContain("-f operation=resume")
+	expect(strandedStep).toContain("-f candidate_sha=")
+	expect(strandedStep).toContain("exit 1")
 })
 
 test("release workflow fails closed when the requested terminal operation is skipped", () => {
@@ -1375,4 +1455,70 @@ test("manual repair CLI fails closed without a persisted publication candidate",
 
 	expect(result.exitCode).toBe(1)
 	expect(result.stderr.toString()).toContain("publication candidate record is required")
+})
+
+function resumeInput(overrides: Record<string, unknown> = {}) {
+	return {
+		candidate: admitPublicationCandidate(admissionInput()),
+		repository: "myagentdojo/agent-plugin-template",
+		expectedBaseBranch: "main",
+		expectedAutomationIdentities: ["github-actions[bot]"],
+		trustedCandidate: releasePullRequest(),
+		...candidateTopology(),
+		candidateSha: "a".repeat(40),
+		manifestVersion: "0.1.0",
+		tagExists: false,
+		...overrides,
+	}
+}
+
+test("resume binds a stranded candidate to its original untagged admission", () => {
+	expect(validateResumeCandidateBinding(resumeInput())).toEqual({
+		tag: "v0.1.0",
+		commit: "a".repeat(40),
+		version: "0.1.0",
+	})
+})
+
+test("resume refuses a candidate whose immutable tag already exists", () => {
+	expect(() => validateResumeCandidateBinding(resumeInput({ tagExists: true }))).toThrow(
+		"must be absent",
+	)
+})
+
+test("resume refuses a persisted record rebound to another candidate", () => {
+	expect(() =>
+		validateResumeCandidateBinding(
+			resumeInput({
+				trustedCandidate: releasePullRequest({ mergeCommit: "e".repeat(40) }),
+				candidateSha: "e".repeat(40),
+			}),
+		),
+	).toThrow("rebound to another release identity")
+})
+
+test("resume refuses a candidate that is not a Release Please pull request", () => {
+	expect(() =>
+		validateResumeCandidateBinding(
+			resumeInput({ trustedCandidate: releasePullRequest({ automationIdentity: "attacker" }) }),
+		),
+	).toThrow("unexpected automation identity")
+})
+
+test("resume refuses a candidate whose manifest version moved after admission", () => {
+	expect(() => validateResumeCandidateBinding(resumeInput({ manifestVersion: "0.2.0" }))).toThrow(
+		"rebound to another release identity",
+	)
+})
+
+test("resume refuses a malformed persisted record", () => {
+	expect(() => validateResumeCandidateBinding(resumeInput({ candidate: { pullRequest: 42 } }))).toThrow(
+		"publication candidate record shape is invalid",
+	)
+})
+
+test("resume refuses a candidate whose merge commit is not the resumed SHA", () => {
+	expect(() => validateResumeCandidateBinding(resumeInput({ candidateSha: "f".repeat(40) }))).toThrow(
+		"merge commit does not equal",
+	)
 })

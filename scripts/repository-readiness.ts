@@ -23,6 +23,8 @@ const releaseEnvironmentRepair =
 	"Settings > Environments > release > Deployment protection rules: enable Required reviewers and add at least one reviewer"
 const hostedCanaryRepair =
 	"Settings > Environments > hosted-canary-qualification: create the environment and add secrets CANARY_GH_TOKEN, CANARY_SSH_KNOWN_HOSTS, and CANARY_SSH_PRIVATE_KEY"
+const hostedCanaryKeyRotationRepair =
+	"rotate the canary key: generate a dedicated purpose key, register its public half first, then update the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
 
 const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
 export const REQUIRED_HOSTED_CANARY_SECRETS = [
@@ -613,10 +615,23 @@ export function classifyReleaseEnvironmentProtection(environment: unknown): Read
 	)
 }
 
-/** Verify hosted-canary qualification authority from environment and secret names only. */
+/** Registered public half of the canary admission credential. */
+export interface CanaryKeyRegistration {
+	/** Fingerprints GitHub still lists for the canary key purpose. */
+	registeredKeyFingerprints: string[]
+}
+
+/**
+ * Verify hosted-canary qualification authority, including credential lifecycle.
+ *
+ * A configured secret name proves only that a value exists. When the registered
+ * public half has been deleted, SSH admission fails while every name-based check
+ * stays green, so the private key is verified to still have a counterpart.
+ */
 export function classifyHostedCanaryConfiguration(
 	environment: unknown,
 	secretsResponse: unknown,
+	keyRegistration?: CanaryKeyRegistration,
 ): ReadinessCheck {
 	if (!isRecord(environment) || environment.name !== HOSTED_CANARY_ENVIRONMENT) {
 		return {
@@ -652,16 +667,36 @@ export function classifyHostedCanaryConfiguration(
 		),
 	)
 	const absent = REQUIRED_HOSTED_CANARY_SECRETS.filter((name) => !configured.has(name))
-	return absent.length === 0
-		? ready(
-				"hosted-canary-configuration",
-				`${HOSTED_CANARY_ENVIRONMENT} and all required secret names are configured`,
-			)
-		: missing(
-				"hosted-canary-configuration",
-				`Hosted-canary qualification is missing environment secret${absent.length === 1 ? "" : "s"}: ${absent.join(", ")}`,
-				hostedCanaryRepair,
-			)
+	if (absent.length > 0) {
+		return missing(
+			"hosted-canary-configuration",
+			`Hosted-canary qualification is missing environment secret${absent.length === 1 ? "" : "s"}: ${absent.join(", ")}`,
+			hostedCanaryRepair,
+		)
+	}
+	if (
+		!isRecord(keyRegistration) ||
+		!Array.isArray(keyRegistration.registeredKeyFingerprints) ||
+		keyRegistration.registeredKeyFingerprints.some((fingerprint) => typeof fingerprint !== "string")
+	) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable canary key registration; credential lifecycle is unproven",
+			repair: hostedCanaryKeyRotationRepair,
+		}
+	}
+	if (keyRegistration.registeredKeyFingerprints.length === 0) {
+		return missing(
+			"hosted-canary-configuration",
+			`${HOSTED_CANARY_ENVIRONMENT} retains CANARY_SSH_PRIVATE_KEY with no registered public half; SSH admission will fail`,
+			hostedCanaryKeyRotationRepair,
+		)
+	}
+	return ready(
+		"hosted-canary-configuration",
+		`${HOSTED_CANARY_ENVIRONMENT}, all required secret names, and a registered public half are configured`,
+	)
 }
 
 /**
@@ -1020,7 +1055,21 @@ function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 	if (!secrets.ok) {
 		return apiFailure("hosted-canary-configuration", secrets, hostedCanaryRepair)
 	}
-	return classifyHostedCanaryConfiguration(environment.data, secrets.data)
+	// A secret name proves a value exists, not that its public half survives.
+	const deployKeys = readApi(`repos/${repository}/keys`)
+	if (!deployKeys.ok) {
+		return apiFailure("hosted-canary-configuration", deployKeys, hostedCanaryKeyRotationRepair)
+	}
+	const registeredKeyFingerprints = Array.isArray(deployKeys.data)
+		? deployKeys.data.flatMap((entry) =>
+				isRecord(entry) && typeof entry.key === "string" ? [entry.key] : [],
+			)
+		: undefined
+	return classifyHostedCanaryConfiguration(
+		environment.data,
+		secrets.data,
+		registeredKeyFingerprints ? { registeredKeyFingerprints } : undefined,
+	)
 }
 
 function localWorkflows(): ReadinessCheck {

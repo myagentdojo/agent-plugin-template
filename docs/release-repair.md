@@ -1,8 +1,10 @@
-# Maintain or repair release state
+# Maintain, resume, or repair release state
 
-Use this runbook to update the standing release PR or repair an incomplete publication at an existing immutable tag.
+Use this runbook to update the standing release PR, resume a proven candidate stranded before its tag, or repair an incomplete publication at an existing immutable tag.
 
-Manual dispatch accepts two operation values. `maintenance` is the default; it only updates the standing release PR and never publishes. `repair` requires `release_tag` set to the exact existing `vX.Y.Z` tag. This repairs an incomplete publication; it does not create a new release.
+Manual dispatch accepts three operation values. `maintenance` is the default; it only updates the standing release PR and never publishes. `resume` requires `candidate_sha` and publishes a merged, proven candidate whose tag was never created. `repair` requires `release_tag` set to the exact existing `vX.Y.Z` tag; it repairs an incomplete publication and does not create a new release.
+
+Choose by tag state: no tag yet means `resume`; an existing tag means `repair`.
 
 ## Maintain the release PR
 
@@ -14,6 +16,33 @@ gh workflow run Release \
 ```
 
 Maintenance completes when the standing release PR reflects the current releasable commits and its generated version projection.
+
+## Resume a candidate stranded before its tag
+
+A release PR can merge and pass full proof, then lose its publication job to a cancellation before the immutable tag exists. The candidate is proven but untagged, so Release Please refuses to open the next release PR and reports `There are untagged, merged release PRs outstanding - aborting`. Repair cannot help, because repair requires an existing tag.
+
+Maintenance detects this state and fails with the exact command, including the candidate SHA. Run it:
+
+```sh
+gh workflow run Release \
+  --repo OWNER/REPOSITORY \
+  --ref main \
+  -f operation=resume \
+  -f candidate_sha=SHA
+```
+
+Resume never mints a fresh admission. It recovers the publication-candidate record the original run persisted before proof, revalidates Release Please PR identity, base branch, merge-commit binding, commit topology, projection digest, and manifest version against that record, and requires the target tag to be absent. It then repeats packaging, four-platform compatibility, and candidate proof before entering the same protected `release` environment as a normal publication.
+
+Resume fails closed and creates nothing when:
+
+- The persisted candidate record is missing or its 90-day retention expired.
+- The target tag already exists — use repair instead.
+- The record is rebound to another candidate, version, or pull request.
+- The pull request is not a merged Release Please PR on the release base branch.
+
+An expired record cannot be reconstructed, because rebuilding it would admit a candidate no run ever proved. Recover by rerunning the original release run while its candidate artifact is still retained.
+
+Resume completes when the immutable tag targets the admitted candidate, the GitHub Release and assets match the proven package, the attestation exists, and the release PR carries `autorelease: tagged` so the next maintenance run creates the following release PR.
 
 ## Repair an incomplete publication
 
