@@ -188,17 +188,27 @@ test("capability tour skill inventory names every shipped skill and its runtime 
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => entry.name)
 		.sort()
-	const bunBacked = Object.keys(catalog.skills ?? {}).sort()
-	const modelOnly = shipped.filter((id) => !bunBacked.includes(id))
+	const catalogSkills = Object.keys(catalog.skills ?? {}).sort()
+	const bunBacked = shipped.filter((id) => catalogSkills.includes(id))
+	// A catalog entry with no shipped directory is drift in the other direction.
+	expect(catalogSkills).toEqual(bunBacked)
+	const modelOnly = shipped.filter((id) => !catalogSkills.includes(id))
 
 	const inventory = skill
 		.split("\n")
 		.find((line) => line.includes("Available portable skills"))
 	expect(inventory).toBeDefined()
 
-	for (const id of shipped) {
-		expect(inventory).toContain(`\`${id}\``)
-	}
+	// Parse the identifiers rather than probing for each one: a containment loop
+	// passes when the prose ALSO names a skill that does not ship, and passes when
+	// a model-only skill sits inside the Bun-backed prefix. Both were reproduced.
+	const listed = [...(inventory ?? "").matchAll(/`([^`]+)`/g)]
+		.map((match) => match[1])
+		.filter((id) => id !== "Available portable skills")
+	expect([...listed].sort()).toEqual(shipped)
+	expect([...listed.slice(0, bunBacked.length)].sort()).toEqual(bunBacked)
+	expect([...listed.slice(bunBacked.length)].sort()).toEqual(modelOnly)
+
 	// The prose spells the split in words, so compare against the spelled form.
 	const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"]
 	expect(inventory).toContain(`first ${spelled[bunBacked.length]}`)

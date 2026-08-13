@@ -64,9 +64,13 @@ targets:
   # listed so their script and version claims get read too.
   AGENTS.md:
     - package.json
+  # The architecture tree and proof-command list make claims no config file can
+  # settle: that capability-tour ships, and what prove:harness-install checks.
   README.md:
     - package.json
     - runtime/runtime.lock.json
+    - plugin/skills/capability-tour/SKILL.md
+    - scripts/prove-harness-install.ts
 
   # The glossary is stipulative and not checkable, but "Capability boundaries"
   # makes real claims: default-disabled install, and the negative claim that the
