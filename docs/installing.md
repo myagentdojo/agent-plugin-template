@@ -12,9 +12,9 @@ Inspect a release before changing either client. Set `FETCH_URL` to the same Git
 
 ```sh
 set -eu
-TAG=vX.Y.Z
-FETCH_URL=https://github.com/OWNER/REPOSITORY.git
-PREFLIGHT_ROOT=$(mktemp -d)
+: "${TAG:=vX.Y.Z}"
+: "${FETCH_URL:=https://github.com/OWNER/REPOSITORY.git}"
+: "${PREFLIGHT_ROOT:=$(mktemp -d)}"
 git clone --filter=blob:none --no-checkout "$FETCH_URL" "$PREFLIGHT_ROOT/repository"
 git -C "$PREFLIGHT_ROOT/repository" fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
 REMOTE_SHA=$(git -C "$PREFLIGHT_ROOT/repository" rev-parse "refs/tags/$TAG^{commit}")
@@ -211,7 +211,7 @@ Verify the restored version, scope, active cache bytes against `$RESTORE_PREFLIG
 
 ### Codex production update
 
-Use the repository-owned command for every production upgrade or rollback. No arguments show concise help. A normal invocation is read-only and previews the selected Release, captured prior state, exact side effects, and recovery plan:
+Use the repository-owned command for every production upgrade or rollback. No arguments show concise help. A normal invocation is read-only and prints the prior ref, selected Release, and next action. JSON mode provides the detailed preview contract, including captured prior state, exact side effects, and recovery plan:
 
 ```sh
 bun run update -- --harness codex
