@@ -516,7 +516,11 @@ export function validateResumeCandidateBinding(
 		tagExists: input.tagExists,
 		candidates: [input.trustedCandidate],
 		priorRecord: candidate,
-	}, true)
+		// The candidate's first parent already executed its historical projection
+		// policy. Rechecking against the current allowlist would reject a valid
+		// stranded admission whenever that policy moved on main -- the exact case
+		// resume exists to rescue. The persisted digest still binds the projection.
+	}, false)
 	return { tag: candidate.tag, commit: candidate.mergeCommit, version: candidate.version }
 }
 
@@ -675,7 +679,8 @@ function validateRepository(repositoryRoot: string) {
 		"admitPublicationCandidate",
 		"validateResumeCandidateBinding",
 		'if [[ "$OPERATION" == "resume" ]]',
-		'if [[ "$status" == "404" ]]; then',
+		"gh api --include",
+		"404) return 0 ;;",
 		"Could not prove whether tag",
 		"publication-candidate-${RESUME_SHA}",
 		"Resume requires the persisted publication candidate",

@@ -633,8 +633,13 @@ test("release workflow proves tag absence from a 404, never from an exit code", 
 	// gh exits 1 for auth, rate-limit, and network failures too, so an exit-code
 	// probe would let a transient failure read as "tag absent".
 	expect(workflow).not.toMatch(/git\/ref\/tags\/[^"]*"\s*>\/dev\/null 2>&1/)
-	expect(workflow).toContain('status=$(jq -r \'.status // empty\' <<< "$response"')
-	expect(workflow).toContain('if [[ "$status" == "404" ]]; then')
+	// gh mixes its error diagnostic into the response body, so the status must come
+	// from the explicit --include status line, never from parsing that stream.
+	expect(workflow).toContain("gh api --include")
+	expect(workflow).not.toMatch(/tag_absent[\s\S]{0,400}jq -r '\.status/)
+	expect(workflow).toContain("sed -n 's|^HTTP/[0-9.]* \\([0-9][0-9][0-9]\\).*|\\1|p'")
+	expect(workflow).toContain("404) return 0 ;;")
+	expect(workflow).toContain("200) return 1 ;;")
 	expect(workflow).toContain("Could not prove whether tag")
 	// Every absence decision routes through the helper.
 	expect(workflow.match(/tag_absent\(\) \{/g)).toHaveLength(3)
@@ -1537,6 +1542,30 @@ test("resume refuses a candidate whose manifest version moved after admission", 
 	expect(() => validateResumeCandidateBinding(resumeInput({ manifestVersion: "0.2.0" }))).toThrow(
 		"rebound to another release identity",
 	)
+})
+
+test("resume admits a stranded candidate whose projection policy moved on main", () => {
+	// The first parent already executed the historical policy, so a path the
+	// current allowlist no longer names must not reject a valid admission.
+	const historicalProjection = [...allowedProjection, "docs/legacy-release-note.md"]
+	// Persisted before the allowlist changed, so it cannot be rebuilt by admitting
+	// it against today's policy -- that is precisely the situation under test.
+	const candidate = {
+		...admitPublicationCandidate(admissionInput()),
+		projectionDigest: "b".repeat(64),
+	}
+
+	expect(
+		validateResumeCandidateBinding(
+			resumeInput({
+				candidate,
+				trustedCandidate: releasePullRequest({
+					changedFiles: historicalProjection,
+					changedFileStatuses: historicalProjection.map(() => "modified"),
+				}),
+			}),
+		),
+	).toEqual({ tag: "v0.1.0", commit: "a".repeat(40), version: "0.1.0" })
 })
 
 test("resume refuses a malformed persisted record", () => {

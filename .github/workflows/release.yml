@@ -74,13 +74,14 @@ jobs:
           # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
           # Only a proven 404 is absence; anything else must fail closed.
           tag_absent() {
-            local response status
-            response=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>&1) && return 1
-            status=$(jq -r '.status // empty' <<< "$response" 2>/dev/null || true)
-            if [[ "$status" == "404" ]]; then
-              return 0
-            fi
-            echo "Could not prove whether tag $1 exists: ${response}" >&2
+            local status_line status
+            status_line=$(gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>/dev/null | head -n 1 || true)
+            status=$(printf '%s' "$status_line" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+            case "$status" in
+              404) return 0 ;;
+              200) return 1 ;;
+            esac
+            echo "Could not prove whether tag $1 exists (status: ${status:-unreadable})" >&2
             exit 1
           }
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
@@ -563,13 +564,14 @@ jobs:
           # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
           # Only a proven 404 is absence; anything else must fail closed.
           tag_absent() {
-            local response status
-            response=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>&1) && return 1
-            status=$(jq -r '.status // empty' <<< "$response" 2>/dev/null || true)
-            if [[ "$status" == "404" ]]; then
-              return 0
-            fi
-            echo "Could not prove whether tag $1 exists: ${response}" >&2
+            local status_line status
+            status_line=$(gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>/dev/null | head -n 1 || true)
+            status=$(printf '%s' "$status_line" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+            case "$status" in
+              404) return 0 ;;
+              200) return 1 ;;
+            esac
+            echo "Could not prove whether tag $1 exists (status: ${status:-unreadable})" >&2
             exit 1
           }
           # Let this API failure propagate. Swallowing it would read as
@@ -847,13 +849,14 @@ jobs:
           # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
           # Only a proven 404 is absence; anything else must fail closed.
           tag_absent() {
-            local response status
-            response=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>&1) && return 1
-            status=$(jq -r '.status // empty' <<< "$response" 2>/dev/null || true)
-            if [[ "$status" == "404" ]]; then
-              return 0
-            fi
-            echo "Could not prove whether tag $1 exists: ${response}" >&2
+            local status_line status
+            status_line=$(gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>/dev/null | head -n 1 || true)
+            status=$(printf '%s' "$status_line" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+            case "$status" in
+              404) return 0 ;;
+              200) return 1 ;;
+            esac
+            echo "Could not prove whether tag $1 exists (status: ${status:-unreadable})" >&2
             exit 1
           }
           checkout_sha=$(git rev-parse HEAD)
