@@ -8,6 +8,10 @@ This context describes how one plugin moves from authoring into Claude Code and 
 An agent environment that discovers, installs, and executes plugins. Claude Code and Codex are the supported harnesses.
 _Avoid_: Host, runtime environment
 
+**Harness Identity**:
+The canonical lowercase discriminator for a supported Harness together with its harness-owned manifest directory, hook declaration path, plugin-root environment variable, and human-readable display name.
+_Avoid_: Qualification Client, host identity
+
 **Plugin Repository**:
 The workspace containing a plugin's source, tests, documentation, and release history.
 _Avoid_: Plugin, when referring to the whole repository

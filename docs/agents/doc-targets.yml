@@ -46,6 +46,8 @@ targets:
     - plugin/hooks/native-capability-hook
     - plugin/hooks/claude/hooks.json
     - plugin/hooks/codex/hooks.json
+  docs/adr/0009-canonical-harness-identity.md:
+    - scripts/harness-identity.ts
 
   # Payload docs. capability-tour/SKILL.md enumerates the skills in prose;
   # scripts/native-capability-surface.test.ts now guards that line, but the rest
@@ -78,6 +80,7 @@ targets:
   CONTEXT.md:
     - .claude-plugin/marketplace.json
     - plugin/.codex-plugin/plugin.json
+    - scripts/harness-identity.ts
 
 # Deliberately uncovered: docs/releasing.md is a link index, docs/adr/0001 and
 # 0006 are stable rationale, and hello-world / skill-a / skill-b SKILL.md claim
