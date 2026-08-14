@@ -13,6 +13,7 @@ import { builtinModules } from "node:module"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 
+import { HARNESS_IDENTITIES } from "./harness-identity"
 import { loadPluginConfig } from "./plugin-config"
 import { compareCodeUnits, pluginPayloadInventory } from "./plugin-files"
 import { checkRuntimeCustodyFiles, loadSkillCatalog, shellQuote } from "./runtime-custody-config"
@@ -1756,17 +1757,15 @@ export function validateBunOnlyPayload(root: string): void {
 			throw new Error(`Bun payload closure: unexpected payload file ${path}`)
 		}
 	}
-	for (const manifestPath of [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"] as const) {
+	for (const identity of Object.values(HARNESS_IDENTITIES)) {
+		const manifestPath = `${identity.manifestDirectory}/plugin.json`
 		const manifest = JSON.parse(readFileSync(join(root, "plugin", manifestPath), "utf8")) as {
 			hooks?: unknown
 			description?: unknown
 			interface?: { capabilities?: unknown }
 			[key: string]: unknown
 		}
-		const expectedHooks =
-			manifestPath === ".claude-plugin/plugin.json"
-				? "./hooks/claude/hooks.json"
-				: "./hooks/codex/hooks.json"
+		const expectedHooks = identity.hooksDeclarationPath
 		if (manifest.hooks !== expectedHooks) {
 			throw new Error(`Bun payload closure: invalid hook declaration in ${manifestPath}`)
 		}

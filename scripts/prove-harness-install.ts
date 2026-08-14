@@ -22,6 +22,12 @@ import {
 import {
 	provePostMutationRecovery,
 } from "./harness-install-recovery"
+import {
+	HARNESS_IDENTITIES,
+	QUALIFICATION_CLIENT_HARNESSES,
+	type HarnessId,
+	type QualificationClient,
+} from "./harness-identity"
 import { copyPluginPayload, payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
@@ -246,7 +252,7 @@ export interface InstalledCapabilityEvidence {
 /** Hash-only conclusions that may be promoted from a private fresh-client receipt. */
 export interface NativeQualificationEvidence {
 	schema: "native-capability-qualification-v1"
-	client: "claude" | "codex"
+	client: HarnessId
 	platform: "macos" | "linux"
 	receiptSha256: string
 	sourceCandidateSha: string
@@ -280,7 +286,7 @@ export interface NativeQualificationEvidence {
 }
 
 export interface NativeQualificationBinding {
-	client: "claude" | "codex"
+	client: HarnessId
 	sourceCommit: string
 	archiveSha256: string
 	packagedPayloadHash: string
@@ -351,7 +357,9 @@ export function promoteNativeQualificationEvidence(
 		"reentrySha256",
 		"hooksFallbackSha256",
 	]
-	if (expected.client === "codex") evidenceKeys.push("exactDefinitionTrustSha256")
+	if (expected.client === QUALIFICATION_CLIENT_HARNESSES["codex-cli"]) {
+		evidenceKeys.push("exactDefinitionTrustSha256")
+	}
 	const evidence = requireQualificationKeys(summary.evidence, evidenceKeys)
 
 	if (
@@ -398,8 +406,9 @@ export function promoteNativeQualificationEvidence(
 		}
 	}
 	if (
-		(expected.client === "claude" && conclusions.exactDefinitionTrust !== "not-applicable") ||
-		(expected.client === "codex" &&
+		(expected.client === QUALIFICATION_CLIENT_HARNESSES["claude-cli"] &&
+			conclusions.exactDefinitionTrust !== "not-applicable") ||
+		(expected.client === QUALIFICATION_CLIENT_HARNESSES["codex-cli"] &&
 			conclusions.exactDefinitionTrust !== "proved" &&
 			conclusions.exactDefinitionTrust !== "failed")
 	) {
@@ -419,7 +428,7 @@ function nativeQualificationPassed(receipt: NativeQualificationEvidence): boolea
 		receipt.conclusions.driftContinuation === "proved" &&
 		receipt.conclusions.reentry === "silent" &&
 		receipt.conclusions.hooksFallback === "proved" &&
-		(receipt.client === "claude"
+		(receipt.client === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]
 			? receipt.conclusions.exactDefinitionTrust === "not-applicable"
 			: receipt.conclusions.exactDefinitionTrust === "proved")
 	)
@@ -465,7 +474,7 @@ export interface HarnessInstallProofOptions {
 
 interface NativeRuntimeJourney {
 	kind: "installed-payload-mechanics"
-	client: "claude-cli" | "codex-cli"
+	client: QualificationClient
 	target: string
 	repository: string
 	sourceCommit: string
@@ -480,10 +489,7 @@ interface NativeRuntimeJourney {
 	journey: string[]
 }
 
-interface NativeHarnessExecutables {
-	claude?: string
-	codex?: string
-}
+type NativeHarnessExecutables = Record<HarnessId, string | undefined>
 
 /** Replace a temporary evidence path with an explicit cleaned marker, including macOS /var aliases. */
 export function redactTemporaryEvidencePath(value: unknown, temporaryRoot: string): unknown {
@@ -913,7 +919,7 @@ function proveClaudeNative(
 		const restoredAfterFailure = provePostMutationRecovery(
 			priorRecovery,
 			{
-				harness: "claude",
+				harness: QUALIFICATION_CLIENT_HARNESSES["claude-cli"],
 				mutate: () => {
 					command(
 						[claudeExecutable, "plugin", "uninstall", pluginId, "--keep-data", "--scope", scope],
@@ -1355,7 +1361,7 @@ export function runtimeClosureEvidence(
  */
 export function proveInstalledCapabilityEvidence(
 	pluginRoot: string,
-	client: "claude" | "codex",
+	client: HarnessId,
 	candidateCommit: string,
 	candidatePayloadHash: string,
 	qualification?: NativeQualificationPromotion,
@@ -1364,10 +1370,11 @@ export function proveInstalledCapabilityEvidence(
 	if (!/^[a-f0-9]{40}$/.test(candidateCommit) || !/^[a-f0-9]{64}$/.test(candidatePayloadHash)) {
 		throw new Error("installed capability evidence requires a candidate commit and payload hash")
 	}
+	const identity = HARNESS_IDENTITIES[client]
 	const manifest = JSON.parse(
-		readFileSync(join(pluginRoot, `.${client}-plugin`, "plugin.json"), "utf8"),
+		readFileSync(join(pluginRoot, identity.manifestDirectory, "plugin.json"), "utf8"),
 	) as { version?: unknown; hooks?: unknown }
-	const declarationPath = `./hooks/${client}/hooks.json`
+	const declarationPath = identity.hooksDeclarationPath
 	if (manifest.hooks !== declarationPath) {
 		throw new Error(`${client} installed declaration path is invalid`)
 	}
@@ -1789,13 +1796,13 @@ function runHarnessInstallProof(
 		clients: {
 			claude: proveInstalledCapabilityEvidence(
 				claude.activeCachePath,
-				"claude",
+				QUALIFICATION_CLIENT_HARNESSES["claude-cli"],
 				sourceCommit,
 				candidatePayloadHash,
 			),
 			codex: proveInstalledCapabilityEvidence(
 				codex.installedPath,
-				"codex",
+				QUALIFICATION_CLIENT_HARNESSES["codex-cli"],
 				sourceCommit,
 				candidatePayloadHash,
 			),
@@ -1855,10 +1862,10 @@ export function proveHarnessInstall(
 	sourceRoot: string,
 	options: HarnessInstallProofOptions = {},
 ): HarnessInstallProof {
-	const executables: NativeHarnessExecutables = {
-		claude: Bun.which("claude") ?? undefined,
-		codex: Bun.which("codex") ?? undefined,
-	}
+	const harnessIds = Object.keys(HARNESS_IDENTITIES) as HarnessId[]
+	const executables = Object.fromEntries(
+		harnessIds.map((harness) => [harness, Bun.which(harness) ?? undefined]),
+	) as NativeHarnessExecutables
 	if (options.requireNative && (!executables.claude || !executables.codex)) {
 		const missing = [!executables.claude && "claude", !executables.codex && "codex"].filter(Boolean)
 		throw new Error(`native harness CLIs are required; missing: ${missing.join(", ")}`)

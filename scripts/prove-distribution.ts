@@ -8,6 +8,7 @@ import {
 import { basename, join, resolve } from "node:path"
 
 import { assertDistributionChecksumIdentity } from "./distribution-checksums"
+import { QUALIFICATION_CLIENT_HARNESSES } from "./harness-identity"
 import {
 	directoryArchiveEntries,
 	payloadInventorySha256,
@@ -244,13 +245,13 @@ assertDistributionChecksumIdentity(checksums, {
 const capabilityEvidence = {
 	claude: proveInstalledCapabilityEvidence(
 		installedRoot,
-		"claude",
+		QUALIFICATION_CLIENT_HARNESSES["claude-cli"],
 		sourceCommit,
 		sourcePayloadHash,
 	),
 	codex: proveInstalledCapabilityEvidence(
 		installedRoot,
-		"codex",
+		QUALIFICATION_CLIENT_HARNESSES["codex-cli"],
 		sourceCommit,
 		sourcePayloadHash,
 	),
