@@ -167,7 +167,7 @@ test("release validation rejects a second checkout step that skips the pinned re
 		const original = readFileSync(workflowPath, "utf8")
 		const mutated = original.replace(
 			"      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: ${{ needs.resolve.outputs.candidate_sha }}\n",
-			"      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: ${{ needs.resolve.outputs.candidate_sha }}\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: main\n",
+			"      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: ${{ needs.resolve.outputs.candidate_sha }}\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: main\n          persist-credentials: false\n",
 		)
 		expect(mutated !== original, "second checkout step mutation anchor must match").toBe(true)
 		writeFileSync(workflowPath, mutated)
@@ -175,6 +175,9 @@ test("release validation rejects a second checkout step that skips the pinned re
 		const result = validate(temporaryRoot)
 
 		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow is missing ref: ${{ needs.resolve.outputs.candidate_sha }}",
+		)
 	} finally {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 	}
