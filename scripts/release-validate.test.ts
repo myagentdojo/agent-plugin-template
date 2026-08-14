@@ -16,12 +16,12 @@ import {
 	admitPublicationCandidate,
 	validatePublicationBinding,
 	parsePublicationCandidateRecord,
-	RELEASE_WORKFLOW_PARITY_LEDGER,
 	validateCapabilitySidecars,
 	validateRepairCandidateBinding,
 	validateRepairBinding,
 	validateResumeCandidateBinding,
 } from "./release-validate"
+import { RELEASE_WORKFLOW_PARITY_LEDGER } from "./release-workflow-parity"
 
 const root = resolve(import.meta.dir, "..")
 const ignoredEntries = new Set([".dev", ".git", ".worktrees", "dist", "node_modules"])
