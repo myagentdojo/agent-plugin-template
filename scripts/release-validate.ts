@@ -5,6 +5,7 @@ import { validateBunOnlyPayload } from "./build"
 import { checkNativeCapabilityFixture } from "./native-capability-fixture"
 import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
 import { RELEASE_PROJECTION_PATH_SET } from "./release-projection"
+import { validateReleaseWorkflowParity } from "./release-workflow-parity"
 
 const root = resolve(import.meta.dir, "..")
 
@@ -561,6 +562,12 @@ function validateRepository(repositoryRoot: string) {
 	const releaseManifest = readJson(repositoryRoot, ".github/.release-please-manifest.json")
 	const releaseConfig = readJson(repositoryRoot, ".github/release-please-config.json")
 	const releaseWorkflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8")
+	let parsedReleaseWorkflow: unknown
+	try {
+		parsedReleaseWorkflow = Bun.YAML.parse(releaseWorkflow)
+	} catch {
+		throw new Error("release workflow YAML could not be parsed")
+	}
 	const changelog = readFileSync(join(repositoryRoot, "CHANGELOG.md"), "utf8")
 
 	const version = pluginConfig.version
@@ -653,152 +660,7 @@ function validateRepository(repositoryRoot: string) {
 		}
 	}
 
-	const actionReferences = [...releaseWorkflow.matchAll(/uses: [^@\s]+@([^\s]+)/g)].map(
-		(match) => match[1],
-	)
-	if (
-		actionReferences.length === 0 ||
-		actionReferences.some((reference) => !/^[a-f0-9]{40}$/.test(reference))
-	) {
-		throw new Error("release workflow actions must be pinned to full commit SHAs")
-	}
-	for (const required of [
-		"skip-github-release",
-		"publication-candidate-${GITHUB_SHA}",
-		"merge_commit_sha",
-		"EXPECTED_RELEASE_PLEASE_LOGIN",
-		"PUSH_BEFORE_SHA: ${{ github.event.before }}",
-		"PUSH_FORCED: ${{ github.event.forced }}",
-		'if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]',
-		'if [[ "$PUSH_FORCED" != "false" ]]',
-		'git merge-base --is-ancestor "$PUSH_BEFORE_SHA" "$GITHUB_SHA"',
-		"candidate_parent_shas",
-		"merged_pr_base_sha",
-		"reviewed_pr_head_sha",
-		"trusted_base_sha",
-		"admitPublicationCandidate",
-		"validateResumeCandidateBinding",
-		'if [[ "$OPERATION" == "resume" ]]',
-		"gh api --include",
-		"404) return 0 ;;",
-		"Could not prove whether tag",
-		"publication-candidate-${RESUME_SHA}",
-		"Resume requires the persisted publication candidate",
-		"Detect a merged release candidate stranded before its tag",
-		"-f operation=resume",
-		"scripts/release-projection.ts",
-		"bun run prove:all",
-		"git diff --exit-code -- plugin/",
-		"ubuntu-24.04-arm",
-		"macos-15-intel",
-		"SOURCE_COMMIT",
-		"ref: ${{ needs.resolve.outputs.candidate_sha }}",
-		"workflow_policy_sha=$(git rev-parse HEAD)",
-		'git checkout --detach "$workflow_policy_sha"',
-		'trusted_base_sha=$(git rev-parse "${candidate_sha}^1")',
-		'git checkout --detach "$trusted_base_sha"',
-		'TRUSTED_BASE_SHA: ${{ needs.resolve.outputs.trusted_base_sha }}',
-		'ADMITTED_MERGED_PR_BASE_SHA: ${{ needs.resolve.outputs.merged_pr_base_sha }}',
-		'ADMITTED_REVIEWED_PR_HEAD_SHA: ${{ needs.resolve.outputs.reviewed_pr_head_sha }}',
-		'trusted_base_sha="$TRUSTED_BASE_SHA"',
-		'if [[ "$merged_pr_base_sha" != "$ADMITTED_MERGED_PR_BASE_SHA" || "$reviewed_pr_head_sha" != "$ADMITTED_REVIEWED_PR_HEAD_SHA" ]]',
-		'git checkout --detach "$CANDIDATE_SHA"',
-		'if [[ "$(git rev-parse HEAD)" != "$CANDIDATE_SHA" ]]',
-		"tag -a \"$RELEASE_TAG\" \"$CANDIDATE_SHA\" -F persisted-candidate.json",
-		"git for-each-ref --format='%(contents)'",
-		'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"',
-		"trusted-repair-candidate.json",
-		"validateRepairCandidateBinding",
-		"git push origin \"refs/tags/${RELEASE_TAG}\"",
-		"remote_tag_sha",
-		"gh release create",
-		"--verify-tag",
-		"gh release download",
-		"gh release upload",
-		"*.checksums.json",
-		"replace_mismatched_assets",
-		"sha256sum",
-		"group: release-maintenance",
-		"group: release-publication-${{ needs.resolve.outputs.release_tag }}",
-		"release-candidate-${{ github.run_id }}",
-		"release-platform-candidate-${{ github.run_id }}",
-		"bun run prove:runtime-platform",
-		"--fixture-acknowledged",
-		'cmp --silent "$candidate_archive" "$rebuilt_archive"',
-		"overwrite: true",
-		"environment: release",
-		"gh attestation verify",
-		"actions/attest",
-		"github.event.repository.private == false",
-	]) {
-		if (!releaseWorkflow.includes(required)) throw new Error(`release workflow is missing ${required}`)
-	}
-	for (const forbidden of ["parent_count", "mergeMode"]) {
-		if (releaseWorkflow.includes(forbidden)) {
-			throw new Error(`release workflow retains unsupported merge-shape metadata: ${forbidden}`)
-		}
-	}
-	if (releaseWorkflow.includes("github.run_attempt")) {
-		throw new Error("release workflow artifact identity must survive rerun-failed-jobs attempts")
-	}
-	if (/^concurrency:/m.test(releaseWorkflow)) {
-		throw new Error("release workflow must serialize only mutation jobs, not discard distinct pending runs")
-	}
-	const maintainJobStart = releaseWorkflow.indexOf("\n  maintain:\n")
-	const compatibilityJobStart = releaseWorkflow.indexOf("\n  compatibility:\n")
-	if (
-		maintainJobStart === -1 ||
-		compatibilityJobStart === -1 ||
-		compatibilityJobStart <= maintainJobStart
-	) {
-		throw new Error("release workflow is missing the maintain or compatibility job boundary")
-	}
-	const maintainJob = releaseWorkflow.slice(maintainJobStart, compatibilityJobStart)
-	for (const required of [
-		"group: release-maintenance",
-		"cancel-in-progress: false",
-		"persist-credentials: false",
-		"id: bootstrap-version",
-		"jq 'length' .github/.release-please-manifest.json",
-		'release_as="0.1.0"',
-		"token: ${{ secrets.RELEASE_PLEASE_TOKEN }}",
-		"release-as: ${{ steps.bootstrap-version.outputs.release_as }}",
-	]) {
-		if (!maintainJob.includes(required)) {
-			throw new Error(`release workflow maintenance job is missing ${required}`)
-		}
-	}
-	if (maintainJob.includes("secrets.GITHUB_TOKEN")) {
-		throw new Error("release workflow maintenance job must not fall back to GITHUB_TOKEN")
-	}
-	const releaseJobStart = releaseWorkflow.indexOf("\n  release:\n")
-	if (releaseJobStart === -1) throw new Error("release workflow is missing the release job boundary")
-	const convergeJobStart = releaseWorkflow.indexOf("\n  converge:\n")
-	if (convergeJobStart === -1) {
-		throw new Error("release workflow is missing the converge job boundary")
-	}
-	if (convergeJobStart <= releaseJobStart) {
-		throw new Error("release workflow converge job must follow the release job")
-	}
-	const releaseJob = releaseWorkflow.slice(releaseJobStart, convergeJobStart)
-	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
-		throw new Error("release workflow publish job must depend on package")
-	}
-	if (!releaseJob.includes("group: release-publication-${{ needs.resolve.outputs.release_tag }}")) {
-		throw new Error("release workflow publish mutation must serialize by resolved immutable tag")
-	}
-	const requiredReleasePermissionsBlock =
-		"    permissions:\n" +
-		"      actions: read\n" +
-		"      contents: write\n" +
-		"      id-token: write\n" +
-		"      attestations: write\n" +
-		"      issues: write\n" +
-		"      pull-requests: write\n" +
-		"    steps:\n"
-	if (!releaseJob.includes(requiredReleasePermissionsBlock)) {
-		throw new Error("release workflow publish job permissions must match the protected release contract")
-	}
+	validateReleaseWorkflowParity(releaseWorkflow, parsedReleaseWorkflow)
 
 	return {
 		ok: true,
