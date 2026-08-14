@@ -75,7 +75,7 @@ class InjectedPostMutationFailure extends Error {
 }
 
 function harnessDisplayName(harness: HarnessId): string {
-	return HARNESS_IDENTITIES[harness.toLowerCase() as HarnessId].displayName
+	return HARNESS_IDENTITIES[harness].displayName
 }
 
 function injectPostMutationFailure(harness: HarnessId): never {

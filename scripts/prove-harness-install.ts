@@ -479,7 +479,7 @@ export interface HarnessInstallProofOptions {
 
 interface NativeRuntimeJourney {
 	kind: "installed-payload-mechanics"
-	client: QualificationClient
+	client: Exclude<QualificationClient, "codex-desktop">
 	target: string
 	repository: string
 	sourceCommit: string
