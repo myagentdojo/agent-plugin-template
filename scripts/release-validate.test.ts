@@ -117,6 +117,29 @@ test("release validation accepts semantic-preserving workflow reformatting", () 
 	}
 })
 
+test("release validation rejects an unpinned job-level reusable workflow", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"\n  converge:\n",
+			"\n  reusable-call:\n    uses: myagentdojo/agent-plugin-template/.github/workflows/release.yml@main\n\n  converge:\n",
+		)
+		expect(mutated !== original, "job-level uses mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow actions must be pinned to full commit SHAs",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
 test("release validation scopes required run fragments to their owning step", () => {
 	const temporaryRoot = copyRepository()
 	try {
@@ -138,6 +161,193 @@ test("release validation scopes required run fragments to their owning step", ()
 
 		expect(result.exitCode).toBe(1)
 		expect(result.stderr.toString()).toContain("release workflow is missing bun run prove:all")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation scopes the publish concurrency group to the release job", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const removed = original.replace(
+			"    concurrency:\n      group: release-publication-${{ needs.resolve.outputs.release_tag }}\n      cancel-in-progress: false\n    runs-on: ubuntu-24.04\n    environment: release\n",
+			"    runs-on: ubuntu-24.04\n    environment: release\n",
+		)
+		expect(removed !== original, "publish concurrency removal mutation anchor must match").toBe(true)
+		const mutated = removed.replace(
+			"  converge:\n    name: Require release operation convergence\n    if: always()\n",
+			"  converge:\n    name: Require release operation convergence\n    if: always()\n    concurrency:\n      group: release-publication-${{ needs.resolve.outputs.release_tag }}\n      cancel-in-progress: false\n",
+		)
+		expect(mutated !== removed, "publish concurrency relocation mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow publish mutation must serialize by resolved immutable tag",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a GITHUB_TOKEN fallback nested in the maintain job", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"      - name: Detect a merged release candidate stranded before its tag\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+			"      - name: Detect a merged release candidate stranded before its tag\n        env:\n          GH_TOKEN: ${{ github.token }}\n          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n",
+		)
+		expect(mutated !== original, "maintain GITHUB_TOKEN mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow maintenance job must not fall back to GITHUB_TOKEN",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a drifted resolve-step PUSH_BEFORE_SHA expression", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"PUSH_BEFORE_SHA: ${{ github.event.before }}",
+			"PUSH_BEFORE_SHA: ${{ github.event.after }}",
+		)
+		expect(mutated !== original, "PUSH_BEFORE_SHA mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow is missing PUSH_BEFORE_SHA: ${{ github.event.before }}",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a broken release-candidate artifact producer/consumer pair", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"          name: release-candidate-${{ github.run_id }}\n",
+			"          name: renamed-release-candidate-${{ github.run_id }}\n",
+		)
+		expect(mutated !== original, "release-candidate artifact mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow is missing release-candidate-${{ github.run_id }}",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a compatibility matrix missing a required runner", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"            runner: macos-15-intel\n",
+			"            runner: macos-15-intel-renamed\n",
+		)
+		expect(mutated !== original, "matrix runner mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain("release workflow is missing macos-15-intel")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a release job that no longer depends on package", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"    needs:\n      - resolve\n      - package\n",
+			"    needs:\n      - resolve\n",
+		)
+		expect(mutated !== original, "release needs mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow publish job must depend on package",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects an attestation step without the public-repository condition", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"        if: github.event.repository.private == false && steps.attestation.outputs.needed == 'true'\n",
+			"        if: steps.attestation.outputs.needed == 'true'\n",
+		)
+		expect(mutated !== original, "attestation condition mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow is missing github.event.repository.private == false",
+		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a checkout ref outside the resolved candidate", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"          ref: ${{ needs.resolve.outputs.candidate_sha }}\n",
+			"          ref: ${{ github.sha }}\n",
+		)
+		expect(mutated !== original, "checkout ref mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain(
+			"release workflow is missing ref: ${{ needs.resolve.outputs.candidate_sha }}",
+		)
 	} finally {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 	}

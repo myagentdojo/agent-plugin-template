@@ -586,13 +586,14 @@ function releaseWorkflowStep(
 	return releaseWorkflowSteps(job).find((step) => step.name === stepName)
 }
 
-/** Walk every parsed job step and preserve each uses value for pin validation. */
+/** Walk every parsed job and job step and preserve each uses value for pin validation. */
 function releaseWorkflowActionReferences(workflow: unknown): unknown[] {
-	return Object.values(releaseWorkflowJobs(workflow)).flatMap((job) =>
-		releaseWorkflowSteps(job)
+	return Object.values(releaseWorkflowJobs(workflow)).flatMap((job) => [
+		...(Object.hasOwn(job, "uses") ? [job.uses] : []),
+		...releaseWorkflowSteps(job)
 			.filter((step) => Object.hasOwn(step, "uses"))
 			.map((step) => step.uses),
-	)
+	])
 }
 
 export type ReleaseWorkflowParityTier = "structural" | "step-run" | "raw-residual"
@@ -617,7 +618,7 @@ export const RELEASE_WORKFLOW_PARITY_LEDGER = [
 	{
 		literal: "uses: <action>@<ref> + full-commit-SHA ref",
 		tier: "structural",
-		owner: "jobs.*.steps[].uses",
+		owner: "jobs.*.uses + jobs.*.steps[].uses",
 		comparison: "all action references match a 40-character lowercase commit SHA",
 	},
 	{
@@ -958,14 +959,14 @@ export const RELEASE_WORKFLOW_PARITY_LEDGER = [
 	{
 		literal: "group: release-maintenance",
 		tier: "structural",
-		owner: "jobs.maintain.concurrency.group",
-		comparison: "equals release-maintenance",
+		owner: "workflow (anywhere)",
+		comparison: "group value scalar present anywhere in the parsed workflow",
 	},
 	{
 		literal: "group: release-publication-${{ needs.resolve.outputs.release_tag }}",
 		tier: "structural",
-		owner: "jobs.release.concurrency.group",
-		comparison: "equals release-publication-${{ needs.resolve.outputs.release_tag }}",
+		owner: "workflow (anywhere)",
+		comparison: "group value scalar present anywhere in the parsed workflow",
 	},
 	{
 		literal: "release-candidate-${{ github.run_id }}",
@@ -1082,6 +1083,7 @@ export const RELEASE_WORKFLOW_PARITY_LEDGER = [
 		tier: "structural",
 		owner: "jobs.maintain.concurrency.group",
 		comparison: "equals release-maintenance",
+		failureMessage: "release workflow maintenance job is missing group: release-maintenance",
 	},
 	{
 		literal: "cancel-in-progress: false",
@@ -1292,7 +1294,7 @@ function releaseWorkflowStructuralEntryMatches(
 	const candidateUpload = releaseWorkflowActionStep(candidateJob, "actions/upload-artifact")
 
 	switch (entry.owner) {
-		case "jobs.*.steps[].uses": {
+		case "jobs.*.uses + jobs.*.steps[].uses": {
 			const references = releaseWorkflowActionReferences(workflow)
 			return (
 				references.length > 0 &&
@@ -1393,6 +1395,8 @@ function releaseWorkflowStructuralEntryMatches(
 			].every((step) => typeof step?.if === "string" && step.if.includes(entry.literal))
 		case "workflow.concurrency":
 			return isRecord(workflow) && !Object.hasOwn(workflow, "concurrency")
+		case "workflow (anywhere)":
+			return releaseWorkflowContainsScalar(workflow, entry.literal.replace(/^group: /, ""))
 		case "jobs.maintain":
 			return entry.literal === "secrets.GITHUB_TOKEN"
 				? maintainJob !== undefined && !releaseWorkflowContainsScalar(maintainJob, entry.literal)
@@ -1455,7 +1459,7 @@ function releaseWorkflowStructuralEntryMatches(
 /** Preserve the validator's established diagnostics for ledger assertion failures. */
 function releaseWorkflowParityError(entry: ActiveReleaseWorkflowParityEntry): string {
 	if (entry.failureMessage !== undefined) return entry.failureMessage
-	if (entry.owner === "jobs.*.steps[].uses") {
+	if (entry.owner === "jobs.*.uses + jobs.*.steps[].uses") {
 		return "release workflow actions must be pinned to full commit SHAs"
 	}
 	if (entry.literal === "parent_count" || entry.literal === "mergeMode") {
