@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
+import { type HarnessId, HARNESS_IDENTITIES } from "./harness-identity"
+
 /** Canonical plugin identity and presentation metadata. */
 export interface PluginConfig {
 	/** True only in the reusable template before a recipient initializes it. */
@@ -388,8 +390,9 @@ function codexMarketplace(config: PluginConfig): GeneratedFile {
 }
 
 function claudeManifest(config: PluginConfig): GeneratedFile {
+	const identity = HARNESS_IDENTITIES.claude
 	return {
-		path: "plugin/.claude-plugin/plugin.json",
+		path: `plugin/${identity.manifestDirectory}/plugin.json`,
 		contents: serialize({
 			name: config.name,
 			displayName: config.displayName,
@@ -401,7 +404,7 @@ function claudeManifest(config: PluginConfig): GeneratedFile {
 			license: config.license,
 			keywords: config.keywords,
 			skills: "./skills/",
-			hooks: "./hooks/claude/hooks.json",
+			hooks: identity.hooksDeclarationPath,
 		}),
 	}
 }
@@ -422,8 +425,9 @@ function codexInterface(config: PluginConfig): Record<string, unknown> {
 }
 
 function codexManifest(config: PluginConfig): GeneratedFile {
+	const identity = HARNESS_IDENTITIES.codex
 	return {
-		path: "plugin/.codex-plugin/plugin.json",
+		path: `plugin/${identity.manifestDirectory}/plugin.json`,
 		contents: serialize({
 			name: config.name,
 			version: config.version,
@@ -433,15 +437,15 @@ function codexManifest(config: PluginConfig): GeneratedFile {
 			license: config.license,
 			keywords: config.keywords,
 			skills: "./skills/",
-			hooks: "./hooks/codex/hooks.json",
+			hooks: identity.hooksDeclarationPath,
 			interface: codexInterface(config),
 		}),
 	}
 }
 
 /** Build one client's hook declaration object; proofs reuse this as the comparison contract. */
-export function hookDeclarationBody(client: "claude" | "codex"): Record<string, unknown> {
-	const pluginRoot = client === "claude" ? "CLAUDE_PLUGIN_ROOT" : "PLUGIN_ROOT"
+export function hookDeclarationBody(client: HarnessId): Record<string, unknown> {
+	const pluginRoot = HARNESS_IDENTITIES[client].pluginRootEnvVar
 	const command = (event: "SessionStart" | "Stop") =>
 		`"\${${pluginRoot}}/hooks/native-capability-hook" ${event} ${client}`
 	return {
@@ -452,9 +456,10 @@ export function hookDeclarationBody(client: "claude" | "codex"): Record<string, 
 	}
 }
 
-function hookDeclaration(client: "claude" | "codex"): GeneratedFile {
+function hookDeclaration(client: HarnessId): GeneratedFile {
+	const identity = HARNESS_IDENTITIES[client]
 	return {
-		path: `plugin/hooks/${client}/hooks.json`,
+		path: join("plugin", identity.hooksDeclarationPath),
 		contents: serialize(hookDeclarationBody(client)),
 	}
 }

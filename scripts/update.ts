@@ -5,6 +5,7 @@ import {
 	CodexProductionUpdateError,
 	runCodexProductionUpdate,
 } from "./codex-production-update"
+import { QUALIFICATION_CLIENT_HARNESSES } from "./harness-identity"
 
 /**
  * Rendered command contract for the production Plugin Installation update workflow.
@@ -196,7 +197,9 @@ export function main(arguments_: string[]): number {
 	const runId = randomUUID()
 	try {
 		const invocation = parseInvocation(arguments_)
-		if (invocation.harness !== "codex") throw new UsageError("--harness must be codex")
+		if (invocation.harness !== QUALIFICATION_CLIENT_HARNESSES["codex-cli"]) {
+			throw new UsageError("--harness must be codex")
+		}
 		if (
 			invocation.target !== "latest" &&
 			!/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(invocation.target)

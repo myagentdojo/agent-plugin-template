@@ -25,7 +25,7 @@ const prior: HarnessRecoverySnapshot = {
 test("post-mutation failure enters the recovery handler and returns its restored value", () => {
 	const phases: string[] = []
 	const result = provePostMutationRecovery(prior, {
-		harness: "Claude",
+		harness: "claude",
 		mutate: () => phases.push("removed"),
 		restore: () => {
 			phases.push("restored")
@@ -41,7 +41,7 @@ test("unexpected mutation failure does not masquerade as the injected recovery p
 	let restored = false
 	expect(() =>
 		provePostMutationRecovery(prior, {
-			harness: "Claude",
+			harness: "claude",
 			mutate: () => {
 				throw new Error("real removal failure")
 			},
@@ -71,7 +71,7 @@ test.each([
 ] as const)("exact recovery rejects mismatched %s", (field, value) => {
 	expect(() =>
 		provePostMutationRecovery(prior, {
-			harness: "Claude",
+			harness: "claude",
 			mutate: () => {},
 			restore: () => ({ value: "restored", snapshot: { ...prior, [field]: value } }),
 		}),
@@ -79,5 +79,5 @@ test.each([
 })
 
 test("exact recovery accepts an identical captured snapshot", () => {
-	expect(() => assertExactHarnessRecovery(prior, structuredClone(prior), "Claude")).not.toThrow()
+	expect(() => assertExactHarnessRecovery(prior, structuredClone(prior), "claude")).not.toThrow()
 })

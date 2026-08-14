@@ -1,12 +1,13 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { HARNESS_IDENTITIES, type HarnessId } from "./harness-identity"
 import { pluginPayloadInventory } from "./plugin-files"
 
 const root = resolve(import.meta.dir, "..")
 pluginPayloadInventory(root)
 
-function dryRun(harness: "claude" | "codex"): Record<string, string> {
+function dryRun(harness: HarnessId): Record<string, string> {
 	const result = Bun.spawnSync({
 		cmd: ["bun", "run", "scripts/dev.ts", harness, "--dry-run", "--json"],
 		cwd: root,
@@ -41,8 +42,8 @@ if (claudeManifest.version !== codexManifest.version) {
 	throw new Error("native manifest versions do not match")
 }
 if (
-	claudeManifest.hooks !== "./hooks/claude/hooks.json" ||
-	codexManifest.hooks !== "./hooks/codex/hooks.json"
+	claudeManifest.hooks !== HARNESS_IDENTITIES.claude.hooksDeclarationPath ||
+	codexManifest.hooks !== HARNESS_IDENTITIES.codex.hooksDeclarationPath
 ) {
 	throw new Error("native manifests do not reference the exact client hook declarations")
 }

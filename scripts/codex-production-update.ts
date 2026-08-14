@@ -19,6 +19,7 @@ import {
 	assertExactHarnessRecovery,
 	type HarnessRecoverySnapshot,
 } from "./harness-install-recovery"
+import type { HarnessId } from "./harness-identity"
 import { loadPluginConfig } from "./plugin-config"
 import { payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 
@@ -188,7 +189,7 @@ export interface CodexProductionUpdateResult {
 	/** Whether the invocation previewed or applied the transaction. */
 	mode: "preview" | "apply"
 	/** Only supported production-update harness. */
-	harness: "codex"
+	harness: HarnessId
 	/** Whether this invocation changed native state. */
 	changed: boolean
 	/** Whether selected and prior Releases differ. */
@@ -1085,7 +1086,7 @@ function restorePriorRelease(
 	const restored = inspectCurrentState(repositoryRoot, environment, "recovery")
 	verifyReleaseState(restored, restoration, current.source, current.enabled, addResult.installedPath)
 	try {
-		assertExactHarnessRecovery(recoverySnapshot(current), recoverySnapshot(restored), "Codex")
+		assertExactHarnessRecovery(recoverySnapshot(current), recoverySnapshot(restored), "codex")
 	} catch {
 		throw new CodexProductionUpdateError(
 			"recovery",

@@ -15,13 +15,20 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import {
+	type ClaudeDriverDependencies,
+	proveClaudeNative as runClaudeNative,
+} from "./harness-install-claude"
+import {
 	assertCodexReportedVersion,
 	proveCodexFixtureCopy as runCodexFixtureCopy,
 	proveCodexNative as runCodexNative,
 } from "./harness-install-codex"
 import {
-	provePostMutationRecovery,
-} from "./harness-install-recovery"
+	HARNESS_IDENTITIES,
+	QUALIFICATION_CLIENT_HARNESSES,
+	type HarnessId,
+	type QualificationClient,
+} from "./harness-identity"
 import { copyPluginPayload, payloadInventorySha256, pluginPayloadInventory } from "./plugin-files"
 import {
 	CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
@@ -52,7 +59,8 @@ Safety:
 `
 
 type HarnessMode = "native-local-marketplace" | "native-hosted-marketplace" | "fixture-copy"
-type ClaudeScope = "user" | "project" | "local"
+/** Claude marketplace scopes exercised independently by the native proof. */
+export type ClaudeScope = "user" | "project" | "local"
 
 export interface TaggedCheckout {
 	requestedRef: string
@@ -96,7 +104,8 @@ export interface ReplacementAdmissionInput {
 	removable: boolean
 }
 
-interface ClaudeInstall {
+/** Native Claude state selected by plugin identity and scope. */
+export interface ClaudeInstall {
 	version: string
 	scope: ClaudeScope
 	enabled: boolean
@@ -111,7 +120,8 @@ interface ClaudeInstalledJson {
 	installPath: string
 }
 
-interface ClaudeScopeProof {
+/** Replacement and recovery evidence retained for one Claude scope. */
+export interface ClaudeScopeProof {
 	scope: ClaudeScope
 	initialVersion: string
 	initialEnabled: boolean
@@ -124,7 +134,8 @@ interface ClaudeScopeProof {
 	activeCachePath: string
 }
 
-interface ClaudeProof {
+/** Claude install proof persisted in the cross-harness report. */
+export interface ClaudeProof {
 	mode: HarnessMode
 	version: string
 	scope: ClaudeScope
@@ -246,7 +257,7 @@ export interface InstalledCapabilityEvidence {
 /** Hash-only conclusions that may be promoted from a private fresh-client receipt. */
 export interface NativeQualificationEvidence {
 	schema: "native-capability-qualification-v1"
-	client: "claude" | "codex"
+	client: HarnessId
 	platform: "macos" | "linux"
 	receiptSha256: string
 	sourceCandidateSha: string
@@ -280,7 +291,7 @@ export interface NativeQualificationEvidence {
 }
 
 export interface NativeQualificationBinding {
-	client: "claude" | "codex"
+	client: HarnessId
 	sourceCommit: string
 	archiveSha256: string
 	packagedPayloadHash: string
@@ -351,7 +362,9 @@ export function promoteNativeQualificationEvidence(
 		"reentrySha256",
 		"hooksFallbackSha256",
 	]
-	if (expected.client === "codex") evidenceKeys.push("exactDefinitionTrustSha256")
+	if (expected.client === QUALIFICATION_CLIENT_HARNESSES["codex-cli"]) {
+		evidenceKeys.push("exactDefinitionTrustSha256")
+	}
 	const evidence = requireQualificationKeys(summary.evidence, evidenceKeys)
 
 	if (
@@ -398,8 +411,9 @@ export function promoteNativeQualificationEvidence(
 		}
 	}
 	if (
-		(expected.client === "claude" && conclusions.exactDefinitionTrust !== "not-applicable") ||
-		(expected.client === "codex" &&
+		(expected.client === QUALIFICATION_CLIENT_HARNESSES["claude-cli"] &&
+			conclusions.exactDefinitionTrust !== "not-applicable") ||
+		(expected.client === QUALIFICATION_CLIENT_HARNESSES["codex-cli"] &&
 			conclusions.exactDefinitionTrust !== "proved" &&
 			conclusions.exactDefinitionTrust !== "failed")
 	) {
@@ -419,7 +433,7 @@ function nativeQualificationPassed(receipt: NativeQualificationEvidence): boolea
 		receipt.conclusions.driftContinuation === "proved" &&
 		receipt.conclusions.reentry === "silent" &&
 		receipt.conclusions.hooksFallback === "proved" &&
-		(receipt.client === "claude"
+		(receipt.client === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]
 			? receipt.conclusions.exactDefinitionTrust === "not-applicable"
 			: receipt.conclusions.exactDefinitionTrust === "proved")
 	)
@@ -465,7 +479,7 @@ export interface HarnessInstallProofOptions {
 
 interface NativeRuntimeJourney {
 	kind: "installed-payload-mechanics"
-	client: "claude-cli" | "codex-cli"
+	client: Exclude<QualificationClient, "codex-desktop">
 	target: string
 	repository: string
 	sourceCommit: string
@@ -480,10 +494,7 @@ interface NativeRuntimeJourney {
 	journey: string[]
 }
 
-interface NativeHarnessExecutables {
-	claude?: string
-	codex?: string
-}
+type NativeHarnessExecutables = Record<HarnessId, string | undefined>
 
 /** Replace a temporary evidence path with an explicit cleaned marker, including macOS /var aliases. */
 export function redactTemporaryEvidencePath(value: unknown, temporaryRoot: string): unknown {
@@ -844,178 +855,14 @@ function replaceClaudeInstall(
 	return findClaudeInstall(claudeExecutable, environment, cwd, pluginId, scope)
 }
 
-function proveClaudeNative(
-	fixture: FixtureRelease,
-	pluginName: string,
-	claudeExecutable: string,
-	temporaryRoot: string,
-): ClaudeProof {
-	const marketplaceName = pluginName
-	const pluginId = `${pluginName}@${marketplaceName}`
-	const scopeResults: ClaudeScopeProof[] = []
-	let primary: ClaudeInstall | undefined
-	let primaryInventory: string[] = []
-	for (const scope of ["user", "project", "local"] as const) {
-		const home = join(temporaryRoot, "claude", scope, "home")
-		const project = join(temporaryRoot, "claude", scope, "project")
-		mkdirSync(home, { recursive: true })
-		mkdirSync(project, { recursive: true })
-		const environment = claudeEnvironment(home)
-		addClaudeMarketplace(claudeExecutable, fixture.base.checkoutRoot, scope, environment, project)
-		command([claudeExecutable, "plugin", "install", pluginId, "--scope", scope], {
-			cwd: project,
-			env: environment,
-		})
-		const initial = findClaudeInstall(claudeExecutable, environment, project, pluginId, scope)
-		if (initial.enabled) throw new Error("Claude installed a default-disabled plugin as enabled")
-		const initialInventory = comparePayload(fixture.base, initial.activeCachePath)
-		const dataRoot = join(home, "plugins", "data", pluginId)
-		const markerPath = join(dataRoot, "u6-marker.txt")
-		mkdirSync(dataRoot, { recursive: true })
-		writeFileSync(markerPath, `${scope} marker\n`)
-		const priorRecovery = {
-			source: fixture.base.checkoutRoot,
-			ref: fixture.base.requestedRef,
-			version: initial.version,
-			payloadInventory: initialInventory,
-			enabled: initial.enabled,
-			scope,
-			persistentData: readFileSync(markerPath, "utf8"),
-		}
-
-		const upgraded = replaceClaudeInstall(
-			claudeExecutable,
-			pluginId,
-			marketplaceName,
-			fixture.target.checkoutRoot,
-			scope,
-			environment,
-			project,
-		)
-		if (upgraded.version !== fixture.target.manifestVersion) {
-			throw new Error(`Claude ${scope} upgrade reported the wrong version`)
-		}
-		const rolledBack = replaceClaudeInstall(
-			claudeExecutable,
-			pluginId,
-			marketplaceName,
-			fixture.base.checkoutRoot,
-			scope,
-			environment,
-			project,
-		)
-		if (rolledBack.version !== fixture.base.manifestVersion) {
-			throw new Error(`Claude ${scope} rollback reported the wrong version`)
-		}
-		if (readFileSync(markerPath, "utf8") !== `${scope} marker\n`) {
-			throw new Error(`Claude ${scope} persistent data did not survive replacement`)
-		}
-		const restoredAfterFailure = provePostMutationRecovery(
-			priorRecovery,
-			{
-				harness: "Claude",
-				mutate: () => {
-					command(
-						[claudeExecutable, "plugin", "uninstall", pluginId, "--keep-data", "--scope", scope],
-						{ cwd: project, env: environment },
-					)
-					command(
-						[claudeExecutable, "plugin", "marketplace", "remove", marketplaceName, "--scope", scope],
-						{ cwd: project, env: environment },
-					)
-				},
-				restore: () => {
-					addClaudeMarketplace(
-						claudeExecutable,
-						fixture.base.checkoutRoot,
-						scope,
-						environment,
-						project,
-					)
-					command([claudeExecutable, "plugin", "install", pluginId, "--scope", scope], {
-						cwd: project,
-						env: environment,
-					})
-					const restored = findClaudeInstall(
-						claudeExecutable,
-						environment,
-						project,
-						pluginId,
-						scope,
-					)
-					return {
-						value: restored,
-						snapshot: {
-							source: fixture.base.checkoutRoot,
-							ref: fixture.base.requestedRef,
-							version: restored.version,
-							payloadInventory: comparePayload(fixture.base, restored.activeCachePath),
-							enabled: restored.enabled,
-							scope: restored.scope,
-							persistentData: readFileSync(markerPath, "utf8"),
-						},
-					}
-				},
-			},
-		)
-		const failureRestored = true
-		command([claudeExecutable, "plugin", "enable", pluginId, "--scope", scope], {
-			cwd: project,
-			env: environment,
-		})
-		const activeAfterFailure = findClaudeInstall(
-			claudeExecutable,
-			environment,
-			project,
-			pluginId,
-			scope,
-		)
-		const orphanedCachePath = join(dirname(activeAfterFailure.activeCachePath), "0.0.0-orphaned")
-		mkdirSync(orphanedCachePath, { recursive: true })
-		writeFileSync(join(orphanedCachePath, "orphan-marker.txt"), "not active\n")
-		const hostSelected = findClaudeInstall(
-			claudeExecutable,
-			environment,
-			project,
-			pluginId,
-			scope,
-		)
-		if (hostSelected.activeCachePath === orphanedCachePath) {
-			throw new Error("Claude proof selected an orphaned cache directory")
-		}
-		const inventory = comparePayload(fixture.base, hostSelected.activeCachePath)
-		scopeResults.push({
-			scope,
-			initialVersion: initial.version,
-			initialEnabled: initial.enabled,
-			upgradedVersion: upgraded.version,
-			rolledBackVersion: rolledBack.version,
-			enabledAfterReview: hostSelected.enabled,
-			dataMarkerPreserved: true,
-			failureRestored,
-			orphanedCacheIgnored: true,
-			activeCachePath: hostSelected.activeCachePath,
-		})
-		if (scope === "user") {
-			primary = hostSelected
-			primaryInventory = inventory
-		}
-	}
-	if (!primary) throw new Error("Claude user-scope proof did not run")
-	return {
-		mode: "native-local-marketplace" as HarnessMode,
-		version: primary.version,
-		scope: primary.scope,
-		enabled: primary.enabled,
-		activeCachePath: primary.activeCachePath,
-		inventory: primaryInventory,
-		requestedRef: fixture.base.requestedRef,
-		resolvedSha: fixture.base.resolvedSha,
-		defaultEnabled: false,
-		compatibility: CLAUDE_DISABLED_BY_DEFAULT_COMPATIBILITY,
-		scopes: scopeResults,
-	}
-}
+const claudeDriverDependencies = {
+	addMarketplace: addClaudeMarketplace,
+	command,
+	comparePayload,
+	environment: claudeEnvironment,
+	findInstall: findClaudeInstall,
+	replaceInstall: replaceClaudeInstall,
+} satisfies ClaudeDriverDependencies
 
 function proveClaudeFixtureCopy(
 	fixture: FixtureRelease,
@@ -1172,8 +1019,8 @@ export function proveHostedHarnessInstall(
 		const claudeProject = join(temporaryRoot, "claude", "project")
 		mkdirSync(claudeHome, { recursive: true })
 		mkdirSync(claudeProject, { recursive: true })
-		const claudeEnv = claudeEnvironment(claudeHome)
-		addClaudeMarketplace(
+		const claudeEnv = claudeDriverDependencies.environment(claudeHome)
+		claudeDriverDependencies.addMarketplace(
 			claudeExecutable,
 			sources.claude,
 			"user",
@@ -1181,11 +1028,14 @@ export function proveHostedHarnessInstall(
 			claudeProject,
 		)
 		const pluginId = `${claudeManifest.name}@${claudeManifest.name}`
-		command([claudeExecutable, "plugin", "install", pluginId, "--scope", "user"], {
-			cwd: claudeProject,
-			env: claudeEnv,
-		})
-		const claudeInstall = findClaudeInstall(
+		claudeDriverDependencies.command(
+			[claudeExecutable, "plugin", "install", pluginId, "--scope", "user"],
+			{
+				cwd: claudeProject,
+				env: claudeEnv,
+			},
+		)
+		const claudeInstall = claudeDriverDependencies.findInstall(
 			claudeExecutable,
 			claudeEnv,
 			claudeProject,
@@ -1195,7 +1045,10 @@ export function proveHostedHarnessInstall(
 		if (claudeInstall.version !== claudeManifest.version) {
 			throw new Error("Claude hosted install reported the wrong manifest version")
 		}
-		const claudeInventory = comparePayload(expected, claudeInstall.activeCachePath)
+		const claudeInventory = claudeDriverDependencies.comparePayload(
+			expected,
+			claudeInstall.activeCachePath,
+		)
 		const claudeInstalledPayloadHash = payloadInventorySha256(
 			claudeInstall.activeCachePath,
 			claudeInventory,
@@ -1355,7 +1208,7 @@ export function runtimeClosureEvidence(
  */
 export function proveInstalledCapabilityEvidence(
 	pluginRoot: string,
-	client: "claude" | "codex",
+	client: HarnessId,
 	candidateCommit: string,
 	candidatePayloadHash: string,
 	qualification?: NativeQualificationPromotion,
@@ -1364,10 +1217,11 @@ export function proveInstalledCapabilityEvidence(
 	if (!/^[a-f0-9]{40}$/.test(candidateCommit) || !/^[a-f0-9]{64}$/.test(candidatePayloadHash)) {
 		throw new Error("installed capability evidence requires a candidate commit and payload hash")
 	}
+	const identity = HARNESS_IDENTITIES[client]
 	const manifest = JSON.parse(
-		readFileSync(join(pluginRoot, `.${client}-plugin`, "plugin.json"), "utf8"),
+		readFileSync(join(pluginRoot, identity.manifestDirectory, "plugin.json"), "utf8"),
 	) as { version?: unknown; hooks?: unknown }
-	const declarationPath = `./hooks/${client}/hooks.json`
+	const declarationPath = identity.hooksDeclarationPath
 	if (manifest.hooks !== declarationPath) {
 		throw new Error(`${client} installed declaration path is invalid`)
 	}
@@ -1745,7 +1599,13 @@ function runHarnessInstallProof(
 	]
 	const { claude: claudeExecutable, codex: codexExecutable } = executables
 	const claude = claudeExecutable
-		? proveClaudeNative(fixture, pluginConfig.name, claudeExecutable, temporaryRoot)
+		? runClaudeNative(
+				fixture,
+				pluginConfig.name,
+				claudeExecutable,
+				temporaryRoot,
+				claudeDriverDependencies,
+			)
 		: proveClaudeFixtureCopy(fixture, pluginConfig.name, temporaryRoot)
 	if (!claudeExecutable) {
 		skips.push({
@@ -1789,13 +1649,13 @@ function runHarnessInstallProof(
 		clients: {
 			claude: proveInstalledCapabilityEvidence(
 				claude.activeCachePath,
-				"claude",
+				QUALIFICATION_CLIENT_HARNESSES["claude-cli"],
 				sourceCommit,
 				candidatePayloadHash,
 			),
 			codex: proveInstalledCapabilityEvidence(
 				codex.installedPath,
-				"codex",
+				QUALIFICATION_CLIENT_HARNESSES["codex-cli"],
 				sourceCommit,
 				candidatePayloadHash,
 			),
@@ -1855,10 +1715,10 @@ export function proveHarnessInstall(
 	sourceRoot: string,
 	options: HarnessInstallProofOptions = {},
 ): HarnessInstallProof {
-	const executables: NativeHarnessExecutables = {
-		claude: Bun.which("claude") ?? undefined,
-		codex: Bun.which("codex") ?? undefined,
-	}
+	const harnessIds = Object.keys(HARNESS_IDENTITIES) as HarnessId[]
+	const executables = Object.fromEntries(
+		harnessIds.map((harness) => [harness, Bun.which(harness) ?? undefined]),
+	) as NativeHarnessExecutables
 	if (options.requireNative && (!executables.claude || !executables.codex)) {
 		const missing = [!executables.claude && "claude", !executables.codex && "codex"].filter(Boolean)
 		throw new Error(`native harness CLIs are required; missing: ${missing.join(", ")}`)

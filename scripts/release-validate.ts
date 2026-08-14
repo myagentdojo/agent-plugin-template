@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 import { validateBunOnlyPayload } from "./build"
+import { HARNESS_IDENTITIES } from "./harness-identity"
 import { checkNativeCapabilityFixture } from "./native-capability-fixture"
 import { checkGeneratedFiles, loadPluginConfig } from "./plugin-config"
 import { RELEASE_PROJECTION_PATH_SET } from "./release-projection"
@@ -587,8 +588,8 @@ function validateRepository(repositoryRoot: string) {
 		}
 	}
 	if (
-		claudeManifest.hooks !== "./hooks/claude/hooks.json" ||
-		codexManifest.hooks !== "./hooks/codex/hooks.json"
+		claudeManifest.hooks !== HARNESS_IDENTITIES.claude.hooksDeclarationPath ||
+		codexManifest.hooks !== HARNESS_IDENTITIES.codex.hooksDeclarationPath
 	) {
 		throw new Error("native manifests must reference the exact client-specific hook declarations")
 	}

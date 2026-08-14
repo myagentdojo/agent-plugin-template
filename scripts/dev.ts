@@ -7,6 +7,11 @@ import {
 } from "node:fs"
 import { join, resolve } from "node:path"
 
+import {
+	HARNESS_IDENTITIES,
+	QUALIFICATION_CLIENT_HARNESSES,
+	type HarnessId,
+} from "./harness-identity"
 import { copyPluginPayload } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
@@ -56,10 +61,8 @@ Examples:
   bun run dev -- claude --dry-run --json
 `
 
-type Harness = "claude" | "codex"
-
 interface Options {
-	harness: Harness
+	harness: HarnessId
 	check: boolean
 	launch: boolean
 	dryRun: boolean
@@ -78,8 +81,8 @@ function parseOptions(arguments_: string[]): Options | null {
 		return null
 	}
 
-	const harness = arguments_[0]
-	if (harness !== "claude" && harness !== "codex") fail(`unknown command: ${harness}`)
+	const harness = arguments_[0] as HarnessId
+	if (!Object.hasOwn(HARNESS_IDENTITIES, harness)) fail(`unknown command: ${harness}`)
 
 	const flags = new Set(arguments_.slice(1))
 	for (const flag of flags) {
@@ -235,22 +238,23 @@ async function main(): Promise<void> {
 	if (!options) return
 
 	if (options.dryRun) {
+		const isClaude = options.harness === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]
 		const plan = {
 			harness: options.harness,
 			build: "bun run build",
-			source: options.harness === "claude" ? pluginRoot : stagedPluginRoot,
+			source: isClaude ? pluginRoot : stagedPluginRoot,
 			install:
-				options.harness === "claude"
+				isClaude
 					? `claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`
 					: `codex plugin add ${pluginName}@${developmentMarketplaceName}`,
 			reload:
-				options.harness === "claude"
+				isClaude
 					? "Run /reload-plugins after the watcher rebuilds"
 					: "Start a fresh Codex task after reinstall",
 		}
 		if (options.json) console.log(JSON.stringify(plan))
 		else console.log(Object.values(plan).join("\n"))
-	} else if (options.harness === "claude") {
+	} else if (options.harness === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]) {
 		await runClaude(options)
 	} else {
 		runCodex(options)
