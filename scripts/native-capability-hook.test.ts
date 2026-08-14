@@ -17,10 +17,57 @@ import { fileURLToPath } from "node:url"
 
 import { afterEach, expect, test } from "bun:test"
 
+import { HARNESS_IDENTITIES } from "./harness-identity"
+
 const root = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 const temporaryRoots: string[] = []
 const warning =
 	"This plugin could not run its lifecycle mechanics proof; continuing without blocking.\n"
+
+function lifecycleCaseArms(hook: string): string[] {
+	const lifecycleCase = hook.match(
+		/^case "\$event:\$client" in\n(?<body>[\s\S]*?)^esac$/m,
+	)
+	if (!lifecycleCase?.groups?.body) {
+		throw new Error("native capability hook lifecycle case not found")
+	}
+
+	return Array.from(
+		lifecycleCase.groups.body.matchAll(/^\s*((?:SessionStart|Stop):[^\n)]+)\)/gm),
+		(match) => match[1],
+	)
+		.flatMap((pattern) => pattern.split("|"))
+		.map((arm) => arm.trim())
+		.sort()
+}
+
+function expectCanonicalLifecycleCaseArms(hook: string): void {
+	const harnessIds = Object.keys(HARNESS_IDENTITIES)
+	const expected = ["SessionStart", "Stop"]
+		.flatMap((event) => harnessIds.map((harnessId) => `${event}:${harnessId}`))
+		.sort()
+
+	expect(lifecycleCaseArms(hook)).toEqual(expected)
+}
+
+test("lifecycle case arms cover exactly the canonical harness IDs", () => {
+	const hook = readFileSync(join(root, "plugin", "hooks", "native-capability-hook"), "utf8")
+
+	expectCanonicalLifecycleCaseArms(hook)
+})
+
+test("lifecycle case-arm parity detects added, removed, and renamed harness IDs", () => {
+	const hook = readFileSync(join(root, "plugin", "hooks", "native-capability-hook"), "utf8")
+	const mutations = [
+		hook.replace("SessionStart:claude|", ""),
+		hook.replace("Stop:codex)", "Stop:codex|Stop:future)"),
+		hook.replace("SessionStart:codex", "SessionStart:renamed"),
+	]
+
+	for (const mutation of mutations) {
+		expect(() => expectCanonicalLifecycleCaseArms(mutation)).toThrow()
+	}
+})
 
 afterEach(() => {
 	for (const temporaryRoot of temporaryRoots.splice(0)) {
