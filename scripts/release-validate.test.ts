@@ -77,7 +77,7 @@ test("release workflow parity ledger accounts for every current assertion litera
 			expect(entry.dropReason.length).toBeGreaterThan(0)
 			continue
 		}
-		expect(entry.tier.length).toBeGreaterThan(0)
+		expect(["structural", "step-run", "raw-residual"]).toContain(entry.tier)
 		expect(entry.owner.length).toBeGreaterThan(0)
 		expect(entry.comparison.length).toBeGreaterThan(0)
 	}
@@ -135,6 +135,46 @@ test("release validation rejects an unpinned job-level reusable workflow", () =>
 		expect(result.stderr.toString()).toContain(
 			"release workflow actions must be pinned to full commit SHAs",
 		)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation accepts a repository-local action reference", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
+			"      - uses: ./.github/actions/local-setup\n      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6\n",
+		)
+		expect(mutated !== original, "local action reference mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode, result.stderr.toString()).toBe(0)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation rejects a second checkout step that skips the pinned ref", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: ${{ needs.resolve.outputs.candidate_sha }}\n",
+			"      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: ${{ needs.resolve.outputs.candidate_sha }}\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          ref: main\n",
+		)
+		expect(mutated !== original, "second checkout step mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
 	} finally {
 		rmSync(temporaryRoot, { recursive: true, force: true })
 	}

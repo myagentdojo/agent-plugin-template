@@ -44,6 +44,14 @@ function releaseWorkflowActionReferences(workflow: unknown): unknown[] {
 	])
 }
 
+/**
+ * Repository-local actions ship with the checked-out revision and carry no ref to pin.
+ * Requiring a commit SHA here would reject `uses: ./.github/actions/<name>` outright.
+ */
+function releaseWorkflowLocalActionReference(reference: unknown): boolean {
+	return typeof reference === "string" && reference.startsWith("./")
+}
+
 export type ReleaseWorkflowParityTier = "structural" | "step-run" | "raw-residual"
 
 export type ReleaseWorkflowParityLedgerEntry =
@@ -629,14 +637,22 @@ function releaseWorkflowStepField(
 	return releaseWorkflowStep(job, stepName)?.[field]
 }
 
+/** Find every action step by its repository name, independent of the pinned ref. */
+function releaseWorkflowActionSteps(
+	job: ReleaseWorkflowJob | undefined,
+	actionName: string,
+): ReleaseWorkflowStep[] {
+	return releaseWorkflowSteps(job).filter(
+		(step) => typeof step.uses === "string" && step.uses.split("@")[0] === actionName,
+	)
+}
+
 /** Find an action step by its repository name, independent of the pinned ref. */
 function releaseWorkflowActionStep(
 	job: ReleaseWorkflowJob | undefined,
 	actionName: string,
 ): ReleaseWorkflowStep | undefined {
-	return releaseWorkflowSteps(job).find(
-		(step) => typeof step.uses === "string" && step.uses.split("@")[0] === actionName,
-	)
+	return releaseWorkflowActionSteps(job, actionName)[0]
 }
 
 /** Test every parsed scalar without depending on YAML formatting or comments. */
@@ -744,9 +760,12 @@ function releaseWorkflowStructuralEntryMatches(
 	switch (entry.owner) {
 		case "jobs.*.uses + jobs.*.steps[].uses": {
 			const references = releaseWorkflowActionReferences(workflow)
+			const externalReferences = references.filter(
+				(reference) => !releaseWorkflowLocalActionReference(reference),
+			)
 			return (
-				references.length > 0 &&
-				references.every(
+				externalReferences.length > 0 &&
+				externalReferences.every(
 					(reference) =>
 						typeof reference === "string" && /^[^@\s]+@[a-f0-9]{40}$/.test(reference),
 				)
@@ -784,11 +803,17 @@ function releaseWorkflowStructuralEntryMatches(
 				"SOURCE_COMMIT",
 			)
 		case "jobs.{candidate,compatibility,package,release} checkout steps with.ref":
-			return [candidateJob, compatibilityJob, packageJob, releaseJob].every(
-				(job) =>
-					releaseWorkflowRecordField(releaseWorkflowActionStep(job, "actions/checkout"), "with")
-						?.ref === "${{ needs.resolve.outputs.candidate_sha }}",
-			)
+			return [candidateJob, compatibilityJob, packageJob, releaseJob].every((job) => {
+				const checkoutSteps = releaseWorkflowActionSteps(job, "actions/checkout")
+				return (
+					checkoutSteps.length > 0 &&
+					checkoutSteps.every(
+						(step) =>
+							releaseWorkflowRecordField(step, "with")?.ref ===
+							"${{ needs.resolve.outputs.candidate_sha }}",
+					)
+				)
+			})
 		case "jobs.release step Replay current publication admission before mutation env.TRUSTED_BASE_SHA":
 			return releaseWorkflowRecordField(replayStep, "env")?.TRUSTED_BASE_SHA === "${{ needs.resolve.outputs.trusted_base_sha }}"
 		case "jobs.release step Replay current publication admission before mutation env.ADMITTED_MERGED_PR_BASE_SHA":
@@ -857,11 +882,15 @@ function releaseWorkflowStructuralEntryMatches(
 			return releaseWorkflowJob(workflow, "converge") !== undefined
 		case "jobs.maintain.concurrency.cancel-in-progress":
 			return releaseWorkflowRecordField(maintainJob, "concurrency")?.["cancel-in-progress"] === false
-		case "jobs.maintain checkout step with.persist-credentials":
-			return releaseWorkflowRecordField(
-				releaseWorkflowActionStep(maintainJob, "actions/checkout"),
-				"with",
-			)?.["persist-credentials"] === false
+		case "jobs.maintain checkout step with.persist-credentials": {
+			const maintainCheckoutSteps = releaseWorkflowActionSteps(maintainJob, "actions/checkout")
+			return (
+				maintainCheckoutSteps.length > 0 &&
+				maintainCheckoutSteps.every(
+					(step) => releaseWorkflowRecordField(step, "with")?.["persist-credentials"] === false,
+				)
+			)
+		}
 		case "jobs.maintain step Pin only the first release to v0.1.0 id":
 			return releaseWorkflowStep(maintainJob, "Pin only the first release to v0.1.0")?.id === "bootstrap-version"
 		case "jobs.maintain step Maintain release pull request with.token":
