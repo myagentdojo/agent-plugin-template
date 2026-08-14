@@ -23,6 +23,10 @@ const releaseEnvironmentRepair =
 	"Settings > Environments > release > Deployment protection rules: enable Required reviewers and add at least one reviewer"
 const hostedCanaryRepair =
 	"Settings > Environments > hosted-canary-qualification: create the environment and add secrets CANARY_GH_TOKEN, CANARY_SSH_KNOWN_HOSTS, and CANARY_SSH_PRIVATE_KEY"
+const hostedCanaryKeyRotationRepair =
+	"rotate the canary key: generate a dedicated purpose key, register its public half on the canary actor account first, then update the CANARY_SSH_PUBLIC_KEY variable and the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
+const hostedCanaryKeyBindingRepair =
+	"Settings > Secrets and variables > Actions: add variable CANARY_SSH_PUBLIC_KEY holding the public half of CANARY_SSH_PRIVATE_KEY"
 
 const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
 export const REQUIRED_HOSTED_CANARY_SECRETS = [
@@ -613,10 +617,41 @@ export function classifyReleaseEnvironmentProtection(environment: unknown): Read
 	)
 }
 
-/** Verify hosted-canary qualification authority from environment and secret names only. */
+/**
+ * Registered public half of the canary admission credential.
+ *
+ * The credential belongs to `canary.actor`, not to this repository, so the
+ * registration is read from that user's SSH keys. Repository deploy keys are a
+ * different object and never carry it.
+ */
+export interface CanaryKeyRegistration {
+	/** Public keys the canary actor still registers, across every page. */
+	registeredPublicKeys: string[]
+	/** Public half recorded by CANARY_SSH_PUBLIC_KEY. Not a secret. */
+	expectedPublicKey: string
+	/** Actor whose keys were read, for an unambiguous repair message. */
+	actor: string
+	/** Whether every key page was read; a truncated list cannot prove absence. */
+	registrationComplete: boolean
+}
+
+/** Compare SSH public keys by type and material, ignoring comment and spacing. */
+function canonicalPublicKey(key: string): string {
+	const [type, material] = key.trim().split(/\s+/)
+	return type && material ? `${type} ${material}` : ""
+}
+
+/**
+ * Verify hosted-canary qualification authority, including credential lifecycle.
+ *
+ * A configured secret name proves only that a value exists. When the registered
+ * public half has been deleted, SSH admission fails while every name-based check
+ * stays green, so the private key is verified to still have a counterpart.
+ */
 export function classifyHostedCanaryConfiguration(
 	environment: unknown,
 	secretsResponse: unknown,
+	keyRegistration?: CanaryKeyRegistration,
 ): ReadinessCheck {
 	if (!isRecord(environment) || environment.name !== HOSTED_CANARY_ENVIRONMENT) {
 		return {
@@ -652,16 +687,62 @@ export function classifyHostedCanaryConfiguration(
 		),
 	)
 	const absent = REQUIRED_HOSTED_CANARY_SECRETS.filter((name) => !configured.has(name))
-	return absent.length === 0
-		? ready(
-				"hosted-canary-configuration",
-				`${HOSTED_CANARY_ENVIRONMENT} and all required secret names are configured`,
-			)
-		: missing(
-				"hosted-canary-configuration",
-				`Hosted-canary qualification is missing environment secret${absent.length === 1 ? "" : "s"}: ${absent.join(", ")}`,
-				hostedCanaryRepair,
-			)
+	if (absent.length > 0) {
+		return missing(
+			"hosted-canary-configuration",
+			`Hosted-canary qualification is missing environment secret${absent.length === 1 ? "" : "s"}: ${absent.join(", ")}`,
+			hostedCanaryRepair,
+		)
+	}
+	if (
+		!isRecord(keyRegistration) ||
+		!Array.isArray(keyRegistration.registeredPublicKeys) ||
+		keyRegistration.registeredPublicKeys.some((key) => typeof key !== "string") ||
+		typeof keyRegistration.registrationComplete !== "boolean" ||
+		typeof keyRegistration.expectedPublicKey !== "string" ||
+		typeof keyRegistration.actor !== "string"
+	) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable canary key registration; credential lifecycle is unproven",
+			repair: hostedCanaryKeyRotationRepair,
+		}
+	}
+	// A truncated key list cannot prove the canary key is absent.
+	if (!keyRegistration.registrationComplete) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: `GitHub returned an incomplete key list for ${keyRegistration.actor}; credential lifecycle is unproven`,
+			repair: hostedCanaryKeyRotationRepair,
+		}
+	}
+	const expectedPublicKey = canonicalPublicKey(keyRegistration.expectedPublicKey)
+	if (expectedPublicKey === "") {
+		return missing(
+			"hosted-canary-configuration",
+			"Hosted-canary qualification is missing variable CANARY_SSH_PUBLIC_KEY; the registered public half cannot be bound to CANARY_SSH_PRIVATE_KEY",
+			hostedCanaryKeyBindingRepair,
+		)
+	}
+	// Any registered key proves only that the actor has some key. Bind the exact
+	// canary key, or a rotation that deletes it stays green while SSH admission fails.
+	if (
+		!keyRegistration.registeredPublicKeys
+			.map(canonicalPublicKey)
+			.includes(expectedPublicKey)
+	) {
+		return missing(
+			"hosted-canary-configuration",
+			`${HOSTED_CANARY_ENVIRONMENT} retains CANARY_SSH_PRIVATE_KEY, but ${keyRegistration.actor} no longer registers its CANARY_SSH_PUBLIC_KEY half; SSH admission will fail`,
+			hostedCanaryKeyRotationRepair,
+		)
+	}
+	return ready(
+		"hosted-canary-configuration",
+		`${HOSTED_CANARY_ENVIRONMENT}, all required secret names, and the public half registered by ${keyRegistration.actor} are configured`,
+	)
 }
 
 /**
@@ -1020,7 +1101,42 @@ function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 	if (!secrets.ok) {
 		return apiFailure("hosted-canary-configuration", secrets, hostedCanaryRepair)
 	}
-	return classifyHostedCanaryConfiguration(environment.data, secrets.data)
+	// A secret name proves a value exists, not that its public half survives.
+	// The credential belongs to the canary actor, not to this repository, so read
+	// that user's keys; repository deploy keys never carry it.
+	const actor = loadPluginConfig(root).canary.actor
+	const actorKeys = readApi(`users/${actor}/keys?per_page=100`, true)
+	if (!actorKeys.ok) {
+		return apiFailure("hosted-canary-configuration", actorKeys, hostedCanaryKeyRotationRepair)
+	}
+	const variables = readApi(`repos/${repository}/actions/variables?per_page=100`, true)
+	if (!variables.ok) {
+		return apiFailure("hosted-canary-configuration", variables, hostedCanaryKeyBindingRepair)
+	}
+	const keyPages = Array.isArray(actorKeys.data) ? actorKeys.data : undefined
+	// --slurp yields one array per page; a malformed entry must fail closed, never be dropped.
+	const registeredPublicKeys = keyPages
+		?.flatMap((page) => (Array.isArray(page) ? page : [undefined]))
+		.map((entry) => (isRecord(entry) && typeof entry.key === "string" ? entry.key : undefined))
+	const registrationComplete =
+		registeredPublicKeys !== undefined && registeredPublicKeys.every((key) => key !== undefined)
+	const expectedPublicKey = Array.isArray(variables.data)
+		? variables.data
+				.flatMap((page) => (Array.isArray(page?.variables) ? page.variables : []))
+				.find((entry) => isRecord(entry) && entry.name === "CANARY_SSH_PUBLIC_KEY")?.value
+		: undefined
+	return classifyHostedCanaryConfiguration(
+		environment.data,
+		secrets.data,
+		registeredPublicKeys
+			? {
+					registeredPublicKeys: registeredPublicKeys.filter((key) => key !== undefined),
+					expectedPublicKey: typeof expectedPublicKey === "string" ? expectedPublicKey : "",
+					actor,
+					registrationComplete,
+				}
+			: undefined,
+	)
 }
 
 function localWorkflows(): ReadinessCheck {
