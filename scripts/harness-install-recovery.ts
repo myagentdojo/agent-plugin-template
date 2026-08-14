@@ -1,3 +1,5 @@
+import { HARNESS_IDENTITIES, type HarnessId } from "./harness-identity"
+
 /**
  * Captured harness state that recovery must reproduce without approximation.
  *
@@ -50,15 +52,15 @@ export interface HarnessRecoverySnapshot {
  * @example
  * ```typescript
  * const adapter: HarnessRecoveryAdapter<string> = {
- *   harness: "Codex",
+ *   harness: "codex",
  *   mutate: () => removePlugin(),
  *   restore: () => ({ value: "restored", snapshot: restoredSnapshot }),
  * }
  * ```
  */
 export interface HarnessRecoveryAdapter<T> {
-	/** Harness name used in actionable failures. */
-	harness: "Claude" | "Codex"
+	/** Canonical harness ID used in actionable failures. */
+	harness: HarnessId
 	/** Complete destructive phase after which the fault is injected. */
 	mutate: () => void
 	/** Real restoration path whose result is compared with prior state. */
@@ -66,13 +68,17 @@ export interface HarnessRecoveryAdapter<T> {
 }
 
 class InjectedPostMutationFailure extends Error {
-	constructor(harness: "Claude" | "Codex") {
-		super(`${harness} injected post-mutation failure`)
+	constructor(harness: HarnessId) {
+		super(`${harnessDisplayName(harness)} injected post-mutation failure`)
 		this.name = "InjectedPostMutationFailure"
 	}
 }
 
-function injectPostMutationFailure(harness: "Claude" | "Codex"): never {
+function harnessDisplayName(harness: HarnessId): string {
+	return HARNESS_IDENTITIES[harness.toLowerCase() as HarnessId].displayName
+}
+
+function injectPostMutationFailure(harness: HarnessId): never {
 	throw new InjectedPostMutationFailure(harness)
 }
 
@@ -86,14 +92,15 @@ function injectPostMutationFailure(harness: "Claude" | "Codex"): never {
  *
  * @example
  * ```typescript
- * assertExactHarnessRecovery(priorSnapshot, restoredSnapshot, "Claude")
+ * assertExactHarnessRecovery(priorSnapshot, restoredSnapshot, "claude")
  * ```
  */
 export function assertExactHarnessRecovery(
 	prior: HarnessRecoverySnapshot,
 	restored: HarnessRecoverySnapshot,
-	harness: "Claude" | "Codex",
+	harness: HarnessId,
 ): void {
+	const displayName = harnessDisplayName(harness)
 	for (const field of [
 		"source",
 		"ref",
@@ -109,11 +116,11 @@ export function assertExactHarnessRecovery(
 		"payloadHash",
 	] as const) {
 		if (restored[field] !== prior[field]) {
-			throw new Error(`${harness} recovery did not restore prior ${field}`)
+			throw new Error(`${displayName} recovery did not restore prior ${field}`)
 		}
 	}
 	if (JSON.stringify(restored.payloadInventory) !== JSON.stringify(prior.payloadInventory)) {
-		throw new Error(`${harness} recovery did not restore prior payloadInventory`)
+		throw new Error(`${displayName} recovery did not restore prior payloadInventory`)
 	}
 }
 

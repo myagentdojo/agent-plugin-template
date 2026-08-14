@@ -119,7 +119,7 @@ export function proveCodexNative(
 	restored = provePostMutationRecovery(
 		priorRecovery,
 		{
-			harness: "Codex",
+			harness: "codex",
 			mutate: () => {
 				dependencies.remove(codexExecutable, pluginId, marketplaceName, environment, project)
 			},

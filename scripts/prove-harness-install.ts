@@ -913,7 +913,7 @@ function proveClaudeNative(
 		const restoredAfterFailure = provePostMutationRecovery(
 			priorRecovery,
 			{
-				harness: "Claude",
+				harness: "claude",
 				mutate: () => {
 					command(
 						[claudeExecutable, "plugin", "uninstall", pluginId, "--keep-data", "--scope", scope],
