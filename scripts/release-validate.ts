@@ -586,13 +586,6 @@ function releaseWorkflowStep(
 	return releaseWorkflowSteps(job).find((step) => step.name === stepName)
 }
 
-/** Join every run script in a job for assertions spanning unnamed steps. */
-function releaseWorkflowJobRun(job: ReleaseWorkflowJob | undefined): string {
-	return releaseWorkflowSteps(job)
-		.flatMap((step) => (typeof step.run === "string" ? [step.run] : []))
-		.join("\n")
-}
-
 /** Walk every parsed job step and preserve each uses value for pin validation. */
 function releaseWorkflowActionReferences(workflow: unknown): unknown[] {
 	return Object.values(releaseWorkflowJobs(workflow)).flatMap((job) =>
@@ -612,6 +605,7 @@ export type ReleaseWorkflowParityLedgerEntry =
 			comparison: string
 			note?: string
 			droppedAspect?: string
+			failureMessage?: string
 	  }
 	| {
 			literal: string
@@ -1148,6 +1142,7 @@ export const RELEASE_WORKFLOW_PARITY_LEDGER = [
 		tier: "structural",
 		owner: "jobs.release.concurrency.group",
 		comparison: "equals release-publication-${{ needs.resolve.outputs.release_tag }}",
+		failureMessage: "release workflow publish mutation must serialize by resolved immutable tag",
 	},
 	{
 		literal:
@@ -1206,9 +1201,9 @@ function releaseWorkflowContainsScalar(value: unknown, literal: string): boolean
 	return false
 }
 
-/** Resolve the parsed run script named by a tier-2 ledger owner. */
-function releaseWorkflowOwnedRun(workflow: unknown, owner: string): string {
-	const ownedSteps: Record<string, readonly [jobName: string, stepName: string]> = {
+/** Map each tier-2 ledger owner to the job and step that own its run script. */
+const RELEASE_WORKFLOW_OWNED_STEPS: Record<string, readonly [jobName: string, stepName: string]> =
+	{
 		"jobs.resolve step Resolve unique candidate or immutable repair tag run": [
 			"resolve",
 			"Resolve unique candidate or immutable repair tag",
@@ -1262,7 +1257,10 @@ function releaseWorkflowOwnedRun(workflow: unknown, owner: string): string {
 			"Pin only the first release to v0.1.0",
 		],
 	}
-	const ownedStep = ownedSteps[owner]
+
+/** Resolve the parsed run script named by a tier-2 ledger owner. */
+function releaseWorkflowOwnedRun(workflow: unknown, owner: string): string {
+	const ownedStep = RELEASE_WORKFLOW_OWNED_STEPS[owner]
 	if (!ownedStep) {
 		throw new Error(`release workflow parity ledger has no step-run implementation for ${owner}`)
 	}
@@ -1456,6 +1454,7 @@ function releaseWorkflowStructuralEntryMatches(
 
 /** Preserve the validator's established diagnostics for ledger assertion failures. */
 function releaseWorkflowParityError(entry: ActiveReleaseWorkflowParityEntry): string {
+	if (entry.failureMessage !== undefined) return entry.failureMessage
 	if (entry.owner === "jobs.*.steps[].uses") {
 		return "release workflow actions must be pinned to full commit SHAs"
 	}
