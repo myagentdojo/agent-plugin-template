@@ -97,6 +97,47 @@ test("release validation fails closed when the release workflow is not parseable
 	}
 })
 
+test("release validation accepts semantic-preserving workflow reformatting", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		writeFileSync(
+			workflowPath,
+			readFileSync(workflowPath, "utf8").replace(
+				"      group: release-maintenance\n",
+				"      group : release-maintenance\n",
+			),
+		)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode, result.stderr.toString()).toBe(0)
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
+test("release validation scopes required run fragments to their owning step", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
+		const workflow = readFileSync(workflowPath, "utf8")
+			.replace("        run: |\n          bun run prove:all\n", "        run: \"true\"\n")
+			.replace(
+				"      - name: Reject generated release-surface drift\n        run: git diff --exit-code -- plugin/\n",
+				"      - name: Reject generated release-surface drift\n        run: |\n          git diff --exit-code -- plugin/\n          bun run prove:all\n",
+			)
+		writeFileSync(workflowPath, workflow)
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain("release workflow is missing bun run prove:all")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
+
 const allowedProjection = [
 	".claude-plugin/marketplace.json",
 	".github/.release-please-manifest.json",
