@@ -550,6 +550,58 @@ function readJson(repositoryRoot: string, path: string): Record<string, any> {
 	return JSON.parse(readFileSync(join(repositoryRoot, path), "utf8"))
 }
 
+type ReleaseWorkflowStep = Record<string, unknown>
+type ReleaseWorkflowJob = Record<string, unknown>
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Return parsed jobs in their YAML insertion order. */
+function releaseWorkflowJobs(workflow: unknown): Record<string, ReleaseWorkflowJob> {
+	if (!isRecord(workflow) || !isRecord(workflow.jobs)) return {}
+	return Object.fromEntries(
+		Object.entries(workflow.jobs).filter(
+			(entry): entry is [string, ReleaseWorkflowJob] => isRecord(entry[1]),
+		),
+	)
+}
+
+/** Fetch one parsed workflow job without assuming the YAML document shape. */
+function releaseWorkflowJob(workflow: unknown, jobName: string): ReleaseWorkflowJob | undefined {
+	return releaseWorkflowJobs(workflow)[jobName]
+}
+
+/** Return the object-shaped steps from one parsed workflow job. */
+function releaseWorkflowSteps(job: ReleaseWorkflowJob | undefined): ReleaseWorkflowStep[] {
+	if (!Array.isArray(job?.steps)) return []
+	return job.steps.filter((step): step is ReleaseWorkflowStep => isRecord(step))
+}
+
+/** Fetch one named step from a parsed workflow job. */
+function releaseWorkflowStep(
+	job: ReleaseWorkflowJob | undefined,
+	stepName: string,
+): ReleaseWorkflowStep | undefined {
+	return releaseWorkflowSteps(job).find((step) => step.name === stepName)
+}
+
+/** Join every run script in a job for assertions spanning unnamed steps. */
+function releaseWorkflowJobRun(job: ReleaseWorkflowJob | undefined): string {
+	return releaseWorkflowSteps(job)
+		.flatMap((step) => (typeof step.run === "string" ? [step.run] : []))
+		.join("\n")
+}
+
+/** Walk every parsed job step and preserve each uses value for pin validation. */
+function releaseWorkflowActionReferences(workflow: unknown): unknown[] {
+	return Object.values(releaseWorkflowJobs(workflow)).flatMap((job) =>
+		releaseWorkflowSteps(job)
+			.filter((step) => Object.hasOwn(step, "uses"))
+			.map((step) => step.uses),
+	)
+}
+
 export type ReleaseWorkflowParityTier = "structural" | "step-run" | "raw-residual"
 
 export type ReleaseWorkflowParityLedgerEntry =
@@ -1120,8 +1172,9 @@ function validateRepository(repositoryRoot: string) {
 	const releaseManifest = readJson(repositoryRoot, ".github/.release-please-manifest.json")
 	const releaseConfig = readJson(repositoryRoot, ".github/release-please-config.json")
 	const releaseWorkflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8")
+	let parsedReleaseWorkflow: unknown
 	try {
-		Bun.YAML.parse(releaseWorkflow)
+		parsedReleaseWorkflow = Bun.YAML.parse(releaseWorkflow)
 	} catch {
 		throw new Error("release workflow YAML could not be parsed")
 	}
@@ -1217,12 +1270,13 @@ function validateRepository(repositoryRoot: string) {
 		}
 	}
 
-	const actionReferences = [...releaseWorkflow.matchAll(/uses: [^@\s]+@([^\s]+)/g)].map(
-		(match) => match[1],
-	)
+	const actionReferences = releaseWorkflowActionReferences(parsedReleaseWorkflow)
 	if (
 		actionReferences.length === 0 ||
-		actionReferences.some((reference) => !/^[a-f0-9]{40}$/.test(reference))
+		actionReferences.some(
+			(reference) =>
+				typeof reference !== "string" || !/^[^@\s]+@[a-f0-9]{40}$/.test(reference),
+		)
 	) {
 		throw new Error("release workflow actions must be pinned to full commit SHAs")
 	}
@@ -1308,15 +1362,18 @@ function validateRepository(repositoryRoot: string) {
 	if (/^concurrency:/m.test(releaseWorkflow)) {
 		throw new Error("release workflow must serialize only mutation jobs, not discard distinct pending runs")
 	}
-	const maintainJobStart = releaseWorkflow.indexOf("\n  maintain:\n")
-	const compatibilityJobStart = releaseWorkflow.indexOf("\n  compatibility:\n")
+	const releaseWorkflowJobNames = Object.keys(releaseWorkflowJobs(parsedReleaseWorkflow))
+	const maintainJobPosition = releaseWorkflowJobNames.indexOf("maintain")
+	const compatibilityJobPosition = releaseWorkflowJobNames.indexOf("compatibility")
 	if (
-		maintainJobStart === -1 ||
-		compatibilityJobStart === -1 ||
-		compatibilityJobStart <= maintainJobStart
+		releaseWorkflowJob(parsedReleaseWorkflow, "maintain") === undefined ||
+		releaseWorkflowJob(parsedReleaseWorkflow, "compatibility") === undefined ||
+		compatibilityJobPosition <= maintainJobPosition
 	) {
 		throw new Error("release workflow is missing the maintain or compatibility job boundary")
 	}
+	const maintainJobStart = releaseWorkflow.indexOf("\n  maintain:\n")
+	const compatibilityJobStart = releaseWorkflow.indexOf("\n  compatibility:\n")
 	const maintainJob = releaseWorkflow.slice(maintainJobStart, compatibilityJobStart)
 	for (const required of [
 		"group: release-maintenance",
@@ -1335,15 +1392,19 @@ function validateRepository(repositoryRoot: string) {
 	if (maintainJob.includes("secrets.GITHUB_TOKEN")) {
 		throw new Error("release workflow maintenance job must not fall back to GITHUB_TOKEN")
 	}
-	const releaseJobStart = releaseWorkflow.indexOf("\n  release:\n")
-	if (releaseJobStart === -1) throw new Error("release workflow is missing the release job boundary")
-	const convergeJobStart = releaseWorkflow.indexOf("\n  converge:\n")
-	if (convergeJobStart === -1) {
+	const releaseJobPosition = releaseWorkflowJobNames.indexOf("release")
+	const convergeJobPosition = releaseWorkflowJobNames.indexOf("converge")
+	if (releaseWorkflowJob(parsedReleaseWorkflow, "release") === undefined) {
+		throw new Error("release workflow is missing the release job boundary")
+	}
+	if (releaseWorkflowJob(parsedReleaseWorkflow, "converge") === undefined) {
 		throw new Error("release workflow is missing the converge job boundary")
 	}
-	if (convergeJobStart <= releaseJobStart) {
+	if (convergeJobPosition <= releaseJobPosition) {
 		throw new Error("release workflow converge job must follow the release job")
 	}
+	const releaseJobStart = releaseWorkflow.indexOf("\n  release:\n")
+	const convergeJobStart = releaseWorkflow.indexOf("\n  converge:\n")
 	const releaseJob = releaseWorkflow.slice(releaseJobStart, convergeJobStart)
 	if (!releaseJob.includes("    needs:\n      - resolve\n      - package\n")) {
 		throw new Error("release workflow publish job must depend on package")
