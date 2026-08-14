@@ -101,13 +101,13 @@ test("release validation accepts semantic-preserving workflow reformatting", () 
 	const temporaryRoot = copyRepository()
 	try {
 		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
-		writeFileSync(
-			workflowPath,
-			readFileSync(workflowPath, "utf8").replace(
-				"      group: release-maintenance\n",
-				"      group : release-maintenance\n",
-			),
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(
+			"      group: release-maintenance\n",
+			"      group : release-maintenance\n",
 		)
+		expect(mutated !== original, "semantic reformatting mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
 
 		const result = validate(temporaryRoot)
 
@@ -121,12 +121,17 @@ test("release validation scopes required run fragments to their owning step", ()
 	const temporaryRoot = copyRepository()
 	try {
 		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
-		const workflow = readFileSync(workflowPath, "utf8")
-			.replace("        run: |\n          bun run prove:all\n", "        run: \"true\"\n")
-			.replace(
-				"      - name: Reject generated release-surface drift\n        run: git diff --exit-code -- plugin/\n",
-				"      - name: Reject generated release-surface drift\n        run: |\n          git diff --exit-code -- plugin/\n          bun run prove:all\n",
-			)
+		const original = readFileSync(workflowPath, "utf8")
+		const removed = original.replace(
+			"        run: |\n          bun run prove:all\n",
+			"        run: \"true\"\n",
+		)
+		expect(removed !== original, "prove:all removal mutation anchor must match").toBe(true)
+		const workflow = removed.replace(
+			"      - name: Reject generated release-surface drift\n        run: git diff --exit-code -- plugin/\n",
+			"      - name: Reject generated release-surface drift\n        run: |\n          git diff --exit-code -- plugin/\n          bun run prove:all\n",
+		)
+		expect(workflow !== removed, "prove:all relocation mutation anchor must match").toBe(true)
 		writeFileSync(workflowPath, workflow)
 
 		const result = validate(temporaryRoot)
@@ -1236,10 +1241,10 @@ test.each([
 	const temporaryRoot = copyRepository()
 	try {
 		const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
-		writeFileSync(
-			workflowPath,
-			readFileSync(workflowPath, "utf8").replace(marker, "\n  renamed-job:\n"),
-		)
+		const original = readFileSync(workflowPath, "utf8")
+		const mutated = original.replace(marker, "\n  renamed-job:\n")
+		expect(mutated !== original, "job boundary mutation anchor must match").toBe(true)
+		writeFileSync(workflowPath, mutated)
 
 		const result = validate(temporaryRoot)
 
@@ -1253,13 +1258,13 @@ test.each([
 test("release validation rejects read-only pull-request lineage permissions", () => {
 	const temporaryRoot = copyRepository()
 	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
-	writeFileSync(
-		workflowPath,
-		readFileSync(workflowPath, "utf8").replace(
-			"      issues: write\n      pull-requests: write\n    steps:\n",
-			"      issues: write\n      pull-requests: read\n    steps:\n",
-		),
+	const original = readFileSync(workflowPath, "utf8")
+	const mutated = original.replace(
+		"      issues: write\n      pull-requests: write\n    steps:\n",
+		"      issues: write\n      pull-requests: read\n    steps:\n",
 	)
+	expect(mutated !== original, "pull-request permission mutation anchor must match").toBe(true)
+	writeFileSync(workflowPath, mutated)
 
 	const result = validate(temporaryRoot)
 
@@ -1270,13 +1275,13 @@ test("release validation rejects read-only pull-request lineage permissions", ()
 test("release validation rejects extra protected release permissions", () => {
 	const temporaryRoot = copyRepository()
 	const workflowPath = join(temporaryRoot, ".github", "workflows", "release.yml")
-	writeFileSync(
-		workflowPath,
-		readFileSync(workflowPath, "utf8").replace(
-			"      pull-requests: write\n    steps:\n",
-			"      pull-requests: write\n      packages: write\n    steps:\n",
-		),
+	const original = readFileSync(workflowPath, "utf8")
+	const mutated = original.replace(
+		"      pull-requests: write\n    steps:\n",
+		"      pull-requests: write\n      packages: write\n    steps:\n",
 	)
+	expect(mutated !== original, "extra permission mutation anchor must match").toBe(true)
+	writeFileSync(workflowPath, mutated)
 
 	const result = validate(temporaryRoot)
 
