@@ -16,6 +16,7 @@ import {
 	admitPublicationCandidate,
 	validatePublicationBinding,
 	parsePublicationCandidateRecord,
+	RELEASE_WORKFLOW_PARITY_LEDGER,
 	validateCapabilitySidecars,
 	validateRepairCandidateBinding,
 	validateRepairBinding,
@@ -63,6 +64,38 @@ function validateWithArguments(cwd: string, arguments_: string[]): ReturnType<ty
 		stderr: "pipe",
 	})
 }
+
+test("release workflow parity ledger accounts for every current assertion literal", () => {
+	// Current release-validate.ts provenance: 1 action-pin + 67 whole-file + 4 negative/top-level
+	// + 4 job-boundary + 8 maintain-required + 1 maintain-forbidden + 3 release-job = 88.
+	const enumeratedLiteralCount = 88
+
+	expect(RELEASE_WORKFLOW_PARITY_LEDGER).toHaveLength(enumeratedLiteralCount)
+	for (const entry of RELEASE_WORKFLOW_PARITY_LEDGER) {
+		expect(entry.literal.length).toBeGreaterThan(0)
+		if ("dropReason" in entry) {
+			expect(entry.dropReason.length).toBeGreaterThan(0)
+			continue
+		}
+		expect(entry.tier.length).toBeGreaterThan(0)
+		expect(entry.owner.length).toBeGreaterThan(0)
+		expect(entry.comparison.length).toBeGreaterThan(0)
+	}
+})
+
+test("release validation fails closed when the release workflow is not parseable YAML", () => {
+	const temporaryRoot = copyRepository()
+	try {
+		writeFileSync(join(temporaryRoot, ".github", "workflows", "release.yml"), "jobs: [\n")
+
+		const result = validate(temporaryRoot)
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toContain("release workflow YAML could not be parsed")
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+})
 
 const allowedProjection = [
 	".claude-plugin/marketplace.json",

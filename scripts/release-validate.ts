@@ -550,6 +550,565 @@ function readJson(repositoryRoot: string, path: string): Record<string, any> {
 	return JSON.parse(readFileSync(join(repositoryRoot, path), "utf8"))
 }
 
+export type ReleaseWorkflowParityTier = "structural" | "step-run" | "raw-residual"
+
+export type ReleaseWorkflowParityLedgerEntry =
+	| {
+			literal: string
+			tier: ReleaseWorkflowParityTier
+			owner: string
+			comparison: string
+			note?: string
+			droppedAspect?: string
+	  }
+	| {
+			literal: string
+			dropReason: string
+	  }
+
+/** Migration ledger for every release-workflow assertion in the current raw validator. */
+export const RELEASE_WORKFLOW_PARITY_LEDGER = [
+	{
+		literal: "uses: <action>@<ref> + full-commit-SHA ref",
+		tier: "structural",
+		owner: "jobs.*.steps[].uses",
+		comparison: "all action references match a 40-character lowercase commit SHA",
+	},
+	{
+		literal: "skip-github-release",
+		dropReason:
+			"The workflow occurrence is comment-only; .github/release-please-config.json skip-github-release=true remains the executable assertion owner.",
+	},
+	{
+		literal: "publication-candidate-${GITHUB_SHA}",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "merge_commit_sha",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "EXPECTED_RELEASE_PLEASE_LOGIN",
+		tier: "structural",
+		owner:
+			"jobs.resolve step Resolve unique candidate or immutable repair tag env.EXPECTED_RELEASE_PLEASE_LOGIN",
+		comparison: "field present",
+	},
+	{
+		literal: "PUSH_BEFORE_SHA: ${{ github.event.before }}",
+		tier: "structural",
+		owner:
+			"jobs.resolve step Resolve unique candidate or immutable repair tag env.PUSH_BEFORE_SHA",
+		comparison: "equals ${{ github.event.before }}",
+	},
+	{
+		literal: "PUSH_FORCED: ${{ github.event.forced }}",
+		tier: "structural",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag env.PUSH_FORCED",
+		comparison: "equals ${{ github.event.forced }}",
+	},
+	{
+		literal: 'if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'if [[ "$PUSH_FORCED" != "false" ]]',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'git merge-base --is-ancestor "$PUSH_BEFORE_SHA" "$GITHUB_SHA"',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "candidate_parent_shas",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "merged_pr_base_sha",
+		tier: "structural",
+		owner: "jobs.resolve.outputs.merged_pr_base_sha",
+		comparison: "field present",
+	},
+	{
+		literal: "reviewed_pr_head_sha",
+		tier: "structural",
+		owner: "jobs.resolve.outputs.reviewed_pr_head_sha",
+		comparison: "field present",
+	},
+	{
+		literal: "trusted_base_sha",
+		tier: "structural",
+		owner: "jobs.resolve.outputs.trusted_base_sha",
+		comparison: "field present",
+	},
+	{
+		literal: "admitPublicationCandidate",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "validateResumeCandidateBinding",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'if [[ "$OPERATION" == "resume" ]]',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "gh api --include",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "404) return 0 ;;",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "Could not prove whether tag",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "publication-candidate-${RESUME_SHA}",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "Resume requires the persisted publication candidate",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "Detect a merged release candidate stranded before its tag",
+		tier: "structural",
+		owner: "jobs.maintain.steps[].name",
+		comparison: "contains exact step name",
+	},
+	{
+		literal: "-f operation=resume",
+		tier: "step-run",
+		owner: "jobs.maintain step Detect a merged release candidate stranded before its tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "scripts/release-projection.ts",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "bun run prove:all",
+		tier: "step-run",
+		owner: "jobs.package step Validate and prove release payload run",
+		comparison: "contains",
+	},
+	{
+		literal: "git diff --exit-code -- plugin/",
+		tier: "step-run",
+		owner: "jobs.package step Reject generated release-surface drift run",
+		comparison: "contains",
+	},
+	{
+		literal: "ubuntu-24.04-arm",
+		tier: "structural",
+		owner: "jobs.compatibility.strategy.matrix.include[].runner",
+		comparison: "array contains",
+	},
+	{
+		literal: "macos-15-intel",
+		tier: "structural",
+		owner: "jobs.compatibility.strategy.matrix.include[].runner",
+		comparison: "array contains",
+	},
+	{
+		literal: "SOURCE_COMMIT",
+		tier: "structural",
+		owner: "jobs.package step Validate and prove release payload env.SOURCE_COMMIT",
+		comparison: "field present",
+	},
+	{
+		literal: "ref: ${{ needs.resolve.outputs.candidate_sha }}",
+		tier: "structural",
+		owner: "jobs.{candidate,compatibility,package,release} checkout steps with.ref",
+		comparison: "every owner equals ${{ needs.resolve.outputs.candidate_sha }}",
+		note: "Strengthens the raw existential check by naming all four candidate checkout owners.",
+	},
+	{
+		literal: "workflow_policy_sha=$(git rev-parse HEAD)",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'git checkout --detach "$workflow_policy_sha"',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'trusted_base_sha=$(git rev-parse "${candidate_sha}^1")',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'git checkout --detach "$trusted_base_sha"',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "TRUSTED_BASE_SHA: ${{ needs.resolve.outputs.trusted_base_sha }}",
+		tier: "structural",
+		owner: "jobs.release step Replay current publication admission before mutation env.TRUSTED_BASE_SHA",
+		comparison: "equals ${{ needs.resolve.outputs.trusted_base_sha }}",
+	},
+	{
+		literal: "ADMITTED_MERGED_PR_BASE_SHA: ${{ needs.resolve.outputs.merged_pr_base_sha }}",
+		tier: "structural",
+		owner:
+			"jobs.release step Replay current publication admission before mutation env.ADMITTED_MERGED_PR_BASE_SHA",
+		comparison: "equals ${{ needs.resolve.outputs.merged_pr_base_sha }}",
+	},
+	{
+		literal: "ADMITTED_REVIEWED_PR_HEAD_SHA: ${{ needs.resolve.outputs.reviewed_pr_head_sha }}",
+		tier: "structural",
+		owner:
+			"jobs.release step Replay current publication admission before mutation env.ADMITTED_REVIEWED_PR_HEAD_SHA",
+		comparison: "equals ${{ needs.resolve.outputs.reviewed_pr_head_sha }}",
+	},
+	{
+		literal: 'trusted_base_sha="$TRUSTED_BASE_SHA"',
+		tier: "step-run",
+		owner: "jobs.release step Replay current publication admission before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal:
+			'if [[ "$merged_pr_base_sha" != "$ADMITTED_MERGED_PR_BASE_SHA" || "$reviewed_pr_head_sha" != "$ADMITTED_REVIEWED_PR_HEAD_SHA" ]]',
+		tier: "step-run",
+		owner: "jobs.release step Replay current publication admission before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal: 'git checkout --detach "$CANDIDATE_SHA"',
+		tier: "step-run",
+		owner: "jobs.release step Replay current publication admission before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal: 'if [[ "$(git rev-parse HEAD)" != "$CANDIDATE_SHA" ]]',
+		tier: "step-run",
+		owner: "jobs.release step Replay current publication admission before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal: 'tag -a "$RELEASE_TAG" "$CANDIDATE_SHA" -F persisted-candidate.json',
+		tier: "step-run",
+		owner: "jobs.release step Create or verify immutable tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "git for-each-ref --format='%(contents)'",
+		tier: "step-run",
+		owner: "jobs.release step Create or verify immutable tag run",
+		comparison: "contains",
+	},
+	{
+		literal: 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"',
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "trusted-repair-candidate.json",
+		tier: "step-run",
+		owner: "jobs.resolve step Resolve unique candidate or immutable repair tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "validateRepairCandidateBinding",
+		tier: "step-run",
+		owner: "jobs.release step Replay current publication admission before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal: 'git push origin "refs/tags/${RELEASE_TAG}"',
+		tier: "step-run",
+		owner: "jobs.release step Create or verify immutable tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "remote_tag_sha",
+		tier: "step-run",
+		owner: "jobs.release step Create or verify immutable tag run",
+		comparison: "contains",
+	},
+	{
+		literal: "gh release create",
+		tier: "step-run",
+		owner: "jobs.release step Create missing GitHub Release and validate target run",
+		comparison: "contains",
+	},
+	{
+		literal: "--verify-tag",
+		tier: "step-run",
+		owner: "jobs.release step Create missing GitHub Release and validate target run",
+		comparison: "contains",
+	},
+	{
+		literal: "gh release download",
+		tier: "step-run",
+		owner: "jobs.release step Compare release assets before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal: "gh release upload",
+		tier: "step-run",
+		owner: "jobs.release step Add or replace admitted release assets run",
+		comparison: "contains",
+	},
+	{
+		literal: "*.checksums.json",
+		tier: "structural",
+		owner: "jobs.package upload-artifact step with.path",
+		comparison: "parsed block scalar contains",
+	},
+	{
+		literal: "replace_mismatched_assets",
+		tier: "structural",
+		owner: "on.workflow_dispatch.inputs.replace_mismatched_assets",
+		comparison: "field present",
+	},
+	{
+		literal: "sha256sum",
+		tier: "step-run",
+		owner: "jobs.release step Compare release assets before mutation run",
+		comparison: "contains",
+	},
+	{
+		literal: "group: release-maintenance",
+		tier: "structural",
+		owner: "jobs.maintain.concurrency.group",
+		comparison: "equals release-maintenance",
+	},
+	{
+		literal: "group: release-publication-${{ needs.resolve.outputs.release_tag }}",
+		tier: "structural",
+		owner: "jobs.release.concurrency.group",
+		comparison: "equals release-publication-${{ needs.resolve.outputs.release_tag }}",
+	},
+	{
+		literal: "release-candidate-${{ github.run_id }}",
+		tier: "structural",
+		owner: "jobs.package upload-artifact with.name and jobs.release download env.ARTIFACT_NAME",
+		comparison: "producer and consumer equal",
+	},
+	{
+		literal: "release-platform-candidate-${{ github.run_id }}",
+		tier: "structural",
+		owner:
+			"jobs.candidate upload-artifact with.name and jobs.{compatibility,package} download env.ARTIFACT_NAME",
+		comparison: "producer and consumers equal",
+	},
+	{
+		literal: "bun run prove:runtime-platform",
+		tier: "step-run",
+		owner: "jobs.compatibility step Prove packaged runtime custody on this target run",
+		comparison: "contains",
+	},
+	{
+		literal: "--fixture-acknowledged",
+		tier: "step-run",
+		owner: "jobs.compatibility step Prove packaged runtime custody on this target run",
+		comparison: "contains",
+	},
+	{
+		literal: 'cmp --silent "$candidate_archive" "$rebuilt_archive"',
+		tier: "step-run",
+		owner: "jobs.package step Compare the rebuilt package with the platform-proven candidate run",
+		comparison: "contains",
+	},
+	{
+		literal: "overwrite: true",
+		tier: "structural",
+		owner: "jobs.{candidate,package} upload-artifact steps with.overwrite",
+		comparison: "every owner equals boolean true",
+	},
+	{
+		literal: "environment: release",
+		tier: "structural",
+		owner: "jobs.release.environment",
+		comparison: "equals release",
+	},
+	{
+		literal: "gh attestation verify",
+		tier: "step-run",
+		owner: "jobs.release step Check for existing matching public attestation run",
+		comparison: "contains",
+	},
+	{
+		literal: "actions/attest",
+		tier: "structural",
+		owner: "jobs.release step Add missing public release attestation uses",
+		comparison: "action name equals actions/attest",
+	},
+	{
+		literal: "github.event.repository.private == false",
+		tier: "structural",
+		owner:
+			"jobs.release steps Check for existing matching public attestation and Add missing public release attestation if",
+		comparison: "every owner expression contains",
+	},
+	{
+		literal: "parent_count",
+		tier: "raw-residual",
+		owner: ".github/workflows/release.yml raw text",
+		comparison: "forbidden anywhere including comments",
+	},
+	{
+		literal: "mergeMode",
+		tier: "raw-residual",
+		owner: ".github/workflows/release.yml raw text",
+		comparison: "forbidden anywhere including comments",
+	},
+	{
+		literal: "github.run_attempt",
+		tier: "raw-residual",
+		owner: ".github/workflows/release.yml raw text",
+		comparison: "forbidden anywhere including comments",
+	},
+	{
+		literal: "/^concurrency:/m",
+		tier: "structural",
+		owner: "workflow.concurrency",
+		comparison: "field absent",
+	},
+	{
+		literal: "\n  maintain:\n",
+		tier: "structural",
+		owner: "jobs.maintain",
+		comparison: "field present before jobs.compatibility",
+	},
+	{
+		literal: "\n  compatibility:\n",
+		tier: "structural",
+		owner: "jobs.compatibility",
+		comparison: "field present after jobs.maintain",
+	},
+	{
+		literal: "\n  release:\n",
+		tier: "structural",
+		owner: "jobs.release",
+		comparison: "field present before jobs.converge",
+	},
+	{
+		literal: "\n  converge:\n",
+		tier: "structural",
+		owner: "jobs.converge",
+		comparison: "field present after jobs.release",
+	},
+	{
+		literal: "group: release-maintenance",
+		tier: "structural",
+		owner: "jobs.maintain.concurrency.group",
+		comparison: "equals release-maintenance",
+	},
+	{
+		literal: "cancel-in-progress: false",
+		tier: "structural",
+		owner: "jobs.maintain.concurrency.cancel-in-progress",
+		comparison: "equals boolean false",
+	},
+	{
+		literal: "persist-credentials: false",
+		tier: "structural",
+		owner: "jobs.maintain checkout step with.persist-credentials",
+		comparison: "equals boolean false",
+	},
+	{
+		literal: "id: bootstrap-version",
+		tier: "structural",
+		owner: "jobs.maintain step Pin only the first release to v0.1.0 id",
+		comparison: "equals bootstrap-version",
+	},
+	{
+		literal: "jq 'length' .github/.release-please-manifest.json",
+		tier: "step-run",
+		owner: "jobs.maintain step Pin only the first release to v0.1.0 run",
+		comparison: "contains",
+	},
+	{
+		literal: 'release_as="0.1.0"',
+		tier: "step-run",
+		owner: "jobs.maintain step Pin only the first release to v0.1.0 run",
+		comparison: "contains",
+	},
+	{
+		literal: "token: ${{ secrets.RELEASE_PLEASE_TOKEN }}",
+		tier: "structural",
+		owner: "jobs.maintain step Maintain release pull request with.token",
+		comparison: "equals ${{ secrets.RELEASE_PLEASE_TOKEN }}",
+	},
+	{
+		literal: "release-as: ${{ steps.bootstrap-version.outputs.release_as }}",
+		tier: "structural",
+		owner: "jobs.maintain step Maintain release pull request with.release-as",
+		comparison: "equals ${{ steps.bootstrap-version.outputs.release_as }}",
+	},
+	{
+		literal: "secrets.GITHUB_TOKEN",
+		tier: "structural",
+		owner: "jobs.maintain",
+		comparison: "absent from parsed job scalar values",
+	},
+	{
+		literal: "    needs:\n      - resolve\n      - package\n",
+		tier: "structural",
+		owner: "jobs.release.needs",
+		comparison: "deep equals [resolve, package]",
+	},
+	{
+		literal: "group: release-publication-${{ needs.resolve.outputs.release_tag }}",
+		tier: "structural",
+		owner: "jobs.release.concurrency.group",
+		comparison: "equals release-publication-${{ needs.resolve.outputs.release_tag }}",
+	},
+	{
+		literal:
+			"    permissions:\n      actions: read\n      contents: write\n      id-token: write\n      attestations: write\n      issues: write\n      pull-requests: write\n    steps:\n",
+		tier: "structural",
+		owner: "jobs.release.permissions",
+		comparison:
+			"deep equals {actions: read, contents: write, id-token: write, attestations: write, issues: write, pull-requests: write}",
+		droppedAspect:
+			"Raw adjacency and ordering between the permissions block and steps is formatting, not parsed workflow behavior.",
+	},
+] as const satisfies readonly ReleaseWorkflowParityLedgerEntry[]
+
 function validateRepository(repositoryRoot: string) {
 	validateBunOnlyPayload(repositoryRoot)
 	const capabilitySidecars = validateCapabilitySidecars(repositoryRoot)
@@ -561,6 +1120,11 @@ function validateRepository(repositoryRoot: string) {
 	const releaseManifest = readJson(repositoryRoot, ".github/.release-please-manifest.json")
 	const releaseConfig = readJson(repositoryRoot, ".github/release-please-config.json")
 	const releaseWorkflow = readFileSync(join(repositoryRoot, ".github/workflows/release.yml"), "utf8")
+	try {
+		Bun.YAML.parse(releaseWorkflow)
+	} catch {
+		throw new Error("release workflow YAML could not be parsed")
+	}
 	const changelog = readFileSync(join(repositoryRoot, "CHANGELOG.md"), "utf8")
 
 	const version = pluginConfig.version
