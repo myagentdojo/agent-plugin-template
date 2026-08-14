@@ -11,6 +11,7 @@ import {
 	classifyApiFailure,
 	classifyDirectPushProtection,
 	classifyHostedCanaryConfiguration,
+	readRepositoryVariable,
 	classifyMergeHistoryPolicy,
 	classifyRepositorySettings,
 	classifyReleaseAutomationConfiguration,
@@ -418,6 +419,33 @@ describe("hosted-canary qualification configuration", () => {
 				registrationComplete: false,
 			}),
 		).toMatchObject({ status: "unavailable" })
+	})
+
+	describe("repository variable reads", () => {
+		test("returns the value across pages", () => {
+			expect(
+				readRepositoryVariable(
+					[
+						{ variables: [{ name: "OTHER", value: "x" }] },
+						{ variables: [{ name: "CANARY_SSH_PUBLIC_KEY", value: "ssh-ed25519 AAAA" }] },
+					],
+					"CANARY_SSH_PUBLIC_KEY",
+				),
+			).toBe("ssh-ed25519 AAAA")
+		})
+
+		test("reports a readably absent variable as empty, not unreadable", () => {
+			expect(readRepositoryVariable([{ variables: [{ name: "OTHER", value: "x" }] }], "MISSING")).toBe("")
+		})
+
+		test.each([
+			["non-array response", {}],
+			["malformed page", [{ variables: [{ name: "OK", value: "1" }] }, { notVariables: [] }]],
+			["malformed entry", [{ variables: [{ value: "no-name" }] }]],
+			["non-string value", [{ variables: [{ name: "CANARY_SSH_PUBLIC_KEY", value: 7 }] }]],
+		] as const)("fails closed on a %s rather than reporting absent", (_case, response) => {
+			expect(readRepositoryVariable(response, "CANARY_SSH_PUBLIC_KEY")).toBeUndefined()
+		})
 	})
 
 	test("reads the canary actor's keys, never this repository's deploy keys", () => {

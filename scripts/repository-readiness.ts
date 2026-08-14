@@ -648,6 +648,31 @@ function canonicalPublicKey(key: string): string {
  * public half has been deleted, SSH admission fails while every name-based check
  * stays green, so the private key is verified to still have a counterpart.
  */
+/**
+ * Read one repository variable from a paginated Actions variables response.
+ *
+ * Discarding a malformed page would report the variable as absent and tell the
+ * user to add one that may already exist, so unreadable metadata is distinct
+ * from a readable response that lacks the variable.
+ *
+ * @param response - `--paginate --slurp` pages from the Actions variables API
+ * @param name - Variable to read
+ * @returns Its value, `""` when readably absent, or `undefined` when unreadable
+ */
+export function readRepositoryVariable(response: unknown, name: string): string | undefined {
+	if (!Array.isArray(response)) return undefined
+	const entries: unknown[] = []
+	for (const page of response) {
+		if (!isRecord(page) || !Array.isArray(page.variables)) return undefined
+		entries.push(...page.variables)
+	}
+	if (entries.some((entry) => !isRecord(entry) || typeof entry.name !== "string")) return undefined
+	const match = entries.find((entry) => isRecord(entry) && entry.name === name)
+	if (match === undefined) return ""
+	const value = (match as Record<string, unknown>).value
+	return typeof value === "string" ? value : undefined
+}
+
 export function classifyHostedCanaryConfiguration(
 	environment: unknown,
 	secretsResponse: unknown,
@@ -1120,18 +1145,22 @@ function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 		.map((entry) => (isRecord(entry) && typeof entry.key === "string" ? entry.key : undefined))
 	const registrationComplete =
 		registeredPublicKeys !== undefined && registeredPublicKeys.every((key) => key !== undefined)
-	const expectedPublicKey = Array.isArray(variables.data)
-		? variables.data
-				.flatMap((page) => (Array.isArray(page?.variables) ? page.variables : []))
-				.find((entry) => isRecord(entry) && entry.name === "CANARY_SSH_PUBLIC_KEY")?.value
-		: undefined
+	const expectedPublicKey = readRepositoryVariable(variables.data, "CANARY_SSH_PUBLIC_KEY")
+	if (expectedPublicKey === undefined) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: "GitHub returned unreadable repository variable metadata; the canary key binding is unproven",
+			repair: hostedCanaryKeyBindingRepair,
+		}
+	}
 	return classifyHostedCanaryConfiguration(
 		environment.data,
 		secrets.data,
 		registeredPublicKeys
 			? {
 					registeredPublicKeys: registeredPublicKeys.filter((key) => key !== undefined),
-					expectedPublicKey: typeof expectedPublicKey === "string" ? expectedPublicKey : "",
+					expectedPublicKey,
 					actor,
 					registrationComplete,
 				}
