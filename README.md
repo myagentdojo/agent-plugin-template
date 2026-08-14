@@ -22,7 +22,7 @@ Contributors need Git and [Bun](https://bun.sh/docs/installation). Plugin consum
 | Configure GitHub release automation | Read [Configure release automation](docs/release-setup.md). |
 | Qualify fresh native capabilities | Read [Qualify fresh native capabilities](docs/native-capability-qualification.md). |
 | Publish a release | Read [Publish a release](docs/publishing.md). |
-| Maintain or repair release state | Read [Maintain or repair release state](docs/release-repair.md). |
+| Maintain, resume, or repair release state | Read [Maintain, resume, or repair release state](docs/release-repair.md). |
 | Qualify publishing-system changes with public/private canaries | Read [Qualify public and private canaries](docs/canary-qualification.md). |
 | Change the distribution architecture or its language | Read [`CONTEXT.md`](CONTEXT.md), then the relevant [ADR](docs/adr/). |
 

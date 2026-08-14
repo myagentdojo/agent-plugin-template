@@ -7,13 +7,18 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Maintain the release PR or repair an admitted immutable release
+        description: Maintain the release PR, resume a stranded untagged candidate, or repair an admitted immutable release
         required: true
         default: maintenance
         type: choice
         options:
           - maintenance
+          - resume
           - repair
+      candidate_sha:
+        description: Merged, proven, untagged candidate SHA to resume through protected publication
+        required: false
+        type: string
       release_tag:
         description: Existing vX.Y.Z tag whose incomplete publication needs repair
         required: false
@@ -61,10 +66,24 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           PUSH_FORCED: ${{ github.event.forced }}
           REPAIR_TAG: ${{ inputs.release_tag }}
+          RESUME_SHA: ${{ inputs.candidate_sha }}
           OPERATION: ${{ inputs.operation }}
         shell: bash
         run: |
           set -euo pipefail
+          # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
+          # Only a proven 404 is absence; anything else must fail closed.
+          tag_absent() {
+            local status_line status
+            status_line=$(gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>/dev/null | head -n 1 || true)
+            status=$(printf '%s' "$status_line" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+            case "$status" in
+              404) return 0 ;;
+              200) return 1 ;;
+            esac
+            echo "Could not prove whether tag $1 exists (status: ${status:-unreadable})" >&2
+            exit 1
+          }
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             if [[ "$GITHUB_REF" != "refs/heads/${BASE_BRANCH}" ]]; then
               echo "Manual release operations must run from refs/heads/${BASE_BRANCH}, not ${GITHUB_REF}." >&2
@@ -81,6 +100,129 @@ jobs:
                 echo "merged_pr_base_sha="
                 echo "reviewed_pr_head_sha="
                 echo "record_reused=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$OPERATION" == "resume" ]]; then
+              if [[ ! "$RESUME_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "Manual resume requires candidate_sha as a full 40-character commit SHA." >&2
+                exit 1
+              fi
+              workflow_policy_sha=$(git rev-parse HEAD)
+              # Resume replays the admission its original run already persisted. A
+              # missing record means no run ever proved this candidate, so resume
+              # must not mint a fresh admission from GitHub state.
+              artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=publication-candidate-${RESUME_SHA}" \
+                --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].id // empty')
+              if [[ -z "$artifact_id" ]]; then
+                echo "Resume requires the persisted publication candidate for ${RESUME_SHA}; it is absent or expired." >&2
+                echo "Recover by rerunning the original release run while its candidate artifact is retained." >&2
+                exit 1
+              fi
+              gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > resume-candidate.zip
+              unzip -p resume-candidate.zip candidate.json > persisted-candidate.json
+              cp persisted-candidate.json candidate.json
+
+              version=$(jq -er '.version | select(type == "string" and length > 0)' persisted-candidate.json)
+              release_tag="v${version}"
+              if ! tag_absent "$release_tag"; then
+                echo "Candidate tag ${release_tag} already exists; use manual incomplete-publication repair." >&2
+                exit 1
+              fi
+
+              pr_number=$(jq -er '.pullRequest | select(type == "number" and . > 0 and . == floor)' persisted-candidate.json)
+              admitted_automation_identity=$(jq -er '.automationIdentity | select(type == "string" and length > 0)' persisted-candidate.json)
+              if [[ "$admitted_automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" ]]; then
+                echo "Persisted resume identity does not match the configured Release Please identity." >&2
+                exit 1
+              fi
+              release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+              base_branch=$(jq -r .base.ref <<< "$release_pr")
+              merged_pr_base_sha=$(jq -r .base.sha <<< "$release_pr")
+              reviewed_pr_head_sha=$(jq -r .head.sha <<< "$release_pr")
+              automation_identity=$(jq -r .user.login <<< "$release_pr")
+              merge_commit_sha=$(jq -r .merge_commit_sha <<< "$release_pr")
+              merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
+              if [[ "$automation_identity" != "$EXPECTED_RELEASE_PLEASE_LOGIN" ]]; then
+                echo "Fresh resume PR identity does not match the configured Release Please identity." >&2
+                exit 1
+              fi
+              if [[ -z "$merged_at" || "$base_branch" != "$BASE_BRANCH" || "$merge_commit_sha" != "$RESUME_SHA" ]]; then
+                echo "Resume provenance does not match a merged Release Please candidate." >&2
+                exit 1
+              fi
+              candidate_commit=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${RESUME_SHA}")
+              candidate_parent_shas=$(jq -c '[.parents[].sha]' <<< "$candidate_commit")
+              trusted_base_sha=$(git rev-parse "${RESUME_SHA}^1")
+              projection=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files" \
+                | jq -sc 'add | map({filename,status,sha}) | sort_by(.filename)')
+              printf '%s\n' "$projection" > resume-projection.json
+              # The candidate's first parent owns its historical projection policy.
+              git checkout --detach "$trusted_base_sha"
+              projection_result=$(bun run scripts/release-projection.ts \
+                --base "$trusted_base_sha" \
+                --head "$RESUME_SHA" \
+                --projection resume-projection.json \
+                --json)
+              projection_digest=$(jq -r .projectionDigest <<< "$projection_result")
+              manifest_version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${RESUME_SHA}" --jq .content \
+                | tr -d '\n' | base64 --decode | jq -r .version)
+              jq -nS \
+                --argjson number "$pr_number" \
+                --arg baseBranch "$base_branch" \
+                --arg automationIdentity "$automation_identity" \
+                --arg mergeCommit "$merge_commit_sha" \
+                --arg projectionDigest "$projection_digest" \
+                --argjson candidateParentShas "$candidate_parent_shas" \
+                --arg trustedBaseSha "$trusted_base_sha" \
+                --arg mergedPrBaseSha "$merged_pr_base_sha" \
+                --arg reviewedPrHeadSha "$reviewed_pr_head_sha" \
+                --argjson changedFiles "$(jq '[.[].filename]' resume-projection.json)" \
+                --argjson changedFileStatuses "$(jq '[.[].status]' resume-projection.json)" \
+                '{number:$number,baseBranch:$baseBranch,automationIdentity:$automationIdentity,mergeCommit:$mergeCommit,changedFiles:$changedFiles,changedFileStatuses:$changedFileStatuses,projectionDigest:$projectionDigest,candidateParentShas:$candidateParentShas,trustedBaseSha:$trustedBaseSha,mergedPrBaseSha:$mergedPrBaseSha,reviewedPrHeadSha:$reviewedPrHeadSha}' \
+                > trusted-resume-candidate.json
+              # The workflow source owns the current identity and topology contract.
+              git checkout --detach "$workflow_policy_sha"
+              RESUME_REPOSITORY="$GITHUB_REPOSITORY" \
+              RESUME_BASE_BRANCH="$BASE_BRANCH" \
+              RESUME_AUTOMATION_LOGIN="$EXPECTED_RELEASE_PLEASE_LOGIN" \
+              RESUME_CANDIDATE_SHA="$RESUME_SHA" \
+              RESUME_VERSION="$manifest_version" \
+                bun -e '
+                  import { readFileSync } from "node:fs";
+                  import { validateResumeCandidateBinding } from "./scripts/release-validate.ts";
+                  const {
+                    candidateParentShas,
+                    trustedBaseSha,
+                    mergedPrBaseSha,
+                    reviewedPrHeadSha,
+                    ...trustedCandidate
+                  } = JSON.parse(readFileSync("trusted-resume-candidate.json", "utf8"));
+                  validateResumeCandidateBinding({
+                    candidate: JSON.parse(readFileSync("persisted-candidate.json", "utf8")),
+                    trustedCandidate,
+                    candidateParentShas,
+                    trustedBaseSha,
+                    mergedPrBaseSha,
+                    reviewedPrHeadSha,
+                    repository: process.env.RESUME_REPOSITORY ?? "",
+                    expectedBaseBranch: process.env.RESUME_BASE_BRANCH ?? "",
+                    expectedAutomationIdentities: [process.env.RESUME_AUTOMATION_LOGIN ?? ""],
+                    candidateSha: process.env.RESUME_CANDIDATE_SHA ?? "",
+                    manifestVersion: process.env.RESUME_VERSION ?? "",
+                    tagExists: false,
+                  });
+                '
+              {
+                echo "mode=resume"
+                echo "candidate_sha=${RESUME_SHA}"
+                echo "release_tag=${release_tag}"
+                echo "version=${version}"
+                echo "release_target_sha="
+                echo "trusted_base_sha=${trusted_base_sha}"
+                echo "merged_pr_base_sha=${merged_pr_base_sha}"
+                echo "reviewed_pr_head_sha=${reviewed_pr_head_sha}"
+                echo "record_reused=true"
               } >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -276,7 +418,7 @@ jobs:
           version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${GITHUB_SHA}" --jq .content \
             | tr -d '\n' | base64 --decode | jq -r .version)
           release_tag="v${version}"
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" >/dev/null 2>&1; then
+          if ! tag_absent "$release_tag"; then
             echo "Candidate tag ${release_tag} already exists; use manual incomplete-publication repair." >&2
             exit 1
           fi
@@ -411,6 +553,53 @@ jobs:
             echo "Release Please token identity ${actual_login} does not match configured identity ${EXPECTED_RELEASE_PLEASE_LOGIN}." >&2
             exit 1
           fi
+      # Release Please aborts silently on an untagged merged release PR. Detect that
+      # state first and name the exact recovery command, so a stranded candidate
+      # cannot quietly stop every later release.
+      - name: Detect a merged release candidate stranded before its tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
+          # Only a proven 404 is absence; anything else must fail closed.
+          tag_absent() {
+            local status_line status
+            status_line=$(gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>/dev/null | head -n 1 || true)
+            status=$(printf '%s' "$status_line" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+            case "$status" in
+              404) return 0 ;;
+              200) return 1 ;;
+            esac
+            echo "Could not prove whether tag $1 exists (status: ${status:-unreadable})" >&2
+            exit 1
+          }
+          # Let this API failure propagate. Swallowing it would read as
+          # "nothing stranded" and let maintenance stop silently again.
+          stranded=$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/issues?state=closed&labels=autorelease:%20pending&per_page=100" \
+            --jq '[.[] | select(.pull_request != null) | .number] | .[]')
+          for pr_number in $stranded; do
+            release_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+            merged_at=$(jq -r '.merged_at // empty' <<< "$release_pr")
+            merge_commit_sha=$(jq -r '.merge_commit_sha // empty' <<< "$release_pr")
+            [[ -n "$merged_at" && "$merge_commit_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+            version=$(gh api "repos/${GITHUB_REPOSITORY}/contents/plugin.config.json?ref=${merge_commit_sha}" --jq .content \
+              | tr -d '\n' | base64 --decode | jq -r .version)
+            if ! tag_absent "v${version}"; then
+              continue
+            fi
+            echo "Release PR #${pr_number} merged at ${merge_commit_sha} but v${version} was never tagged." >&2
+            echo "Release Please will abort until this candidate is published or its lineage is reconciled." >&2
+            echo "Resume the proven candidate through the protected release environment:" >&2
+            echo "" >&2
+            echo "  gh workflow run Release \\" >&2
+            echo "    --repo ${GITHUB_REPOSITORY} \\" >&2
+            echo "    --ref main \\" >&2
+            echo "    -f operation=resume \\" >&2
+            echo "    -f candidate_sha=${merge_commit_sha}" >&2
+            exit 1
+          done
       # skip-github-release is set in release-please config. The action may maintain PRs but cannot tag or create a GitHub Release.
       - name: Maintain release pull request
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
@@ -422,7 +611,10 @@ jobs:
 
   candidate:
     name: Build release candidate once
-    if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair'
+    if: >-
+      needs.resolve.outputs.mode == 'publish' ||
+      needs.resolve.outputs.mode == 'resume' ||
+      needs.resolve.outputs.mode == 'repair'
     needs: resolve
     permissions:
       actions: read
@@ -451,7 +643,7 @@ jobs:
 
   compatibility:
     name: Release compatibility (${{ matrix.target }})
-    if: needs.resolve.outputs.mode == 'publish'
+    if: needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'resume'
     needs:
       - resolve
       - candidate
@@ -502,7 +694,9 @@ jobs:
       always() &&
       needs.resolve.result == 'success' &&
       needs.candidate.result == 'success' &&
-      (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair') &&
+      (needs.resolve.outputs.mode == 'publish' ||
+        needs.resolve.outputs.mode == 'resume' ||
+        needs.resolve.outputs.mode == 'repair') &&
       (needs.compatibility.result == 'success' ||
         (needs.resolve.outputs.mode == 'repair' && needs.compatibility.result == 'skipped'))
     needs:
@@ -582,7 +776,9 @@ jobs:
       always() &&
       needs.resolve.result == 'success' &&
       needs.package.result == 'success' &&
-      (needs.resolve.outputs.mode == 'publish' || needs.resolve.outputs.mode == 'repair')
+      (needs.resolve.outputs.mode == 'publish' ||
+        needs.resolve.outputs.mode == 'resume' ||
+        needs.resolve.outputs.mode == 'repair')
     needs:
       - resolve
       - package
@@ -650,6 +846,19 @@ jobs:
           EXPECTED_RELEASE_PLEASE_LOGIN: ${{ vars.RELEASE_PLEASE_AUTOMATION_LOGIN || 'github-actions[bot]' }}
         run: |
           set -euo pipefail
+          # gh exits 1 for every failure, so a nonzero status cannot mean "absent".
+          # Only a proven 404 is absence; anything else must fail closed.
+          tag_absent() {
+            local status_line status
+            status_line=$(gh api --include "repos/${GITHUB_REPOSITORY}/git/ref/tags/$1" 2>/dev/null | head -n 1 || true)
+            status=$(printf '%s' "$status_line" | sed -n 's|^HTTP/[0-9.]* \([0-9][0-9][0-9]\).*|\1|p')
+            case "$status" in
+              404) return 0 ;;
+              200) return 1 ;;
+            esac
+            echo "Could not prove whether tag $1 exists (status: ${status:-unreadable})" >&2
+            exit 1
+          }
           checkout_sha=$(git rev-parse HEAD)
           if [[ "$checkout_sha" != "$CANDIDATE_SHA" ]]; then
             echo "Release admission replay is not checked out at the proven candidate SHA." >&2
@@ -763,7 +972,7 @@ jobs:
               '
           else
             publish_tag_exists=false
-            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            if ! tag_absent "$RELEASE_TAG"; then
               publish_tag_exists=true
             fi
             PUBLISH_REPOSITORY="$GITHUB_REPOSITORY" \
@@ -850,7 +1059,7 @@ jobs:
             echo "Immutable remote tag does not target the proven candidate SHA." >&2
             exit 1
           fi
-          if [[ -z "$remote_tag_sha" && "$MODE" == "publish" ]]; then
+          if [[ -z "$remote_tag_sha" && ( "$MODE" == "publish" || "$MODE" == "resume" ) ]]; then
             if [[ -n "$local_tag_sha" && "$local_tag_sha" != "$CANDIDATE_SHA" ]]; then
               echo "Local release tag does not target the proven candidate SHA." >&2
               exit 1
@@ -1027,7 +1236,7 @@ jobs:
                   "$PACKAGE_RESULT" == "skipped" &&
                   "$RELEASE_RESULT" == "skipped" ]] && converged=true
                 ;;
-              publish)
+              publish|resume)
                 [[ "$MAINTAIN_RESULT" == "skipped" &&
                   "$CANDIDATE_RESULT" == "success" &&
                   "$COMPATIBILITY_RESULT" == "success" &&

@@ -31,6 +31,7 @@ Build one Git-distributed plugin payload for Claude Code and Codex. Keep shared 
 - Fresh native completion: follow `docs/native-capability-qualification.md`; every bounded cell needs a human-recorded result bound to one candidate.
 - Hosted or PR completion: follow `docs/pull-requests-and-ci.md`; every required check must pass on the current head. Revalidate canaries, safeguards, and release state before release claims.
 - Raw native receipts: follow the private XDG location, permissions, and promotion boundary in `docs/native-capability-qualification.md`.
+- Never let a failed check read as a satisfied one. In verification code, distinguish "proved absent" from "could not prove", and fail closed on the second. This is the recurring defect in the release and readiness paths: `|| true` turning an API outage into an empty result, a `gh` exit code standing in for a 404, an unrelated object answering for the one that was asked about, a discarded malformed page reporting a value as missing. Each reported healthy while the thing it guarded was broken. Prefer an explicit status check over an exit code, and give the unprovable case its own outcome rather than folding it into the negative one.
 - Preserve the consumer contract: no user-managed Bun, Node.js, Python, npm, or setup command.
 
 Initialization, development, installation, replacement, qualification, or release: start at `README.md`'s **Choose a path** index.
