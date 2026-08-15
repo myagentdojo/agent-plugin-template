@@ -1150,6 +1150,7 @@ export function installCandidate(
 			target.remote,
 			target.candidateRef.replace(/^refs\/heads\//, ""),
 			sourceSha,
+			environment,
 		)
 		const manifestVersion = validateLineageManifestVersion(proof.preflight.manifestVersion)
 		const manifestName = (
