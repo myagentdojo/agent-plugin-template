@@ -188,6 +188,8 @@ interface RecordedCommand {
 	options: CommandRunOptions
 }
 
+const HTTPS_HELPER_PASSWORD = "fake"
+
 class RecordingCommandRunner implements CommandRunner {
 	readonly commands: RecordedCommand[] = []
 	private pushAttempted = false
@@ -214,7 +216,7 @@ class RecordingCommandRunner implements CommandRunner {
 
 		if (command[0] === "gh" && command[1] === "api" && command[2] === "user") {
 			return output(
-				options.environment?.GH_TOKEN === "fake"
+				options.environment?.GH_TOKEN === HTTPS_HELPER_PASSWORD
 					? (this.scenario.httpsServerIdentity ?? "myagentdojo")
 					: "myagentdojo",
 			)
@@ -254,7 +256,9 @@ class RecordingCommandRunner implements CommandRunner {
 			)
 		}
 		if (command[0] === "git" && command[1] === "credential" && command[2] === "fill") {
-			return output("protocol=https\nhost=github.com\nusername=myagentdojo\npassword=fake\n")
+			return output(
+				`protocol=https\nhost=github.com\nusername=myagentdojo\npassword=${HTTPS_HELPER_PASSWORD}\n`,
+			)
 		}
 		if (
 			command[0] === "git" &&
@@ -808,7 +812,10 @@ test("hosted polling → bounds a hung network child by the outer deadline", asy
 	expect(Date.now() - startedAt).toBeLessThan(2000)
 	const polls = runner.commands.filter((record) => record.command[1] === "run")
 	expect(polls.length).toBeGreaterThan(0)
-	expect(polls.every((command) => (command.options.timeout ?? 0) <= 25)).toBe(true)
+	for (const poll of polls) {
+		expect(poll.options.timeout).toBeDefined()
+		expect(poll.options.timeout).toBeLessThanOrEqual(25)
+	}
 })
 
 test("create-only candidate push → accepts an identical winner but rejects a conflicting race", async () => {
@@ -1023,10 +1030,24 @@ test("HTTPS preflight rejects a helper token owned by another GitHub user", () =
 		fixture.temporaryRoot,
 	)
 
-	expect(() => preflight(recordingPublishOptions(fixture.temporaryRoot), dependencies)).toThrow(
-		"Git transport identity",
+	let failure: unknown
+	try {
+		preflight(recordingPublishOptions(fixture.temporaryRoot), dependencies)
+	} catch (error) {
+		failure = error
+	}
+	expect(String(failure)).toContain("Git transport identity")
+	expect(String(failure)).not.toContain(HTTPS_HELPER_PASSWORD)
+	expect(
+		runner.commands.flatMap((record) => [...record.command, record.options.input ?? ""]),
+	).not.toContain(expect.stringContaining(HTTPS_HELPER_PASSWORD))
+	const tokenCommands = runner.commands.filter((record) =>
+		Object.values(record.options.environment ?? {}).includes(HTTPS_HELPER_PASSWORD),
 	)
-	expect(JSON.stringify(runner.commands.map((record) => record.command))).not.toContain("password=fake")
+	expect(tokenCommands.map((record) => record.command.slice(0, 3))).toEqual([
+		["gh", "api", "user"],
+	])
+	expect(runner.commands.some((record) => record.command[1] === "push")).toBe(false)
 })
 
 function targets(sourceSha: string): Target[] {

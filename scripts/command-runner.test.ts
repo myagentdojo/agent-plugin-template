@@ -43,3 +43,9 @@ test("Bun command adapter → gives a timed-out child a stable exit code", () =>
 
 	expect(result.exitCode).toBe(124)
 })
+
+test("Bun command adapter → distinguishes signal termination from timeout", () => {
+	const result = bunCommandRunner.run(["sh", "-c", "kill -TERM $$"])
+
+	expect(result.exitCode).toBe(143)
+})

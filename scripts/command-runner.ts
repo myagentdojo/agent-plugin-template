@@ -1,3 +1,5 @@
+import { constants as osConstants } from "node:os"
+
 /** Options that preserve the subprocess semantics a caller intentionally selects. */
 export interface CommandRunOptions {
 	/** Working directory for the child process. */
@@ -59,8 +61,13 @@ export const bunCommandRunner: CommandRunner = {
 		const stdout = result.stdout.toString()
 		const stderr = result.stderr.toString()
 		const trimOutput = options.trimOutput ?? true
+		const signalNumber = result.signalCode
+			? osConstants.signals[result.signalCode as keyof typeof osConstants.signals]
+			: undefined
 		return {
-			exitCode: result.exitCode ?? 124,
+			exitCode:
+				result.exitCode ??
+				(result.exitedDueToTimeout ? 124 : signalNumber === undefined ? 1 : 128 + signalNumber),
 			stdout: trimOutput ? stdout.trim() : stdout,
 			stderr: trimOutput ? stderr.trim() : stderr,
 		}
