@@ -2,6 +2,11 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
+import {
+	type ProofControlEnvelope,
+	requireProofControlEnvelope,
+} from "./proof-control-envelope"
+
 const root = resolve(import.meta.dir, "..")
 const negativeSuiteFile = "scripts/runtime-custody-exec.test.ts"
 
@@ -23,15 +28,6 @@ chmodSync(isolationRoot, 0o700)
 const cacheRoot = join(isolationRoot, "cache")
 mkdirSync(cacheRoot, { mode: 0o700 })
 
-interface Envelope {
-	schemaVersion: number
-	ok: boolean
-	code: string
-	sideEffects: string[]
-	retrySafe: boolean
-	nextAction: string
-}
-
 function runEngine(args: string[]): ReturnType<typeof Bun.spawnSync> {
 	return Bun.spawnSync({
 		cmd: [join(root, "plugin", "runtime", "runtime-exec"), ...args],
@@ -50,18 +46,14 @@ function requireEnvelope(
 	step: string,
 	result: ReturnType<typeof Bun.spawnSync>,
 	expected: { exitCode: number; ok: boolean; code: string },
-): Envelope {
-	if (result.exitCode !== expected.exitCode) {
-		throw new Error(
-			`${step}: expected exit ${expected.exitCode}, received ${result.exitCode}\n${result.stderr.toString()}`,
-		)
-	}
-	const lines = result.stdout.toString().trim().split("\n")
-	if (lines.length !== 1) {
-		throw new Error(`${step}: expected exactly one JSON control line, received ${lines.length}`)
-	}
-	const envelope = JSON.parse(lines[0]) as Envelope
-	if (envelope.ok !== expected.ok || envelope.code !== expected.code) {
+): ProofControlEnvelope {
+	const envelope = requireProofControlEnvelope(
+		step,
+		result,
+		expected.exitCode,
+		expected.code,
+	)
+	if (envelope.ok !== expected.ok) {
 		throw new Error(
 			`${step}: expected ok=${expected.ok} code=${expected.code}, received ok=${envelope.ok} code=${envelope.code}`,
 		)
