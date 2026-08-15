@@ -794,14 +794,16 @@ test("public candidate rejects an ignored secret before copying checkout bytes",
 test("hosted polling → bounds a hung network child by the outer deadline", async () => {
 	const fixture = recordingCanaryFixture()
 	const startedAt = Date.now()
-	const { evidence, runner, dependencies } = runRecordingPreflight(
-		fixture,
-		{ hostedTimeout: true },
-		recordingCanaryEnvironment({
+	const environment = recordingCanaryEnvironment({
 		CANARY_HOSTED_RUN_DEADLINE_MS: "120",
 		CANARY_NETWORK_COMMAND_TIMEOUT_MS: "25",
 		CANARY_HOSTED_POLL_DELAY_MS: "5",
-		}),
+		GH_TOKEN: "qualification-token",
+	})
+	const { evidence, runner, dependencies } = runRecordingPreflight(
+		fixture,
+		{ hostedTimeout: true },
+		environment,
 	)
 
 	await expect(qualifyTargets(evidence.targets, evidence.sourceSha, dependencies)).rejects.toMatchObject({
@@ -815,6 +817,7 @@ test("hosted polling → bounds a hung network child by the outer deadline", asy
 	for (const poll of polls) {
 		expect(poll.options.timeout).toBeDefined()
 		expect(poll.options.timeout).toBeLessThanOrEqual(25)
+		expect(poll.options.environment).toEqual(environment)
 	}
 })
 

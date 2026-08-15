@@ -986,7 +986,11 @@ async function waitForRun(
 			"1",
 			"--json",
 			"databaseId,status,conclusion,url",
-		], { workingDirectory: workingRoot, timeout: Math.min(commandTimeoutMs, remaining) })
+		], {
+			workingDirectory: workingRoot,
+			environment,
+			timeout: Math.min(commandTimeoutMs, remaining),
+		})
 		if (result.exitCode === 0) {
 			try {
 				const runs = JSON.parse(result.stdout || "[]") as Array<typeof run>
