@@ -21,6 +21,7 @@ import {
 	nativeHarnessEnvironment,
 	promoteNativeQualificationEvidence,
 	proveHarnessInstall,
+	proveHostedHarnessInstall,
 	proveInstalledCapabilityEvidence,
 	redactTemporaryEvidencePath,
 	resolveCleanSourceCommit,
@@ -522,6 +523,62 @@ test("native harness commands receive no publication credentials", () => {
 		SSH_AUTH_SOCK: "/tmp/agent.sock",
 	})
 	expect(JSON.stringify(environment)).not.toContain("secret")
+})
+
+test("hosted proof honors an injected environment for CLI lookup before checkout", () => {
+	const executableRoot = mkdtempSync(join(tmpdir(), "hosted-harness-missing-path-"))
+	try {
+		expect(() =>
+			proveHostedHarnessInstall(
+				join(executableRoot, "deliberately-absent-checkout"),
+				"https://github.com/myagentdojo/private-canary.git",
+				`candidate/${"a".repeat(40)}`,
+				"a".repeat(40),
+				{ PATH: executableRoot },
+			),
+		).toThrow("native harness CLIs are required for hosted marketplace proof")
+	} finally {
+		rmSync(executableRoot, { recursive: true, force: true })
+	}
+})
+
+test("both native clients derive isolated homes from the injected environment", () => {
+	const injected = {
+		PATH: "/injected/bin",
+		GIT_CONFIG_GLOBAL: "/injected/gitconfig",
+		SSH_AUTH_SOCK: "/injected/agent.sock",
+		GH_TOKEN: "publication-secret",
+		GITHUB_TOKEN: "publication-secret",
+		CANARY_GH_TOKEN: "publication-secret",
+		CANARY_SSH_PRIVATE_KEY: "publication-secret",
+		RELEASE_PLEASE_TOKEN: "publication-secret",
+	}
+	const claude = nativeHarnessEnvironment(injected, {
+		client: "claude",
+		home: "/isolated/claude",
+	})
+	const codex = nativeHarnessEnvironment(injected, {
+		client: "codex",
+		home: "/isolated/codex",
+	})
+
+	expect(claude).toEqual({
+		PATH: "/injected/bin",
+		GIT_CONFIG_GLOBAL: "/injected/gitconfig",
+		SSH_AUTH_SOCK: "/injected/agent.sock",
+		CLAUDE_CONFIG_DIR: "/isolated/claude",
+		CI: "1",
+		NO_COLOR: "1",
+	})
+	expect(codex).toEqual({
+		PATH: "/injected/bin",
+		GIT_CONFIG_GLOBAL: "/injected/gitconfig",
+		SSH_AUTH_SOCK: "/injected/agent.sock",
+		CODEX_HOME: "/isolated/codex",
+		CI: "1",
+		NO_COLOR: "1",
+	})
+	expect(JSON.stringify({ claude, codex })).not.toContain("publication-secret")
 })
 
 test.each([

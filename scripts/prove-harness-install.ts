@@ -747,7 +747,8 @@ export function comparePayload(checkout: TaggedCheckout, installedPath: string):
  * Build the minimal process environment native plugin CLIs need without forwarding credentials.
  *
  * @param environment - Parent process environment that may contain publication credentials
- * @returns Allowlisted shell, locale, temporary-directory, and SSH-agent settings
+ * @param isolatedClient - Optional native client and isolated home owned by the proof
+ * @returns Allowlisted process settings with an optional isolated client home
  *
  * @example
  * ```ts
@@ -756,6 +757,7 @@ export function comparePayload(checkout: TaggedCheckout, installedPath: string):
  */
 export function nativeHarnessEnvironment(
 	environment: Record<string, string | undefined>,
+	isolatedClient?: { client: "claude" | "codex"; home: string },
 ): Record<string, string | undefined> {
 	const allowed = [
 		"PATH",
@@ -777,17 +779,31 @@ export function nativeHarnessEnvironment(
 		"XDG_CACHE_HOME",
 		"XDG_DATA_HOME",
 	] as const
-	return Object.fromEntries(
+	const base = Object.fromEntries(
 		allowed.flatMap((name) => environment[name] === undefined ? [] : [[name, environment[name]]]),
 	)
+	if (!isolatedClient) return base
+	return {
+		...base,
+		[isolatedClient.client === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"]:
+			isolatedClient.home,
+		CI: "1",
+		NO_COLOR: "1",
+	}
 }
 
-function claudeEnvironment(home: string): Record<string, string | undefined> {
-	return { ...nativeHarnessEnvironment(process.env), CLAUDE_CONFIG_DIR: home, CI: "1", NO_COLOR: "1" }
+function claudeEnvironment(
+	home: string,
+	environment: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+	return nativeHarnessEnvironment(environment, { client: "claude", home })
 }
 
-function codexEnvironment(home: string): Record<string, string | undefined> {
-	return { ...nativeHarnessEnvironment(process.env), CODEX_HOME: home, CI: "1", NO_COLOR: "1" }
+function codexEnvironment(
+	home: string,
+	environment: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+	return nativeHarnessEnvironment(environment, { client: "codex", home })
 }
 
 function findClaudeInstall(
@@ -975,19 +991,34 @@ export function hostedMarketplaceSources(
  *
  * The candidate checkout supplies expected bytes only. Both harnesses fetch the hosted repository
  * independently, so a local fixture cannot satisfy this proof.
+ *
+ * @param sourceRoot - Candidate checkout supplying expected manifest identity and payload bytes
+ * @param remote - Hosted marketplace Git remote fetched independently by each client
+ * @param ref - Immutable candidate ref both native clients must install
+ * @param expectedSha - Full commit SHA expected for the candidate checkout
+ * @param environment - Base worker environment used for CLI lookup and sanitized client processes
+ * @returns Candidate-bound native install and payload hash evidence for both clients
+ * @throws {Error} When CLI discovery, manifest identity, installation, or payload lineage fails
+ *
+ * @example
+ * ```ts
+ * proveHostedHarnessInstall(checkoutRoot, remote, candidateRef, candidateSha, process.env)
+ * ```
  */
 export function proveHostedHarnessInstall(
 	sourceRoot: string,
 	remote: string,
 	ref: string,
 	expectedSha: string,
+	environment: Record<string, string | undefined> = process.env,
 ): HostedHarnessInstallProof {
 	if (!ref || !/^[a-f0-9]{40}$/.test(expectedSha)) {
 		throw new Error("hosted marketplace proof requires a ref and full expected commit SHA")
 	}
 	const sources = hostedMarketplaceSources(remote, ref)
-	const claudeExecutable = Bun.which("claude")
-	const codexExecutable = Bun.which("codex")
+	const executablePath = environment.PATH ?? ""
+	const claudeExecutable = Bun.which("claude", { PATH: executablePath })
+	const codexExecutable = Bun.which("codex", { PATH: executablePath })
 	if (!claudeExecutable || !codexExecutable) {
 		throw new Error("native harness CLIs are required for hosted marketplace proof")
 	}
@@ -1019,7 +1050,7 @@ export function proveHostedHarnessInstall(
 		const claudeProject = join(temporaryRoot, "claude", "project")
 		mkdirSync(claudeHome, { recursive: true })
 		mkdirSync(claudeProject, { recursive: true })
-		const claudeEnv = claudeDriverDependencies.environment(claudeHome)
+		const claudeEnv = claudeEnvironment(claudeHome, environment)
 		claudeDriverDependencies.addMarketplace(
 			claudeExecutable,
 			sources.claude,
@@ -1062,7 +1093,7 @@ export function proveHostedHarnessInstall(
 			codexExecutable,
 			sources.codex,
 			pluginId,
-			codexEnvironment(codexHome),
+			codexEnvironment(codexHome, environment),
 			codexProject,
 			ref,
 		)
