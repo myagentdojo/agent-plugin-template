@@ -66,8 +66,9 @@ export const bunCommandRunner: CommandRunner = {
 			: undefined
 		return {
 			exitCode:
-				result.exitCode ??
-				(result.exitedDueToTimeout ? 124 : signalNumber === undefined ? 1 : 128 + signalNumber),
+				result.exitedDueToTimeout
+					? 124
+					: (result.exitCode ?? (signalNumber === undefined ? 1 : 128 + signalNumber)),
 			stdout: trimOutput ? stdout.trim() : stdout,
 			stderr: trimOutput ? stderr.trim() : stderr,
 		}

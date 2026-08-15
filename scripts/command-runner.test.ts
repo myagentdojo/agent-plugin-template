@@ -44,6 +44,19 @@ test("Bun command adapter → gives a timed-out child a stable exit code", () =>
 	expect(result.exitCode).toBe(124)
 })
 
+test("Bun command adapter → timeout wins when the child handles SIGTERM", () => {
+	const result = bunCommandRunner.run(
+		[
+			process.execPath,
+			"-e",
+			'process.on("SIGTERM", () => process.exit(0)); await Bun.sleep(1000)',
+		],
+		{ timeout: 50 },
+	)
+
+	expect(result.exitCode).toBe(124)
+})
+
 test("Bun command adapter → distinguishes signal termination from timeout", () => {
 	const result = bunCommandRunner.run(["sh", "-c", "kill -TERM $$"])
 
