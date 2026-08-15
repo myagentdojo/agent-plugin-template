@@ -1,19 +1,16 @@
 import {
-	chmodSync,
 	cpSync,
-	existsSync,
-	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { basename, dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 
-import { expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 
+import type { CommandOutput, CommandRunOptions, CommandRunner } from "./command-runner"
 import {
 	CanaryError,
 	PUBLISHING_SYSTEM_PATHS,
@@ -22,16 +19,24 @@ import {
 	bindCandidateQualificationLineage,
 	bindTrustedPrivateRun,
 	candidateRefForSource,
+	classifyCanaryChanges,
 	classifyPublishingSystemChanges,
+	createQualificationDependencies,
 	createSanitizedPublicCandidate,
+	preflight,
 	qualifyTargets,
+	runCanary,
 	validateLineageManifestVersion,
 	type CandidateInstallEvidence,
+	type ClassifyOptions,
+	type PublishOptions,
+	type QualificationDependencies,
 	type Target,
 } from "./ship-canary"
 
 const root = resolve(import.meta.dir, "..")
-const ignoredEntries = new Set([".claude", ".dev", ".git", ".worktrees", "dist", "node_modules"])
+const sourceSha = "0123456789abcdef0123456789abcdef01234567"
+const publicCandidateSha = "cccccccccccccccccccccccccccccccccccccccc"
 
 test("candidate qualification lineage binds package and installed bytes to one source", () => {
 	const sourceCommit = "1".repeat(40)
@@ -79,219 +84,358 @@ test.each(["1.2", "01.2.3", "1.2.3/../../escape", `1.2.3+${"a".repeat(64)}`])(
 	},
 )
 
-function executable(path: string, contents: string): void {
-	writeFileSync(path, contents)
-	chmodSync(path, 0o755)
-}
-
-function canaryFixture(): { temporaryRoot: string; fakeBin: string; log: string } {
-	const temporaryRoot = mkdtempSync(join(tmpdir(), "agent-plugin-template-canary-"))
-	cpSync(root, temporaryRoot, {
-		recursive: true,
-		filter: (source) => source === root || !ignoredEntries.has(basename(source)),
-	})
-	const initialized = Bun.spawnSync({
-		cmd: [
-			process.execPath,
-			"run",
-			"init",
-			"--",
-			"--name",
-			"dojo-hello",
-			"--author",
-			"My Agent Dojo",
-			"--repository",
-			"https://github.com/myagentdojo/dojo-hello",
-			"--force",
-		],
-		cwd: temporaryRoot,
+test("public canary process → renders help without touching hosted systems", () => {
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "scripts/ship-canary.ts", "--help"],
+		cwd: root,
 		stdout: "pipe",
 		stderr: "pipe",
 	})
-	expect(initialized.exitCode, initialized.stderr.toString()).toBe(0)
-
-	const fakeBin = join(temporaryRoot, ".test-bin")
-	const log = join(temporaryRoot, "commands.log")
-	mkdirSync(fakeBin)
-	executable(
-		join(fakeBin, "gh"),
-		`#!/bin/sh
-if [ "$1" = "api" ] && [ "$2" = "user" ]; then
-  if [ "\${GH_TOKEN:-}" = "fake" ]; then echo "\${FAKE_HTTPS_SERVER_IDENTITY:-myagentdojo}"; else echo myagentdojo; fi
-  exit 0
-fi
-if [ "$1" = "repo" ] && [ "$2" = "create" ]; then printf 'gh-create %s\n' "$*" >> "$FAKE_LOG"; exit 0; fi
-if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
-	if [ "$FAKE_MISSING_REPO" = "1" ]; then exit 44; fi
-	if [ "$FAKE_WRONG_VISIBILITY" = "1" ]; then echo PRIVATE; exit 0; fi
-  case "$3" in
-    *public-canary) echo PUBLIC ;;
-    *private-canary) echo PRIVATE ;;
-    *) exit 44 ;;
-  esac
-  exit 0
-fi
-if [ "$1" = "run" ] && [ "$2" = "list" ]; then
-	if [ "$FAKE_HOSTED_HANG" = "1" ]; then sleep 10; exit 88; fi
-	if [ "$FAKE_HOSTED_FAILURE" = "1" ]; then echo '[{"databaseId":303,"status":"completed","conclusion":"failure","url":"https://github.com/failure/run/303"}]'; exit 0; fi
-  case "$4" in
-    *public-canary) echo '[{"databaseId":101,"status":"completed","conclusion":"success","url":"https://github.com/public/run/101"}]' ;;
-    *private-canary) echo '[{"databaseId":202,"status":"completed","conclusion":"success","url":"https://github.com/private/run/202"}]' ;;
-    *) exit 45 ;;
-  esac
-  exit 0
-fi
-echo "unexpected gh command: $*" >&2
-exit 90
-`,
-	)
-	executable(
-		join(fakeBin, "ssh"),
-		`#!/bin/sh
-if [ -n "\${FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE:-}" ]; then
-  case " $* " in *" -o UserKnownHostsFile=$FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE "*) ;; *) exit 93 ;; esac
-  case " $* " in *" -o GlobalKnownHostsFile=/dev/null "*) ;; *) exit 94 ;; esac
-fi
-if [ -n "\${FAKE_EXPECTED_SSH_IDENTITY_FILE:-}" ]; then
-  case " $* " in *" -F /dev/null "*) ;; *) exit 95 ;; esac
-  case " $* " in *" -o IdentityAgent=none "*) ;; *) exit 96 ;; esac
-  case " $* " in *" -i $FAKE_EXPECTED_SSH_IDENTITY_FILE "*) ;; *) exit 97 ;; esac
-  case " $* " in *" -o IdentitiesOnly=yes "*) ;; *) exit 98 ;; esac
-fi
-printf "Hi %s! You've successfully authenticated, but GitHub does not provide shell access.\n" "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}" >&2
-exit 1
-`,
-	)
-	executable(
-		join(fakeBin, "git"),
-		`#!/bin/sh
-FAKE_LOG="\${FAKE_LOG:-${log}}"
-if [ "$1" = "-c" ] && [ "$2" = "core.quotePath=false" ]; then shift 2; fi
-if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo "\${FAKE_ORIGIN:-git@github-myagentdojo:myagentdojo/dojo-hello.git}"; exit 0; fi
-if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo 0123456789abcdef0123456789abcdef01234567; exit 0; fi
-if [ "$1" = "init" ]; then exit 0; fi
-if [ "$1" = "add" ]; then exit 0; fi
-if [ "$1" = "write-tree" ]; then printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'; exit 0; fi
-if [ "$1" = "commit-tree" ]; then printf 'cccccccccccccccccccccccccccccccccccccccc\n'; exit 0; fi
-if [ "$1" = "status" ] && [ "$2" = "--porcelain" ]; then
-	if [ "$3" = "--untracked-files=all" ] && [ "$FAKE_UNTRACKED_DISTRIBUTION" = "1" ]; then echo '?? plugin/injected.js'; fi
-	exit 0
-fi
-if [ "$1" = "ls-files" ]; then
-	if [ "$FAKE_IGNORED_DISTRIBUTION" = "1" ]; then printf 'plugin/ignored-secret.txt\\0'; fi
-	exit 0
-fi
-if [ "$1" = "diff" ] && [ "$2" = "--name-only" ]; then
-	if [ "$3" != "-z" ]; then exit 92; fi
-	if [ "$4" != "--diff-filter=ACMRTD" ]; then exit 93; fi
-	if [ "$5" != "--no-renames" ]; then exit 94; fi
-	if [ "$FAKE_RENAME" = "1" ]; then printf 'docs/package.ts\\0scripts/package.ts\\0'; exit 0; fi
-	if [ "$FAKE_UNUSUAL_DIFF" = "1" ]; then printf 'scripts/café.ts\\0scripts/line\nbreak.ts\\0'; exit 0; fi
-	if [ -n "\${FAKE_DIFF_PATH:-}" ]; then printf '%s\\0' "$FAKE_DIFF_PATH"; fi
-	exit 0
-fi
-if [ "$1" = "credential" ] && [ "$2" = "fill" ]; then printf 'protocol=https\nhost=github.com\nusername=%s\npassword=fake\n' "\${FAKE_TRANSPORT_IDENTITY:-myagentdojo}"; exit 0; fi
-if [ "$1" = "ls-remote" ]; then
-	case "$3" in *public-canary*) expected=cccccccccccccccccccccccccccccccccccccccc ;; *) expected=0123456789abcdef0123456789abcdef01234567 ;; esac
-	if [ "$FAKE_PUSH_RACE" = "same" ] && [ -s "$FAKE_LOG" ]; then printf '%s\t%s\n' "$expected" "$4"; fi
-	if [ "$FAKE_PUSH_RACE" = "different" ] && [ -s "$FAKE_LOG" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$4"; fi
-	if [ "$FAKE_EXISTING_CANDIDATE" = "same" ]; then printf '%s\t%s\n' "$expected" "$4"; fi
-	if [ "$FAKE_EXISTING_CANDIDATE" = "different" ]; then printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t%s\n' "$4"; fi
-	exit 0
-fi
-if [ "$1" = "merge-base" ] && [ "$2" = "--is-ancestor" ]; then exit 0; fi
-if [ "$1" = "push" ]; then
-	printf 'git-push-cwd=%s %s\n' "$(pwd)" "$*" >> "$FAKE_LOG"
-	printf 'git-push-gh-token=%s\n' "\${GH_TOKEN:+present}" >> "$FAKE_LOG"
-	if [ "$FAKE_PUSH_FAIL" = "1" ]; then exit 1; fi
-	exit 0
-fi
-echo "unexpected git command: $*" >&2
-exit 91
-`,
-	)
-	return { temporaryRoot, fakeBin, log }
-}
-
-function runCanary(
-	fixture: ReturnType<typeof canaryFixture>,
-	mode: "--dry-run" | "--execute",
-	extraEnvironment: Record<string, string> = {},
-): ReturnType<typeof Bun.spawnSync> {
-	return Bun.spawnSync({
-		cmd: [process.execPath, "run", "ship:canary", "--", mode, "--json"],
-		cwd: fixture.temporaryRoot,
-		env: {
-			...process.env,
-			FAKE_LOG: fixture.log,
-			GITHUB_ACTIONS: "true",
-			GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
-			GITHUB_RUN_ID: "12345",
-			GITHUB_SERVER_URL: "https://github.com",
-			GITHUB_WORKFLOW_REF: "myagentdojo/agent-plugin-template/.github/workflows/hosted-canary.yml@refs/heads/main",
-			CANARY_QUALIFIED_SOURCE_SHA: "0123456789abcdef0123456789abcdef01234567",
-			CANARY_TRUSTED_WORKFLOW_SHA: "1111111111111111111111111111111111111111",
-			...extraEnvironment,
-			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-		},
-		stdout: "pipe",
-		stderr: "pipe",
-	})
-}
-
-function runTrustedCanary(
-	driverRoot: string,
-	driver: ReturnType<typeof canaryFixture>,
-	sourceRoot: string,
-	mode: "--dry-run" | "--execute",
-	extraEnvironment: Record<string, string> = {},
-): ReturnType<typeof Bun.spawnSync> {
-	return Bun.spawnSync({
-		cmd: [
-			process.execPath,
-			"run",
-			join(driverRoot, "scripts", "ship-canary.ts"),
-			mode,
-			"--source-root",
-			sourceRoot,
-			"--ref",
-			"HEAD",
-			"--json",
-		],
-		cwd: driverRoot,
-		env: {
-			...process.env,
-			FAKE_LOG: driver.log,
-			GITHUB_ACTIONS: "true",
-			GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
-			GITHUB_RUN_ID: "12345",
-			GITHUB_SERVER_URL: "https://github.com",
-			GITHUB_WORKFLOW_REF: "myagentdojo/agent-plugin-template/.github/workflows/hosted-canary.yml@refs/heads/main",
-			CANARY_QUALIFIED_SOURCE_SHA: "0123456789abcdef0123456789abcdef01234567",
-			CANARY_TRUSTED_WORKFLOW_SHA: "1111111111111111111111111111111111111111",
-			...extraEnvironment,
-			PATH: `${driver.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-		},
-		stdout: "pipe",
-		stderr: "pipe",
-	})
-}
-
-test("canary dry-run proves identity, visibility, and source without publishing", () => {
-	const result = runCanary(canaryFixture(), "--dry-run")
 
 	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	const output = JSON.parse(result.stdout.toString().trim())
-	expect(output).toMatchObject({
+	expect(result.stdout.toString()).toContain("--classify")
+	expect(result.stdout.toString()).toContain("--execute")
+	expect(result.stderr.toString()).toBe("")
+})
+
+test("public canary process → keeps JSON usage failures on stdout with exit 2", () => {
+	const result = Bun.spawnSync({
+		cmd: [process.execPath, "scripts/ship-canary.ts", "--dry-run", "--execute", "--json"],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode).toBe(2)
+	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+		ok: false,
+		category: "usage",
+		retrySafe: true,
+	})
+	expect(result.stderr.toString()).toBe("")
+})
+
+test("public canary process → renders a successful human classification", () => {
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"scripts/ship-canary.ts",
+			"--classify",
+			"--base",
+			"origin/main",
+			"--head",
+			"origin/main",
+		],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(result.stdout.toString()).toBe("Hosted canaries not required.\n")
+	expect(result.stderr.toString()).toBe("")
+})
+
+test("public canary process → renders a successful JSON classification", () => {
+	const result = Bun.spawnSync({
+		cmd: [
+			process.execPath,
+			"scripts/ship-canary.ts",
+			"--classify",
+			"--base",
+			"origin/main",
+			"--head",
+			"origin/main",
+			"--json",
+		],
+		cwd: root,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+
+	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	expect(JSON.parse(result.stdout.toString())).toEqual({
+		ok: true,
+		action: "classified",
+		sideEffects: "none",
+		base: "origin/main",
+		head: "origin/main",
+		changedPaths: [],
+		canaries: { required: false, triggeringPaths: [] },
+		hermeticProof: "required",
+	})
+	expect(result.stderr.toString()).toBe("")
+})
+
+interface CanaryCommandScenario {
+	diffPaths?: string[]
+	origin?: string
+	transportIdentity?: string
+	httpsServerIdentity?: string
+	missingRepository?: boolean
+	wrongVisibility?: boolean
+	hostedFailure?: boolean
+	hostedTimeout?: boolean
+	untrackedDistribution?: boolean
+	ignoredDistribution?: boolean
+	pushFailure?: boolean
+	pushRace?: "same" | "different"
+	existingCandidate?: "same" | "different"
+}
+
+interface RecordedCommand {
+	command: string[]
+	options: CommandRunOptions
+}
+
+class RecordingCommandRunner implements CommandRunner {
+	readonly commands: RecordedCommand[] = []
+	private pushAttempted = false
+
+	constructor(private readonly scenario: CanaryCommandScenario = {}) {}
+
+	run(commandValue: readonly string[], options: CommandRunOptions = {}): CommandOutput {
+		const command = [...commandValue]
+		this.commands.push({
+			command,
+			options: {
+				...options,
+				environment: options.environment && { ...options.environment },
+			},
+		})
+		const output = (stdout = "", exitCode = 0, stderr = ""): CommandOutput => {
+			const trim = options.trimOutput ?? true
+			return {
+				exitCode,
+				stdout: trim ? stdout.trim() : stdout,
+				stderr: trim ? stderr.trim() : stderr,
+			}
+		}
+
+		if (command[0] === "gh" && command[1] === "api" && command[2] === "user") {
+			return output(
+				options.environment?.GH_TOKEN === "fake"
+					? (this.scenario.httpsServerIdentity ?? "myagentdojo")
+					: "myagentdojo",
+			)
+		}
+		if (command[0] === "gh" && command[1] === "repo" && command[2] === "create") return output()
+		if (command[0] === "gh" && command[1] === "repo" && command[2] === "view") {
+			if (this.scenario.missingRepository) return output("", 44)
+			if (this.scenario.wrongVisibility) return output("PRIVATE")
+			if (command[3]?.includes("public-canary")) return output("PUBLIC")
+			if (command[3]?.includes("private-canary")) return output("PRIVATE")
+			return output("", 44)
+		}
+		if (command[0] === "gh" && command[1] === "run" && command[2] === "list") {
+			if (this.scenario.hostedTimeout) return output("", 124, "timed out")
+			if (this.scenario.hostedFailure) {
+				return output(
+					'[{"databaseId":303,"status":"completed","conclusion":"failure","url":"https://github.com/failure/run/303"}]',
+				)
+			}
+			const databaseId = command[4]?.includes("public-canary") ? 101 : 202
+			return output(
+				JSON.stringify([
+					{
+						databaseId,
+						status: "completed",
+						conclusion: "success",
+						url: `https://github.com/run/${databaseId}`,
+					},
+				]),
+			)
+		}
+		if (command[0] === "ssh") {
+			return output(
+				"",
+				1,
+				`Hi ${this.scenario.transportIdentity ?? "myagentdojo"}! You've successfully authenticated, but GitHub does not provide shell access.`,
+			)
+		}
+		if (command[0] === "git" && command[1] === "credential" && command[2] === "fill") {
+			return output("protocol=https\nhost=github.com\nusername=myagentdojo\npassword=fake\n")
+		}
+		if (
+			command[0] === "git" &&
+			command[1] === "-c" &&
+			command[2] === "core.quotePath=false" &&
+			command[3] === "diff"
+		) {
+			const paths = this.scenario.diffPaths ?? []
+			return output(paths.length > 0 ? `${paths.join("\0")}\0` : "")
+		}
+		if (command[0] === "git" && command[1] === "remote" && command[2] === "get-url") {
+			return output(
+				this.scenario.origin ?? "git@github-myagentdojo:myagentdojo/dojo-hello.git",
+			)
+		}
+		if (command[0] === "git" && command[1] === "rev-parse" && command[2] === "--verify") {
+			return output(sourceSha)
+		}
+		if (command[0] === "git" && command[1] === "status" && command[2] === "--porcelain") {
+			return output(
+				command[3] === "--untracked-files=all" && this.scenario.untrackedDistribution
+					? "?? plugin/injected.js"
+					: "",
+			)
+		}
+		if (command[0] === "git" && command[1] === "ls-files") {
+			return output(this.scenario.ignoredDistribution ? "plugin/ignored-secret.txt\0" : "")
+		}
+		if (command[0] === "git" && command[1] === "init") return output()
+		if (command[0] === "git" && command[1] === "add") return output()
+		if (command[0] === "git" && command[1] === "write-tree") return output("b".repeat(40))
+		if (command[0] === "git" && command[1] === "commit-tree") return output(publicCandidateSha)
+		if (command[0] === "git" && command[1] === "ls-remote") {
+			const expected = command[3]?.includes("public-canary") ? publicCandidateSha : sourceSha
+			const state = this.pushAttempted ? this.scenario.pushRace : this.scenario.existingCandidate
+			if (state === "same") return output(`${expected}\t${command[4]}`)
+			if (state === "different") return output(`${"a".repeat(40)}\t${command[4]}`)
+			return output()
+		}
+		if (command[0] === "git" && command[1] === "push") {
+			this.pushAttempted = true
+			return output(
+				"",
+				this.scenario.pushFailure ? 1 : 0,
+				this.scenario.pushFailure ? "rejected" : "",
+			)
+		}
+		throw new Error(`unexpected recorded command: ${command.join(" ")}`)
+	}
+}
+
+interface RecordingCanaryFixture {
+	temporaryRoot: string
+}
+
+const disposableRoots = new Set<string>()
+
+afterEach(() => {
+	for (const directory of disposableRoots) rmSync(directory, { recursive: true, force: true })
+	disposableRoots.clear()
+})
+
+function recordingCanaryFixture(): RecordingCanaryFixture {
+	const temporaryRoot = mkdtempSync(join(tmpdir(), "agent-plugin-template-recording-canary-"))
+	disposableRoots.add(temporaryRoot)
+	for (const path of ["plugin", ".claude-plugin", ".agents"]) {
+		cpSync(join(root, path), join(temporaryRoot, path), { recursive: true })
+	}
+	const config = JSON.parse(readFileSync(join(root, "plugin.config.json"), "utf8"))
+	config.template = false
+	config.name = "dojo-hello"
+	config.displayName = "Dojo Hello"
+	config.author = { name: "My Agent Dojo" }
+	config.repository = "https://github.com/myagentdojo/dojo-hello"
+	config.canary = {
+		owner: "myagentdojo",
+		actor: "myagentdojo",
+		publicRepository: "dojo-hello-public-canary",
+		privateRepository: "dojo-hello-private-canary",
+	}
+	writeFileSync(join(temporaryRoot, "plugin.config.json"), `${JSON.stringify(config, null, 2)}\n`)
+	return { temporaryRoot }
+}
+
+function recordingCanaryEnvironment(
+	overrides: Record<string, string | undefined> = {},
+): NodeJS.ProcessEnv {
+	return {
+		PATH: process.env.PATH,
+		HOME: process.env.HOME,
+		GITHUB_ACTIONS: "true",
+		GITHUB_REPOSITORY: "myagentdojo/agent-plugin-template",
+		GITHUB_RUN_ID: "12345",
+		GITHUB_SERVER_URL: "https://github.com",
+		GITHUB_WORKFLOW_REF:
+			"myagentdojo/agent-plugin-template/.github/workflows/hosted-canary.yml@refs/heads/main",
+		CANARY_QUALIFIED_SOURCE_SHA: sourceSha,
+		CANARY_TRUSTED_WORKFLOW_SHA: "1".repeat(40),
+		...overrides,
+	}
+}
+
+function recordingPublishOptions(sourceRoot: string, execute = false): PublishOptions {
+	return {
+		mode: "publish",
+		ref: "origin/main",
+		dryRun: !execute,
+		execute,
+		json: true,
+		sourceRoot,
+	}
+}
+
+function runRecordingPreflight(
+	fixture: RecordingCanaryFixture,
+	scenario: CanaryCommandScenario = {},
+	environment: NodeJS.ProcessEnv = recordingCanaryEnvironment(),
+	trustedRoot = fixture.temporaryRoot,
+): {
+	evidence: ReturnType<typeof preflight>
+	runner: RecordingCommandRunner
+	dependencies: ReturnType<typeof createQualificationDependencies>
+} {
+	const runner = new RecordingCommandRunner(scenario)
+	const dependencies = createQualificationDependencies(runner, environment, trustedRoot)
+	const evidence = preflight(recordingPublishOptions(fixture.temporaryRoot), dependencies)
+	disposableRoots.add(evidence.temporaryRoot)
+	return { evidence, runner, dependencies }
+}
+
+function testQualificationDependencies(
+	overrides: Pick<QualificationDependencies, "publish" | "hostedProof" | "install">,
+): QualificationDependencies {
+	return {
+		...createQualificationDependencies(
+			new RecordingCommandRunner(),
+			recordingCanaryEnvironment(),
+			root,
+		),
+		...overrides,
+	}
+}
+
+test("canary dry-run → renders identity, visibility, and source without publishing", async () => {
+	const fixture = recordingCanaryFixture()
+	const runner = new RecordingCommandRunner()
+	const dependencies = createQualificationDependencies(
+		runner,
+		recordingCanaryEnvironment(),
+		fixture.temporaryRoot,
+	)
+	const messages: string[] = []
+	const log = spyOn(console, "log").mockImplementation((...values) => {
+		messages.push(values.map(String).join(" "))
+	})
+	try {
+		await runCanary(
+			[
+				"--dry-run",
+				"--source-root",
+				fixture.temporaryRoot,
+				"--ref",
+				"origin/main",
+				"--json",
+			],
+			"test-run-id",
+			dependencies,
+		)
+	} finally {
+		log.mockRestore()
+	}
+
+	expect(messages).toHaveLength(1)
+	expect(JSON.parse(messages[0] ?? "")).toMatchObject({
 		ok: true,
 		action: "preview",
+		runId: "test-run-id",
 		sideEffects: "none",
 		identity: "myagentdojo",
 		transportIdentity: { kind: "ssh", identity: "myagentdojo", host: "github-myagentdojo" },
-		source: {
-			ref: "origin/main",
-			sha: "0123456789abcdef0123456789abcdef01234567",
-		},
+		source: { ref: "origin/main", sha: sourceSha },
 		targets: [
 			{
 				repository: "myagentdojo/dojo-hello-public-canary",
@@ -307,31 +451,49 @@ test("canary dry-run proves identity, visibility, and source without publishing"
 			},
 		],
 	})
-	expect(result.stdout.toString()).not.toContain("public-canary-candidate-")
+	expect(runner.commands.some((record) => record.command[1] === "push")).toBe(false)
 })
 
 test("SSH identity proof reuses the old trusted workflow known-hosts option", () => {
-	const result = runCanary(canaryFixture(), "--dry-run", {
-		FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE: "/tmp/canary-known-hosts",
+	const { runner } = runRecordingPreflight(
+		recordingCanaryFixture(),
+		{},
+		recordingCanaryEnvironment({
 		GIT_SSH_COMMAND:
 			"ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/tmp/canary-known-hosts",
-	})
+		}),
+	)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	const ssh = runner.commands.find((record) => record.command[0] === "ssh")
+	expect(ssh?.command).toContain("UserKnownHostsFile=/tmp/canary-known-hosts")
+	expect(ssh?.command).toContain("GlobalKnownHostsFile=/dev/null")
 })
 
 test("SSH identity proof binds the explicit hosted key without agent fallback", () => {
 	const identityFile = "/tmp/canary-identity"
 	const knownHostsFile = "/tmp/canary-known-hosts"
-	const result = runCanary(canaryFixture(), "--dry-run", {
+	const { runner } = runRecordingPreflight(
+		recordingCanaryFixture(),
+		{},
+		recordingCanaryEnvironment({
 		CANARY_SSH_IDENTITY_FILE: identityFile,
 		CANARY_SSH_KNOWN_HOSTS_FILE: knownHostsFile,
-		FAKE_EXPECTED_SSH_IDENTITY_FILE: identityFile,
-		FAKE_EXPECTED_SSH_KNOWN_HOSTS_FILE: knownHostsFile,
 		GIT_SSH_COMMAND: `ssh -F /dev/null -o IdentityAgent=none -i ${identityFile} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${knownHostsFile} -o GlobalKnownHostsFile=/dev/null`,
-	})
+		}),
+	)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
+	const ssh = runner.commands.find((record) => record.command[0] === "ssh")
+	expect(ssh?.command).toEqual(
+		expect.arrayContaining([
+			"-F",
+			"/dev/null",
+			"IdentityAgent=none",
+			"-i",
+			identityFile,
+			"IdentitiesOnly=yes",
+			`UserKnownHostsFile=${knownHostsFile}`,
+		]),
+	)
 })
 
 test("publishing-system paths require both hosted canaries and report every trigger", () => {
@@ -384,74 +546,52 @@ test("recipient payload-only paths keep hosted canaries optional", () => {
 })
 
 test("classify diff filter includes deleted and type-changed publishing-system paths", () => {
-	const fixture = canaryFixture()
-	const result = Bun.spawnSync({
-		cmd: [
-			process.execPath,
-			"run",
-			"ship:canary",
-			"--",
-			"--classify",
-			"--base",
-			"base",
-			"--head",
-			"head",
-			"--json",
-		],
-		cwd: fixture.temporaryRoot,
-		env: {
-			...process.env,
-			FAKE_DIFF_PATH: "scripts/package.ts",
-			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-		},
-		stdout: "pipe",
-		stderr: "pipe",
-	})
+	const runner = new RecordingCommandRunner({ diffPaths: ["scripts/package.ts"] })
+	const options: ClassifyOptions = { mode: "classify", base: "base", head: "head", json: true }
+	const result = classifyCanaryChanges(options, runner, root)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	expect(JSON.parse(result.stdout.toString().trim())).toMatchObject({
+	expect(result).toMatchObject({
 		changedPaths: ["scripts/package.ts"],
 		canaries: { required: true, triggeringPaths: ["scripts/package.ts"] },
+	})
+	expect(runner.commands).toHaveLength(1)
+	expect(runner.commands[0]).toMatchObject({
+		command: [
+			"git",
+			"-c",
+			"core.quotePath=false",
+			"diff",
+			"--name-only",
+			"-z",
+			"--diff-filter=ACMRTD",
+			"--no-renames",
+			"base...head",
+		],
+		options: { workingDirectory: root, trimOutput: false },
 	})
 })
 
 test("classify includes a publishing path renamed into documentation", () => {
-	const fixture = canaryFixture()
-	const result = Bun.spawnSync({
-		cmd: [process.execPath, "run", "ship:canary", "--", "--classify", "--base", "base", "--head", "head", "--json"],
-		cwd: fixture.temporaryRoot,
-		env: {
-			...process.env,
-			FAKE_RENAME: "1",
-			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-		},
-		stdout: "pipe",
-		stderr: "pipe",
-	})
+	const result = classifyCanaryChanges(
+		{ mode: "classify", base: "base", head: "head", json: true },
+		new RecordingCommandRunner({ diffPaths: ["docs/package.ts", "scripts/package.ts"] }),
+		root,
+	)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+	expect(result).toMatchObject({
 		changedPaths: ["docs/package.ts", "scripts/package.ts"],
 		canaries: { required: true, triggeringPaths: ["scripts/package.ts"] },
 	})
 })
 
 test("classify preserves non-ASCII and newline Git path names", () => {
-	const fixture = canaryFixture()
-	const result = Bun.spawnSync({
-		cmd: [process.execPath, "run", "ship:canary", "--", "--classify", "--base", "base", "--head", "head", "--json"],
-		cwd: fixture.temporaryRoot,
-		env: {
-			...process.env,
-			FAKE_UNUSUAL_DIFF: "1",
-			PATH: `${fixture.fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
-		},
-		stdout: "pipe",
-		stderr: "pipe",
-	})
+	const result = classifyCanaryChanges(
+		{ mode: "classify", base: "base", head: "head", json: true },
+		new RecordingCommandRunner({ diffPaths: ["scripts/café.ts", "scripts/line\nbreak.ts"] }),
+		root,
+	)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+	expect(result).toMatchObject({
 		changedPaths: ["scripts/café.ts", "scripts/line\nbreak.ts"],
 		canaries: {
 			required: true,
@@ -461,39 +601,36 @@ test("classify preserves non-ASCII and newline Git path names", () => {
 })
 
 test("candidate config cannot redirect trusted canary targets", () => {
-	const fixture = canaryFixture()
-	const result = runTrustedCanary(root, fixture, fixture.temporaryRoot, "--dry-run")
+	const fixture = recordingCanaryFixture()
+	const dependencies = createQualificationDependencies(
+		new RecordingCommandRunner(),
+		recordingCanaryEnvironment(),
+		root,
+	)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+	expect(() => preflight(recordingPublishOptions(fixture.temporaryRoot), dependencies)).toThrow(
+		expect.objectContaining({
 		category: "canary_target_mismatch",
 		retrySafe: false,
-	})
+		}),
+	)
 })
 
 test("trusted template base admits exact first-consumer canary targets", () => {
-	const driver = canaryFixture()
-	const candidate = canaryFixture()
-	writeFileSync(
-		join(driver.temporaryRoot, "plugin.config.json"),
-		readFileSync(join(root, "plugin.config.json"), "utf8"),
-	)
-
-	const result = runTrustedCanary(
-		driver.temporaryRoot,
-		driver,
-		candidate.temporaryRoot,
-		"--dry-run",
-		{
+	const candidate = recordingCanaryFixture()
+	const { evidence } = runRecordingPreflight(
+		candidate,
+		{},
+		recordingCanaryEnvironment({
 			GITHUB_REPOSITORY: "myagentdojo/dojo-hello",
 			CANARY_HEAD_REPOSITORY: "myagentdojo/dojo-hello",
 			GITHUB_WORKFLOW_REF:
 				"myagentdojo/dojo-hello/.github/workflows/hosted-canary.yml@refs/heads/main",
-		},
+		}),
+		root,
 	)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+	expect(evidence).toMatchObject({
 		identity: "myagentdojo",
 		targets: [
 			{ repository: "myagentdojo/dojo-hello-public-canary", visibility: "PUBLIC" },
@@ -548,12 +685,7 @@ test.each([
 		{ CANARY_HEAD_REPOSITORY: "fork-owner/dojo-hello" },
 	],
 ])("trusted template bootstrap rejects %s", (_name, mutate, environment) => {
-	const driver = canaryFixture()
-	const candidate = canaryFixture()
-	writeFileSync(
-		join(driver.temporaryRoot, "plugin.config.json"),
-		readFileSync(join(root, "plugin.config.json"), "utf8"),
-	)
+	const candidate = recordingCanaryFixture()
 	const candidateConfigPath = join(candidate.temporaryRoot, "plugin.config.json")
 	const candidateConfig = JSON.parse(
 		readFileSync(candidateConfigPath, "utf8"),
@@ -561,132 +693,141 @@ test.each([
 	mutate(candidateConfig)
 	writeFileSync(candidateConfigPath, `${JSON.stringify(candidateConfig, null, 2)}\n`)
 
-	const result = runTrustedCanary(
-		driver.temporaryRoot,
-		driver,
-		candidate.temporaryRoot,
-		"--dry-run",
-		{
+	const runner = new RecordingCommandRunner()
+	const dependencies = createQualificationDependencies(
+		runner,
+		recordingCanaryEnvironment({
 			GITHUB_REPOSITORY: "myagentdojo/dojo-hello",
 			CANARY_HEAD_REPOSITORY: "myagentdojo/dojo-hello",
 			GITHUB_WORKFLOW_REF:
 				"myagentdojo/dojo-hello/.github/workflows/hosted-canary.yml@refs/heads/main",
 			...environment,
-		},
+		}),
+		root,
 	)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
-		category: "canary_target_mismatch",
-		retrySafe: false,
-	})
-	expect(existsSync(driver.log)).toBe(false)
+	expect(() => preflight(recordingPublishOptions(candidate.temporaryRoot), dependencies)).toThrow(
+		expect.objectContaining({
+			category: "canary_target_mismatch",
+			retrySafe: false,
+		}),
+	)
+	expect(runner.commands.map((record) => record.command)).toEqual([
+		["gh", "api", "user", "--jq", ".login"],
+	])
 })
 
 test("public publication uses sanitized bytes while private publication uses the source checkout", async () => {
-	const driver = canaryFixture()
-	const candidate = canaryFixture()
-	const result = runTrustedCanary(
-		driver.temporaryRoot,
-		driver,
-		candidate.temporaryRoot,
-		"--execute",
-		{ FAKE_HOSTED_FAILURE: "1", GH_TOKEN: "fake" },
+	const candidate = recordingCanaryFixture()
+	const { evidence, runner, dependencies } = runRecordingPreflight(
+		candidate,
+		{ hostedFailure: true },
+		recordingCanaryEnvironment({ GH_TOKEN: "fake" }),
 	)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({ category: "hosted_failure" })
-	expect(await Bun.file(driver.log).text()).toContain("public-canary-candidate-")
-	expect(await Bun.file(driver.log).text()).toContain(
-		"cccccccccccccccccccccccccccccccccccccccc:refs/heads/candidate/cccccccccccccccccccccccccccccccccccccccc",
+	await expect(qualifyTargets(evidence.targets, evidence.sourceSha, dependencies)).rejects.toMatchObject({
+		category: "hosted_failure",
+	})
+	const pushes = runner.commands.filter(
+		(record) => record.command[0] === "git" && record.command[1] === "push",
 	)
-	expect(await Bun.file(driver.log).text()).toContain(
-		`git-push-cwd=${realpathSync(candidate.temporaryRoot)} push`,
-	)
-	expect(await Bun.file(driver.log).text()).toContain(
-		"0123456789abcdef0123456789abcdef01234567:refs/heads/candidate/0123456789abcdef0123456789abcdef01234567",
-	)
-	expect((await Bun.file(driver.log).text()).match(/git-push-gh-token=present/g)).toHaveLength(2)
+	expect(pushes).toHaveLength(2)
+	expect(pushes[0]).toMatchObject({
+		command: expect.arrayContaining([
+			`${publicCandidateSha}:refs/heads/candidate/${publicCandidateSha}`,
+		]),
+		options: { workingDirectory: expect.stringContaining("public-canary-candidate-") },
+	})
+	expect(pushes[1]).toMatchObject({
+		command: expect.arrayContaining([`${sourceSha}:refs/heads/candidate/${sourceSha}`]),
+		options: { workingDirectory: candidate.temporaryRoot },
+	})
+	expect(pushes.every((record) => record.options.environment?.GH_TOKEN === "fake")).toBe(true)
 })
 
-test("trusted preflight does not apply the base renderer to candidate-generated files", async () => {
-	const driver = canaryFixture()
-	const candidate = canaryFixture()
+test("trusted preflight → does not apply the base renderer to candidate-generated files", () => {
+	const candidate = recordingCanaryFixture()
 	writeFileSync(join(candidate.temporaryRoot, "plugin", ".codex-plugin", "plugin.json"), "{}\n")
 
-	const result = runTrustedCanary(
-		driver.temporaryRoot,
-		driver,
-		candidate.temporaryRoot,
-		"--execute",
-	)
+	const { evidence } = runRecordingPreflight(candidate)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).not.toMatchObject({ category: "generated_drift" })
-	expect(await Bun.file(driver.log).text()).toContain("push")
+	expect(evidence.targets).toHaveLength(2)
 })
 
 test("public candidate rejects untracked distribution files before publication", () => {
-	const fixture = canaryFixture()
-	const result = runCanary(fixture, "--execute", { FAKE_UNTRACKED_DISTRIBUTION: "1" })
+	const fixture = recordingCanaryFixture()
+	const runner = new RecordingCommandRunner({ untrackedDistribution: true })
+	const dependencies = createQualificationDependencies(
+		runner,
+		recordingCanaryEnvironment(),
+		fixture.temporaryRoot,
+	)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
-		category: "dirty_checkout",
-		message: "untracked files are present in the public marketplace distribution",
-	})
-	expect(existsSync(fixture.log)).toBe(false)
+	expect(() => preflight(recordingPublishOptions(fixture.temporaryRoot, true), dependencies)).toThrow(
+		"untracked files are present in the public marketplace distribution",
+	)
+	expect(runner.commands.some((record) => record.command[1] === "push")).toBe(false)
 })
 
 test("public candidate rejects an ignored secret before copying checkout bytes", () => {
-	const fixture = canaryFixture()
-	const result = runCanary(fixture, "--execute", { FAKE_IGNORED_DISTRIBUTION: "1" })
+	const fixture = recordingCanaryFixture()
+	const runner = new RecordingCommandRunner({ ignoredDistribution: true })
+	const dependencies = createQualificationDependencies(
+		runner,
+		recordingCanaryEnvironment(),
+		fixture.temporaryRoot,
+	)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
-		category: "dirty_checkout",
-		message: "ignored files are present in the public marketplace distribution",
-		retrySafe: false,
-	})
-	expect(existsSync(fixture.log)).toBe(false)
+	expect(() => preflight(recordingPublishOptions(fixture.temporaryRoot, true), dependencies)).toThrow(
+		"ignored files are present in the public marketplace distribution",
+	)
+	expect(
+		runner.commands.find((record) => record.command[1] === "ls-files")?.options.trimOutput,
+	).toBe(false)
+	expect(runner.commands.some((record) => record.command[1] === "push")).toBe(false)
 })
 
-test("hosted polling bounds a hung network child by the outer deadline", () => {
-	const fixture = canaryFixture()
+test("hosted polling → bounds a hung network child by the outer deadline", async () => {
+	const fixture = recordingCanaryFixture()
 	const startedAt = Date.now()
-	const result = runCanary(fixture, "--execute", {
-		FAKE_HOSTED_HANG: "1",
+	const { evidence, runner, dependencies } = runRecordingPreflight(
+		fixture,
+		{ hostedTimeout: true },
+		recordingCanaryEnvironment({
 		CANARY_HOSTED_RUN_DEADLINE_MS: "120",
 		CANARY_NETWORK_COMMAND_TIMEOUT_MS: "25",
 		CANARY_HOSTED_POLL_DELAY_MS: "5",
-	})
+		}),
+	)
 
-	expect(result.exitCode).toBe(1)
+	await expect(qualifyTargets(evidence.targets, evidence.sourceSha, dependencies)).rejects.toMatchObject({
+			category: "hosted_timeout",
+			message: expect.stringContaining("within 120 milliseconds"),
+			retrySafe: false,
+		})
 	expect(Date.now() - startedAt).toBeLessThan(2000)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
-		category: "hosted_timeout",
-		message: expect.stringContaining("within 120 milliseconds"),
-		retrySafe: false,
-	})
+	const polls = runner.commands.filter((record) => record.command[1] === "run")
+	expect(polls.length).toBeGreaterThan(0)
+	expect(polls.every((command) => (command.options.timeout ?? 0) <= 25)).toBe(true)
 })
 
-test("create-only candidate push accepts an identical winner but rejects a conflicting race", () => {
-	const same = runCanary(canaryFixture(), "--execute", {
-		FAKE_PUSH_FAIL: "1",
-		FAKE_PUSH_RACE: "same",
-		FAKE_HOSTED_FAILURE: "1",
+test("create-only candidate push → accepts an identical winner but rejects a conflicting race", async () => {
+	const same = runRecordingPreflight(recordingCanaryFixture(), {
+		pushFailure: true,
+		pushRace: "same",
+		hostedFailure: true,
 	})
-	const different = runCanary(canaryFixture(), "--execute", {
-		FAKE_PUSH_FAIL: "1",
-		FAKE_PUSH_RACE: "different",
-	})
+	await expect(
+		qualifyTargets(same.evidence.targets, same.evidence.sourceSha, same.dependencies),
+	).rejects.toMatchObject({ category: "hosted_failure" })
 
-	expect(same.exitCode).toBe(1)
-	expect(JSON.parse(same.stdout.toString())).toMatchObject({ category: "hosted_failure" })
-	expect(different.exitCode).toBe(1)
-	expect(JSON.parse(different.stdout.toString())).toMatchObject({
-		category: "candidate_ref_conflict",
+	const different = runRecordingPreflight(recordingCanaryFixture(), {
+		pushFailure: true,
+		pushRace: "different",
 	})
+	await expect(
+		qualifyTargets(different.evidence.targets, different.evidence.sourceSha, different.dependencies),
+	).rejects.toMatchObject({ category: "candidate_ref_conflict" })
 })
 
 test("divergent PR heads receive distinct immutable candidate refs", () => {
@@ -787,52 +928,45 @@ test("candidate retry accepts only the same commit at the immutable ref", () => 
 })
 
 test("remote candidate retry reports current or immutable conflict without rewriting", () => {
-	const current = runCanary(canaryFixture(), "--dry-run", {
-		FAKE_EXISTING_CANDIDATE: "same",
+	const current = runRecordingPreflight(recordingCanaryFixture(), {
+		existingCandidate: "same",
 	})
-	expect(current.exitCode).toBe(0)
-	expect(JSON.parse(current.stdout.toString()).targets[0]).toMatchObject({
+	expect(current.evidence.targets[0]).toMatchObject({
 		candidateState: "current",
-		candidateSha: "cccccccccccccccccccccccccccccccccccccccc",
-		headSha: "cccccccccccccccccccccccccccccccccccccccc",
+		candidateSha: publicCandidateSha,
+		headSha: publicCandidateSha,
 	})
 
-	const conflict = runCanary(canaryFixture(), "--dry-run", {
-		FAKE_EXISTING_CANDIDATE: "different",
-	})
-	expect(conflict.exitCode).toBe(1)
-	expect(JSON.parse(conflict.stdout.toString())).toMatchObject({
-		category: "candidate_ref_conflict",
-		retrySafe: false,
-	})
+	expect(() =>
+		runRecordingPreflight(recordingCanaryFixture(), { existingCandidate: "different" }),
+	).toThrow("immutable candidate ref")
 })
 
-test("transport identity mismatch fails before repository mutation", async () => {
-	const fixture = canaryFixture()
-	const result = runCanary(fixture, "--execute", { FAKE_TRANSPORT_IDENTITY: "nathanvale" })
+test("transport identity mismatch → fails before repository mutation", () => {
+	const fixture = recordingCanaryFixture()
+	const runner = new RecordingCommandRunner({ transportIdentity: "nathanvale" })
+	const dependencies = createQualificationDependencies(
+		runner,
+		recordingCanaryEnvironment(),
+		fixture.temporaryRoot,
+	)
 
-	expect(result.exitCode).toBe(1)
-	const failure = JSON.parse(result.stdout.toString().trim())
-	expect(failure).toMatchObject({
-		ok: false,
-		category: "transport_identity_mismatch",
-		retrySafe: false,
-	})
-	expect(failure.runId).toBeString()
-	expect(await Bun.file(fixture.log).exists()).toBe(false)
+	expect(() => preflight(recordingPublishOptions(fixture.temporaryRoot, true), dependencies)).toThrow(
+		"Git transport identity",
+	)
+	expect(runner.commands.some((record) => record.command[1] === "push")).toBe(false)
 })
 
 test("canary actor may publish repositories owned by an organization", () => {
-	const fixture = canaryFixture()
+	const fixture = recordingCanaryFixture()
 	const configPath = join(fixture.temporaryRoot, "plugin.config.json")
 	const config = JSON.parse(readFileSync(configPath, "utf8"))
 	config.canary.owner = "myagentdojo-org"
 	config.canary.actor = "myagentdojo"
 	writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
-	const result = runCanary(fixture, "--dry-run")
+	const { evidence } = runRecordingPreflight(fixture)
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+	expect(evidence).toMatchObject({
 		identity: "myagentdojo",
 		transportIdentity: { identity: "myagentdojo" },
 		targets: [
@@ -857,32 +991,42 @@ test("SSH and HTTPS transport identity bind independently from gh identity", () 
 })
 
 test("HTTPS preflight authenticates the exact credential-helper token without publishing", () => {
-	const result = runCanary(canaryFixture(), "--dry-run", {
-		FAKE_ORIGIN: "https://github.com/myagentdojo/dojo-hello.git",
+	const { evidence, runner } = runRecordingPreflight(recordingCanaryFixture(), {
+		origin: "https://github.com/myagentdojo/dojo-hello.git",
 	})
 
-	expect(result.exitCode, result.stderr.toString()).toBe(0)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
+	expect(evidence).toMatchObject({
 		transportIdentity: {
 			kind: "https",
 			identity: "myagentdojo",
 			host: "github.com",
 		},
 	})
+	const credential = runner.commands.find(
+		(record) => record.command[0] === "git" && record.command[1] === "credential",
+	)
+	expect(credential?.options.input).toBe(
+		"protocol=https\nhost=github.com\npath=myagentdojo/dojo-hello.git\n\n",
+	)
+	expect(credential?.options.environment?.GIT_TERMINAL_PROMPT).toBe("0")
 })
 
 test("HTTPS preflight rejects a helper token owned by another GitHub user", () => {
-	const result = runCanary(canaryFixture(), "--dry-run", {
-		FAKE_ORIGIN: "https://github.com/myagentdojo/dojo-hello.git",
-		FAKE_HTTPS_SERVER_IDENTITY: "nathanvale",
+	const fixture = recordingCanaryFixture()
+	const runner = new RecordingCommandRunner({
+		origin: "https://github.com/myagentdojo/dojo-hello.git",
+		httpsServerIdentity: "nathanvale",
 	})
+	const dependencies = createQualificationDependencies(
+		runner,
+		recordingCanaryEnvironment(),
+		fixture.temporaryRoot,
+	)
 
-	expect(result.exitCode).toBe(1)
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
-		category: "transport_identity_mismatch",
-		retrySafe: false,
-	})
-	expect(result.stdout.toString()).not.toContain("password=fake")
+	expect(() => preflight(recordingPublishOptions(fixture.temporaryRoot), dependencies)).toThrow(
+		"Git transport identity",
+	)
+	expect(JSON.stringify(runner.commands.map((record) => record.command))).not.toContain("password=fake")
 })
 
 function targets(sourceSha: string): Target[] {
@@ -939,7 +1083,7 @@ function installEvidence(target: Target, candidateSha: string): CandidateInstall
 test("public and private candidates pass hosted proof then native cache comparison", async () => {
 	const sourceSha = "1".repeat(40)
 	const calls: string[] = []
-	const result = await qualifyTargets(targets(sourceSha), sourceSha, {
+	const result = await qualifyTargets(targets(sourceSha), sourceSha, testQualificationDependencies({
 		publish: (target) => calls.push(`publish:${target.visibility}`),
 		hostedProof: async (target) => {
 			calls.push(`hosted:${target.visibility}`)
@@ -957,7 +1101,7 @@ test("public and private candidates pass hosted proof then native cache comparis
 			calls.push(`install:${target.visibility}`)
 			return installEvidence(target, candidateSha)
 		},
-	})
+	}))
 
 	expect(result).toMatchObject({
 		runs: [
@@ -1014,7 +1158,7 @@ test("qualification binds candidate lineage and rejects unbound install evidence
 	})
 
 	await expect(
-		qualifyTargets(targets(sourceSha), sourceSha, {
+		qualifyTargets(targets(sourceSha), sourceSha, testQualificationDependencies({
 			publish: () => {},
 			hostedProof,
 			install: (target, candidateSha) => {
@@ -1024,14 +1168,14 @@ test("qualification binds candidate lineage and rejects unbound install evidence
 					lineage: { ...evidence.lineage, installedPayloadHash: "c".repeat(64) },
 				}
 			},
-		}),
+		})),
 	).rejects.toMatchObject({
 		category: "qualification_lineage_mismatch",
 		retrySafe: false,
 	})
 
 	await expect(
-		qualifyTargets(targets(sourceSha), sourceSha, {
+		qualifyTargets(targets(sourceSha), sourceSha, testQualificationDependencies({
 			publish: () => {},
 			hostedProof,
 			install: (target, candidateSha) => {
@@ -1041,7 +1185,7 @@ test("qualification binds candidate lineage and rejects unbound install evidence
 					lineage: { ...evidence.lineage, archiveSha256: "not-a-digest" },
 				}
 			},
-		}),
+		})),
 	).rejects.toMatchObject({
 		category: "qualification_lineage_invalid",
 		retrySafe: false,
@@ -1049,18 +1193,12 @@ test("qualification binds candidate lineage and rejects unbound install evidence
 })
 
 test("repository, visibility, hosted CI, and install failures carry non-rewriting repairs", async () => {
-	const missing = runCanary(canaryFixture(), "--dry-run", { FAKE_MISSING_REPO: "1" })
-	expect(missing.exitCode).toBe(0)
-	expect(JSON.parse(missing.stdout.toString()).targets[0].repairAction).toContain("create")
+	const missing = runRecordingPreflight(recordingCanaryFixture(), { missingRepository: true })
+	expect(missing.evidence.targets[0].repairAction).toContain("create")
 
-	const visibility = runCanary(canaryFixture(), "--dry-run", {
-		FAKE_WRONG_VISIBILITY: "1",
-	})
-	expect(visibility.exitCode).toBe(1)
-	expect(JSON.parse(visibility.stdout.toString())).toMatchObject({
-		category: "visibility_mismatch",
-		retrySafe: false,
-	})
+	expect(() =>
+		runRecordingPreflight(recordingCanaryFixture(), { wrongVisibility: true }),
+	).toThrow("expected PUBLIC")
 
 	const sourceSha = "1".repeat(40)
 	const hostedFailure = new CanaryError(
@@ -1069,18 +1207,18 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 		"inspect the hosted run; never rewrite history",
 	)
 	await expect(
-		qualifyTargets(targets(sourceSha), sourceSha, {
+		qualifyTargets(targets(sourceSha), sourceSha, testQualificationDependencies({
 			publish: () => {},
 			hostedProof: async () => {
 				throw hostedFailure
 			},
 			install: (target, candidateSha) => installEvidence(target, candidateSha),
-		}),
+		})),
 	).rejects.toBe(hostedFailure)
 	expect(hostedFailure.nextAction).toContain("never rewrite history")
 
 	await expect(
-		qualifyTargets(targets(sourceSha), sourceSha, {
+		qualifyTargets(targets(sourceSha), sourceSha, testQualificationDependencies({
 			publish: () => {},
 			hostedProof: async (target) => ({
 				repository: target.repository,
@@ -1095,7 +1233,7 @@ test("repository, visibility, hosted CI, and install failures carry non-rewritin
 				...installEvidence(target, candidateSha),
 				codex: { ...installEvidence(target, candidateSha).codex, cachedPayloadMatches: false },
 			}),
-		}),
+		})),
 	).rejects.toMatchObject({
 		category: "install_mismatch",
 		retrySafe: false,

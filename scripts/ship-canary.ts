@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
+import { type CommandRunner, bunCommandRunner } from "./command-runner"
 import { type PluginConfig, loadPluginConfig } from "./plugin-config"
 import { deterministicPluginArchive, payloadInventorySha256 } from "./plugin-files"
 import { copyMarketplaceDistribution, proveHostedHarnessInstall } from "./prove-harness-install"
@@ -72,19 +73,31 @@ type Visibility = "PUBLIC" | "PRIVATE"
 type TransportKind = "ssh" | "https"
 type CandidateState = "repository-missing" | "missing" | "current"
 
-interface PublishOptions {
+/** Parsed publication request consumed by the canary preflight module. */
+export interface PublishOptions {
+	/** Select the publication workflow. */
 	mode: "publish"
+	/** Source Git revision to qualify. */
 	ref: string
+	/** Prove preflight without repository mutation. */
 	dryRun: boolean
+	/** Publish and qualify immutable candidates. */
 	execute: boolean
+	/** Emit one machine-readable result on stdout. */
 	json: boolean
+	/** Candidate checkout whose payload is treated as data. */
 	sourceRoot: string
 }
 
-interface ClassifyOptions {
+/** Parsed base-to-head request for publishing-system path classification. */
+export interface ClassifyOptions {
+	/** Select publishing-system path classification. */
 	mode: "classify"
+	/** Trusted comparison base. */
 	base: string
+	/** Candidate comparison head. */
 	head: string
+	/** Emit one machine-readable result on stdout. */
 	json: boolean
 }
 
@@ -209,23 +222,32 @@ export function bindCandidateQualificationLineage(
 
 /** Injectable hosted-I/O seams keep qualification behavior unit-testable without real repositories. */
 export interface QualificationDependencies {
+	/** Trusted driver checkout that owns canary policy and command cwd defaults. */
+	root: string
+	/** Typed subprocess adapter shared by preflight and qualification. */
+	commandRunner: CommandRunner
+	/** Explicit process environment keeps identity and deadline inputs inspectable. */
+	environment: NodeJS.ProcessEnv
+	/** Publish one immutable target candidate. */
 	publish: (target: Target, sourceSha: string) => void | Promise<void>
+	/** Wait for hosted proof bound to the candidate. */
 	hostedProof: (target: Target, sourceSha: string) => Promise<HostedRun>
+	/** Install and compare the exact candidate payload. */
 	install: (target: Target, sourceSha: string) => CandidateInstallEvidence | Promise<CandidateInstallEvidence>
 }
 
-interface Preflight {
+/** Identity, source, and immutable target evidence produced before publication. */
+export interface Preflight {
+	/** Active GitHub CLI identity. */
 	identity: string
+	/** Independently proved Git transport identity. */
 	transportIdentity: { kind: TransportKind; identity: string; host: string }
+	/** Exact source revision admitted for qualification. */
 	sourceSha: string
+	/** Trusted public and private canary targets. */
 	targets: Target[]
+	/** Temporary evidence root removed after the workflow. */
 	temporaryRoot: string
-}
-
-interface CommandOutput {
-	exitCode: number
-	stdout: string
-	stderr: string
 }
 
 interface TransportLocation {
@@ -456,39 +478,14 @@ function parseOptions(arguments_: string[]): Options | null {
 	}
 }
 
-function commandOutput(
-	command: string[],
-	input?: string,
-	environment?: Record<string, string | undefined>,
-	cwd = root,
-	timeout?: number,
-	trimOutput = true,
-): CommandOutput {
-	const result = Bun.spawnSync({
-		cmd: command,
-		cwd,
-		env: environment,
-		stdin: input === undefined ? "ignore" : new Blob([input]),
-		stdout: "pipe",
-		stderr: "pipe",
-		timeout,
-	})
-	const stdout = result.stdout.toString()
-	const stderr = result.stderr.toString()
-	return {
-		exitCode: result.exitCode ?? 124,
-		stdout: trimOutput ? stdout.trim() : stdout,
-		stderr: trimOutput ? stderr.trim() : stderr,
-	}
-}
-
 function processResult(
 	command: string[],
 	allowFailure = false,
-	cwd = root,
+	workingDirectory = root,
 	environment?: Record<string, string | undefined>,
+	commandRunner: CommandRunner = bunCommandRunner,
 ): string | undefined {
-	const result = commandOutput(command, undefined, environment, cwd)
+	const result = commandRunner.run(command, { workingDirectory, environment })
 	if (result.exitCode !== 0) {
 		if (allowFailure) return undefined
 		throw new CanaryError(
@@ -564,15 +561,20 @@ function isolatedIdentityFile(environment: NodeJS.ProcessEnv): string | undefine
 	)?.groups?.path
 }
 
-function resolveTransportIdentity(origin: string): {
+function resolveTransportIdentity(
+	origin: string,
+	commandRunner: CommandRunner,
+	environment: NodeJS.ProcessEnv,
+	workingRoot: string,
+): {
 	kind: TransportKind
 	identity: string
 	host: string
 } {
 	const transport = transportLocation(origin)
 	if (transport.kind === "ssh") {
-		const knownHostsFile = isolatedKnownHostsFile(process.env)
-		const identityFile = isolatedIdentityFile(process.env)
+		const knownHostsFile = isolatedKnownHostsFile(environment)
+		const identityFile = isolatedIdentityFile(environment)
 		const identityOptions = identityFile
 			? [
 					"-F",
@@ -588,7 +590,7 @@ function resolveTransportIdentity(origin: string): {
 		const knownHostsOption = knownHostsFile
 			? ["-o", `UserKnownHostsFile=${knownHostsFile}`, "-o", "GlobalKnownHostsFile=/dev/null"]
 			: []
-		const result = commandOutput([
+		const result = commandRunner.run([
 			"ssh",
 			"-T",
 			"-o",
@@ -598,7 +600,7 @@ function resolveTransportIdentity(origin: string): {
 			...identityOptions,
 			...knownHostsOption,
 			`${transport.user || "git"}@${transport.host}`,
-		])
+		], { workingDirectory: workingRoot })
 		const greeting = `${result.stdout}\n${result.stderr}`
 		const identity = /Hi (?<identity>[A-Za-z0-9-]+)!/.exec(greeting)?.groups?.identity
 		if ((result.exitCode !== 0 && result.exitCode !== 1) || !identity) {
@@ -611,10 +613,13 @@ function resolveTransportIdentity(origin: string): {
 		}
 		return { kind: "ssh", identity, host: transport.host }
 	}
-	const credential = commandOutput(
+	const credential = commandRunner.run(
 		["git", "credential", "fill"],
-		`protocol=https\nhost=${transport.host}\npath=${transport.path}\n\n`,
-		{ ...process.env, GIT_TERMINAL_PROMPT: "0" },
+		{
+			workingDirectory: workingRoot,
+			input: `protocol=https\nhost=${transport.host}\npath=${transport.path}\n\n`,
+			environment: { ...environment, GIT_TERMINAL_PROMPT: "0" },
+		},
 	)
 	if (credential.exitCode !== 0) {
 		throw new CanaryError(
@@ -633,10 +638,9 @@ function resolveTransportIdentity(origin: string): {
 			false,
 		)
 	}
-	const authenticated = commandOutput(
+	const authenticated = commandRunner.run(
 		["gh", "api", "user", "--jq", ".login"],
-		undefined,
-		{ ...process.env, GH_TOKEN: password },
+		{ workingDirectory: workingRoot, environment: { ...environment, GH_TOKEN: password } },
 	)
 	if (authenticated.exitCode !== 0 || !authenticated.stdout) {
 		throw new CanaryError(
@@ -650,10 +654,18 @@ function resolveTransportIdentity(origin: string): {
 	return { kind: "https", identity, host: transport.host }
 }
 
-function repositoryVisibility(repository: string): Visibility | undefined {
+function repositoryVisibility(
+	repository: string,
+	commandRunner: CommandRunner,
+	workingRoot: string,
+	environment: NodeJS.ProcessEnv,
+): Visibility | undefined {
 	const output = processResult(
 		["gh", "repo", "view", repository, "--json", "visibility", "--jq", ".visibility"],
 		true,
+		workingRoot,
+		environment,
+		commandRunner,
 	)
 	if (!output) return undefined
 	if (output !== "PUBLIC" && output !== "PRIVATE") {
@@ -666,15 +678,20 @@ function repositoryVisibility(repository: string): Visibility | undefined {
 	return output
 }
 
-function proveCandidateRef(target: Target): Target {
+function proveCandidateRef(
+	target: Target,
+	commandRunner: CommandRunner,
+	workingRoot: string,
+	environment: NodeJS.ProcessEnv,
+): Target {
 	if (!target.exists) return target
-	const output = processResult([
-		"git",
-		"ls-remote",
-		"--refs",
-		target.remote,
-		target.candidateRef,
-	])
+	const output = processResult(
+		["git", "ls-remote", "--refs", target.remote, target.candidateRef],
+		false,
+		workingRoot,
+		environment,
+		commandRunner,
+	)
 	if (!output) return target
 	const [headSha, ref, ...extra] = output.split(/\s+/)
 	if (!/^[0-9a-f]{40}$/.test(headSha || "") || ref !== target.candidateRef || extra.length > 0) {
@@ -707,7 +724,27 @@ function writePublicCanaryWorkflow(repositoryRoot: string): void {
 	writeFileSync(join(workflowDirectory, "plugin-ci.yml"), PUBLIC_CANARY_WORKFLOW)
 }
 
-export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: string): {
+/**
+ * Build the deterministic public canary repository through an injected Git adapter.
+ *
+ * @param sourceRoot - Candidate checkout whose installable distribution is copied
+ * @param sourceSha - Exact private source commit named by the deterministic commit message
+ * @param commandRunner - Git subprocess adapter
+ * @param processEnvironment - Explicit environment used to derive the sanitized Git identity
+ * @returns Sanitized repository, deterministic commit, cleanup root, and publication environment
+ * @throws {CanaryError} When Git cannot produce valid tree and commit object IDs
+ *
+ * @example
+ * ```typescript
+ * const candidate = createSanitizedPublicCandidate(repositoryRoot, sourceSha)
+ * ```
+ */
+export function createSanitizedPublicCandidate(
+	sourceRoot: string,
+	sourceSha: string,
+	commandRunner: CommandRunner = bunCommandRunner,
+	processEnvironment: NodeJS.ProcessEnv = process.env,
+): {
 	sha: string
 	repositoryRoot: string
 	temporaryRoot: string
@@ -718,13 +755,13 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 	copyMarketplaceDistribution(sourceRoot, repositoryRoot)
 	writePublicCanaryWorkflow(repositoryRoot)
 	const environment = {
-		PATH: process.env.PATH,
-		HOME: process.env.HOME,
-		GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
-		GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM,
-		GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
-		GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND,
-		CANARY_SSH_IDENTITY_FILE: process.env.CANARY_SSH_IDENTITY_FILE,
+		PATH: processEnvironment.PATH,
+		HOME: processEnvironment.HOME,
+		GIT_CONFIG_GLOBAL: processEnvironment.GIT_CONFIG_GLOBAL,
+		GIT_CONFIG_NOSYSTEM: processEnvironment.GIT_CONFIG_NOSYSTEM,
+		GIT_CONFIG_SYSTEM: processEnvironment.GIT_CONFIG_SYSTEM,
+		GIT_SSH_COMMAND: processEnvironment.GIT_SSH_COMMAND,
+		CANARY_SSH_IDENTITY_FILE: processEnvironment.CANARY_SSH_IDENTITY_FILE,
 		GIT_AUTHOR_NAME: "Hosted Canary",
 		GIT_AUTHOR_EMAIL: "canary@example.invalid",
 		GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
@@ -733,10 +770,10 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 		GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
 	}
 	try {
-		processResult(["git", "init", "--quiet"], false, repositoryRoot, environment)
-		processResult(["git", "add", "--all"], false, repositoryRoot, environment)
+		processResult(["git", "init", "--quiet"], false, repositoryRoot, environment, commandRunner)
+		processResult(["git", "add", "--all"], false, repositoryRoot, environment, commandRunner)
 		const tree = requireGitObjectId(
-			processResult(["git", "write-tree"], false, repositoryRoot, environment),
+			processResult(["git", "write-tree"], false, repositoryRoot, environment, commandRunner),
 			"tree",
 		)
 		const sha = requireGitObjectId(
@@ -745,6 +782,7 @@ export function createSanitizedPublicCandidate(sourceRoot: string, sourceSha: st
 				false,
 				repositoryRoot,
 				environment,
+				commandRunner,
 			),
 			"commit",
 		)
@@ -775,6 +813,9 @@ function buildTargets(
 	sourceSha: string,
 	sourceRoot: string,
 	publicCandidate: ReturnType<typeof createSanitizedPublicCandidate>,
+	commandRunner: CommandRunner,
+	environment: NodeJS.ProcessEnv,
+	workingRoot: string,
 ): Target[] {
 	return [
 		{
@@ -784,7 +825,7 @@ function buildTargets(
 			publicationRoot: publicCandidate.repositoryRoot,
 			publicationEnvironment: {
 				...publicCandidate.environment,
-				GH_TOKEN: process.env.GH_TOKEN,
+				GH_TOKEN: environment.GH_TOKEN,
 			},
 		},
 		{
@@ -795,7 +836,12 @@ function buildTargets(
 		},
 	].map((candidate) => {
 		const candidateRef = candidateRefForSource(candidate.candidateSha)
-		const actual = repositoryVisibility(candidate.repository)
+		const actual = repositoryVisibility(
+			candidate.repository,
+			commandRunner,
+			workingRoot,
+			environment,
+		)
 		if (actual && actual !== candidate.visibility) {
 			throw new CanaryError(
 				"visibility_mismatch",
@@ -815,29 +861,46 @@ function buildTargets(
 				? undefined
 				: `create ${candidate.repository} as ${candidate.visibility}, then add ${candidateRef} without an initial branch`,
 		}
-		return proveCandidateRef(target)
+		return proveCandidateRef(target, commandRunner, workingRoot, environment)
 	})
 }
 
-function createTarget(target: Target): void {
+function createTarget(
+	target: Target,
+	commandRunner: CommandRunner,
+	workingRoot: string,
+	environment: NodeJS.ProcessEnv,
+): void {
 	if (target.exists) return
 	const visibilityFlag = target.visibility === "PUBLIC" ? "--public" : "--private"
-	processResult([
-		"gh",
-		"repo",
-		"create",
-		target.repository,
-		visibilityFlag,
-		"--disable-issues",
-		"--disable-wiki",
-		"--description",
-		"Agent plugin template distribution canary",
-	])
+	processResult(
+		[
+			"gh",
+			"repo",
+			"create",
+			target.repository,
+			visibilityFlag,
+			"--disable-issues",
+			"--disable-wiki",
+			"--description",
+			"Agent plugin template distribution canary",
+		],
+		false,
+		workingRoot,
+		environment,
+		commandRunner,
+	)
 }
 
-function publishTarget(target: Target, candidateSha: string): void {
+function publishTarget(
+	target: Target,
+	candidateSha: string,
+	commandRunner: CommandRunner,
+	workingRoot: string,
+	environment: NodeJS.ProcessEnv,
+): void {
 	if (target.candidateState === "current") return
-	createTarget(target)
+	createTarget(target, commandRunner, workingRoot, environment)
 	try {
 		processResult(
 			[
@@ -849,10 +912,16 @@ function publishTarget(target: Target, candidateSha: string): void {
 			],
 			false,
 			target.publicationRoot,
-			target.publicationEnvironment,
+			target.publicationEnvironment ?? environment,
+			commandRunner,
 		)
 	} catch (error) {
-		const raced = proveCandidateRef({ ...target, exists: true })
+		const raced = proveCandidateRef(
+			{ ...target, exists: true },
+			commandRunner,
+			workingRoot,
+			environment,
+		)
 		if (raced.candidateState === "current") return
 		throw new CanaryError(
 			"candidate_push_rejected",
@@ -863,8 +932,8 @@ function publishTarget(target: Target, candidateSha: string): void {
 	}
 }
 
-function positiveDuration(name: string, fallback: number): number {
-	const value = process.env[name]
+function positiveDuration(name: string, fallback: number, environment: NodeJS.ProcessEnv): number {
+	const value = environment[name]
 	if (value === undefined) return fallback
 	if (!/^[1-9]\d*$/.test(value)) {
 		throw new CanaryError(
@@ -877,18 +946,33 @@ function positiveDuration(name: string, fallback: number): number {
 	return Number(value)
 }
 
-async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun> {
-	const deadlineMs = positiveDuration("CANARY_HOSTED_RUN_DEADLINE_MS", DEFAULT_HOSTED_RUN_DEADLINE_MS)
+async function waitForRun(
+	target: Target,
+	sourceSha: string,
+	commandRunner: CommandRunner,
+	environment: NodeJS.ProcessEnv,
+	workingRoot: string,
+): Promise<HostedRun> {
+	const deadlineMs = positiveDuration(
+		"CANARY_HOSTED_RUN_DEADLINE_MS",
+		DEFAULT_HOSTED_RUN_DEADLINE_MS,
+		environment,
+	)
 	const commandTimeoutMs = positiveDuration(
 		"CANARY_NETWORK_COMMAND_TIMEOUT_MS",
 		DEFAULT_NETWORK_COMMAND_TIMEOUT_MS,
+		environment,
 	)
-	const pollDelayMs = positiveDuration("CANARY_HOSTED_POLL_DELAY_MS", DEFAULT_HOSTED_POLL_DELAY_MS)
+	const pollDelayMs = positiveDuration(
+		"CANARY_HOSTED_POLL_DELAY_MS",
+		DEFAULT_HOSTED_POLL_DELAY_MS,
+		environment,
+	)
 	const deadline = Date.now() + deadlineMs
 	let run: { databaseId: number; status: string; conclusion: string; url: string } | undefined
 	while (Date.now() < deadline) {
 		const remaining = Math.max(1, deadline - Date.now())
-		const result = commandOutput([
+		const result = commandRunner.run([
 			"gh",
 			"run",
 			"list",
@@ -902,7 +986,7 @@ async function waitForRun(target: Target, sourceSha: string): Promise<HostedRun>
 			"1",
 			"--json",
 			"databaseId,status,conclusion,url",
-		], undefined, undefined, root, Math.min(commandTimeoutMs, remaining))
+		], { workingDirectory: workingRoot, timeout: Math.min(commandTimeoutMs, remaining) })
 		if (result.exitCode === 0) {
 			try {
 				const runs = JSON.parse(result.stdout || "[]") as Array<typeof run>
@@ -994,23 +1078,58 @@ export function bindTrustedPrivateRun(
 	}
 }
 
-function installCandidate(target: Target, sourceSha: string): CandidateInstallEvidence {
+/**
+ * Install one immutable candidate through both native harness proof paths.
+ *
+ * @param target - Hosted canary repository and immutable candidate ref
+ * @param sourceSha - Exact commit the checkout and installed bytes must bind to
+ * @param commandRunner - Git subprocess adapter
+ * @param workingRoot - Trusted driver checkout used as the clone cwd
+ * @param environment - Explicit Git transport environment
+ * @returns Candidate-bound native installation and byte-lineage evidence
+ * @throws {CanaryError} When checkout, manifest, native proof, or payload lineage differs
+ *
+ * @example
+ * ```typescript
+ * const evidence = installCandidate(target, target.candidateSha)
+ * ```
+ */
+export function installCandidate(
+	target: Target,
+	sourceSha: string,
+	commandRunner: CommandRunner = bunCommandRunner,
+	workingRoot = root,
+	environment: NodeJS.ProcessEnv = process.env,
+): CandidateInstallEvidence {
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "hosted-canary-install-"))
 	const checkoutRoot = join(temporaryRoot, "candidate")
 	let proof: ReturnType<typeof proveHostedHarnessInstall> | undefined
 	try {
 		const branch = target.candidateRef.replace(/^refs\/heads\//, "")
-		processResult([
-			"git",
-			"clone",
-			"--quiet",
-			"--branch",
-			branch,
-			"--single-branch",
-			target.remote,
-			checkoutRoot,
-		])
-		const checkoutSha = processResult(["git", "-C", checkoutRoot, "rev-parse", "HEAD"]) || ""
+		processResult(
+			[
+				"git",
+				"clone",
+				"--quiet",
+				"--branch",
+				branch,
+				"--single-branch",
+				target.remote,
+				checkoutRoot,
+			],
+			false,
+			workingRoot,
+			environment,
+			commandRunner,
+		)
+		const checkoutSha =
+			processResult(
+				["git", "-C", checkoutRoot, "rev-parse", "HEAD"],
+				false,
+				workingRoot,
+				environment,
+				commandRunner,
+			) || ""
 		if (checkoutSha !== sourceSha) {
 			throw new CanaryError(
 				"install_mismatch",
@@ -1094,6 +1213,41 @@ function installCandidate(target: Target, sourceSha: string): CandidateInstallEv
 	} finally {
 		if (proof?.temporaryRoot) rmSync(proof.temporaryRoot, { recursive: true, force: true })
 		rmSync(temporaryRoot, { recursive: true, force: true })
+	}
+}
+
+/**
+ * Bind the real hosted qualification adapters to one command runner and environment.
+ *
+ * @param commandRunner - Subprocess adapter used by publication, polling, and installation
+ * @param environment - Trusted process inputs used by hosted receipt and deadline checks
+ * @param workingRoot - Trusted driver checkout used for command cwd defaults
+ * @returns Complete qualification dependencies sharing the same execution authority
+ *
+ * @example
+ * ```typescript
+ * const dependencies = createQualificationDependencies(bunCommandRunner, process.env)
+ * ```
+ */
+export function createQualificationDependencies(
+	commandRunner: CommandRunner = bunCommandRunner,
+	environment: NodeJS.ProcessEnv = process.env,
+	workingRoot = root,
+): QualificationDependencies {
+	return {
+		root: workingRoot,
+		commandRunner,
+		environment,
+		publish: (target, candidateSha) =>
+			publishTarget(target, candidateSha, commandRunner, workingRoot, environment),
+		hostedProof: (target, candidateSha) =>
+			Promise.resolve(
+				target.visibility === "PRIVATE"
+					? bindTrustedPrivateRun(target, candidateSha, environment)
+					: waitForRun(target, candidateSha, commandRunner, environment, workingRoot),
+			),
+		install: (target, candidateSha) =>
+			installCandidate(target, candidateSha, commandRunner, workingRoot, environment),
 	}
 }
 
@@ -1224,17 +1378,7 @@ export async function qualifyTargets(
 	sourceSha: string,
 	dependencies?: QualificationDependencies,
 ): Promise<{ runs: HostedRun[]; installs: CandidateInstallEvidence[] }> {
-	const adapters = dependencies ?? {
-		publish: (target: Target, candidateSha: string) =>
-			publishTarget(target, candidateSha),
-		hostedProof: (target: Target, candidateSha: string) =>
-			Promise.resolve(
-				target.visibility === "PRIVATE"
-					? bindTrustedPrivateRun(target, candidateSha)
-					: waitForRun(target, candidateSha),
-			),
-		install: installCandidate,
-	}
+	const adapters = dependencies ?? createQualificationDependencies()
 	const visibilities = targets.map((target) => target.visibility).sort().join(",")
 	if (
 		targets.length !== 2 ||
@@ -1279,15 +1423,45 @@ export async function qualifyTargets(
 	return { runs: targets.map((target) => runs.get(target.visibility) as HostedRun), installs }
 }
 
-function preflight(options: PublishOptions): Preflight {
-	const trustedConfig = loadPluginConfig(root)
+/**
+ * Prove identity, source, visibility, and immutable target state before publication.
+ *
+ * @param options - Parsed publication request
+ * @param dependencies - Trusted root, environment, and command adapter
+ * @returns Preflight evidence plus the temporary sanitized candidate root
+ * @throws {CanaryError} When any identity, checkout, visibility, or target claim is unprovable
+ *
+ * @example
+ * ```typescript
+ * const evidence = preflight(options, createQualificationDependencies())
+ * ```
+ */
+export function preflight(
+	options: PublishOptions,
+	dependencies: QualificationDependencies = createQualificationDependencies(),
+): Preflight {
+	const trustedConfig = loadPluginConfig(dependencies.root)
 	const candidateConfig = candidateCanaryConfig(options.sourceRoot)
-	const identity = processResult(["gh", "api", "user", "--jq", ".login"]) || ""
-	const canary = trustedCanaryTargets(trustedConfig, candidateConfig, identity)
+	const identity =
+		processResult(
+			["gh", "api", "user", "--jq", ".login"],
+			false,
+			dependencies.root,
+			dependencies.environment,
+			dependencies.commandRunner,
+		) || ""
+	const canary = trustedCanaryTargets(
+		trustedConfig,
+		candidateConfig,
+		identity,
+		dependencies.environment,
+	)
 	const dirty = processResult(
 		["git", "status", "--porcelain", "--untracked-files=no"],
 		false,
 		options.sourceRoot,
+		dependencies.environment,
+		dependencies.commandRunner,
 	)
 	if (dirty) {
 		throw new CanaryError(
@@ -1310,6 +1484,8 @@ function preflight(options: PublishOptions): Preflight {
 		],
 		false,
 		options.sourceRoot,
+		dependencies.environment,
+		dependencies.commandRunner,
 	)
 	if (untrackedDistribution) {
 		throw new CanaryError(
@@ -1319,7 +1495,7 @@ function preflight(options: PublishOptions): Preflight {
 			false,
 		)
 	}
-	const ignoredDistribution = commandOutput(
+	const ignoredDistribution = dependencies.commandRunner.run(
 		[
 			"git",
 			"ls-files",
@@ -1332,11 +1508,11 @@ function preflight(options: PublishOptions): Preflight {
 			".claude-plugin/marketplace.json",
 			".agents/plugins/marketplace.json",
 		],
-		undefined,
-		undefined,
-		options.sourceRoot,
-		undefined,
-		false,
+		{
+			workingDirectory: options.sourceRoot,
+			environment: dependencies.environment,
+			trimOutput: false,
+		},
 	)
 	if (ignoredDistribution.exitCode !== 0) {
 		throw new CanaryError(
@@ -1354,11 +1530,19 @@ function preflight(options: PublishOptions): Preflight {
 		)
 	}
 	const sourceSha =
-		processResult(["git", "rev-parse", "--verify", `${options.ref}^{commit}`], false, options.sourceRoot) || ""
+		processResult(
+			["git", "rev-parse", "--verify", `${options.ref}^{commit}`],
+			false,
+			options.sourceRoot,
+			dependencies.environment,
+			dependencies.commandRunner,
+		) || ""
 	const headSha = processResult(
 		["git", "rev-parse", "--verify", "HEAD^{commit}"],
 		false,
 		options.sourceRoot,
+		dependencies.environment,
+		dependencies.commandRunner,
 	)
 	if (headSha !== sourceSha) {
 		throw new CanaryError(
@@ -1368,8 +1552,20 @@ function preflight(options: PublishOptions): Preflight {
 			false,
 		)
 	}
-	const origin = processResult(["git", "remote", "get-url", "origin"]) || ""
-	const resolvedTransport = resolveTransportIdentity(origin)
+	const origin =
+		processResult(
+			["git", "remote", "get-url", "origin"],
+			false,
+			dependencies.root,
+			dependencies.environment,
+			dependencies.commandRunner,
+		) || ""
+	const resolvedTransport = resolveTransportIdentity(
+		origin,
+		dependencies.commandRunner,
+		dependencies.environment,
+		dependencies.root,
+	)
 	const boundTransport = bindTransportIdentity(
 		identity,
 		resolvedTransport.identity,
@@ -1377,7 +1573,12 @@ function preflight(options: PublishOptions): Preflight {
 		resolvedTransport.kind,
 	)
 	const transportIdentity = { ...boundTransport, host: resolvedTransport.host }
-	const publicCandidate = createSanitizedPublicCandidate(options.sourceRoot, sourceSha)
+	const publicCandidate = createSanitizedPublicCandidate(
+		options.sourceRoot,
+		sourceSha,
+		dependencies.commandRunner,
+		dependencies.environment,
+	)
 	try {
 		const targets = buildTargets(
 			origin,
@@ -1387,6 +1588,9 @@ function preflight(options: PublishOptions): Preflight {
 			sourceSha,
 			options.sourceRoot,
 			publicCandidate,
+			dependencies.commandRunner,
+			dependencies.environment,
+			dependencies.root,
 		)
 		return {
 			identity,
@@ -1401,8 +1605,35 @@ function preflight(options: PublishOptions): Preflight {
 	}
 }
 
-function classify(options: ClassifyOptions): void {
-	const command = commandOutput([
+/**
+ * Classify one Git diff through the same typed subprocess seam used by publication.
+ *
+ * @param options - Base, head, and rendering preference selected by the caller
+ * @param commandRunner - Command adapter used to read the NUL-delimited Git diff
+ * @param workingRoot - Trusted repository containing the selected refs
+ * @returns Structured classification without writing output
+ * @throws {CanaryError} When Git cannot prove the requested diff
+ *
+ * @example
+ * ```typescript
+ * const result = classifyCanaryChanges(options, bunCommandRunner, repositoryRoot)
+ * ```
+ */
+export function classifyCanaryChanges(
+	options: ClassifyOptions,
+	commandRunner: CommandRunner = bunCommandRunner,
+	workingRoot = root,
+): {
+	ok: true
+	action: "classified"
+	sideEffects: "none"
+	base: string
+	head: string
+	changedPaths: string[]
+	canaries: ReturnType<typeof classifyPublishingSystemChanges>
+	hermeticProof: "required"
+} {
+	const command = commandRunner.run([
 		"git",
 		"-c",
 		"core.quotePath=false",
@@ -1412,7 +1643,7 @@ function classify(options: ClassifyOptions): void {
 		"--diff-filter=ACMRTD",
 		"--no-renames",
 		`${options.base}...${options.head}`,
-	], undefined, undefined, root, undefined, false)
+	], { workingDirectory: workingRoot, trimOutput: false })
 	if (command.exitCode !== 0) {
 		throw new CanaryError(
 			"command_failed",
@@ -1423,19 +1654,26 @@ function classify(options: ClassifyOptions): void {
 	const changedPaths = command.stdout ? command.stdout.split("\0").filter(Boolean) : []
 	const canaries = classifyPublishingSystemChanges(changedPaths)
 	const result = {
-		ok: true,
-		action: "classified",
-		sideEffects: "none",
+		ok: true as const,
+		action: "classified" as const,
+		sideEffects: "none" as const,
 		base: options.base,
 		head: options.head,
 		changedPaths,
 		canaries,
-		hermeticProof: "required",
+		hermeticProof: "required" as const,
 	}
+	return result
+}
+
+function emitClassification(
+	options: ClassifyOptions,
+	result: ReturnType<typeof classifyCanaryChanges>,
+): void {
 	if (options.json) console.log(JSON.stringify(result))
 	else {
-		console.log(canaries.required ? "Hosted canaries required." : "Hosted canaries not required.")
-		for (const path of canaries.triggeringPaths) console.log(path)
+		console.log(result.canaries.required ? "Hosted canaries required." : "Hosted canaries not required.")
+		for (const path of result.canaries.triggeringPaths) console.log(path)
 	}
 }
 
@@ -1474,20 +1712,42 @@ function emitSuccess(
 	}
 }
 
-async function main(arguments_: string[], runId: string): Promise<void> {
+/**
+ * Run one parsed canary workflow through explicit qualification dependencies.
+ *
+ * @param arguments_ - Public CLI arguments without the executable path
+ * @param runId - Correlation identifier emitted in structured results
+ * @param dependencies - Trusted process, publication, hosted, and install adapters
+ * @returns Completion after rendering the selected workflow result
+ * @throws {CanaryError} When preflight or qualification cannot prove the requested state
+ * @internal
+ *
+ * @example
+ * ```typescript
+ * await runCanary(["--classify", "--base", "main", "--head", "HEAD"], crypto.randomUUID())
+ * ```
+ */
+export async function runCanary(
+	arguments_: string[],
+	runId: string,
+	dependencies: QualificationDependencies = createQualificationDependencies(),
+): Promise<void> {
 	const options = parseOptions(arguments_)
 	if (!options) return
 	if (options.mode === "classify") {
-		classify(options)
+		emitClassification(
+			options,
+			classifyCanaryChanges(options, dependencies.commandRunner, dependencies.root),
+		)
 		return
 	}
-	const preflightResult = preflight(options)
+	const preflightResult = preflight(options, dependencies)
 	try {
 		const qualification = options.execute
 			? await qualifyTargets(
 					preflightResult.targets,
 					preflightResult.sourceSha,
-					undefined,
+					dependencies,
 				)
 			: { runs: [], installs: [] }
 		emitSuccess(options, preflightResult, qualification, runId)
@@ -1501,7 +1761,7 @@ if (import.meta.main) {
 	const json = arguments_.includes("--json")
 	const runId = crypto.randomUUID()
 	try {
-		await main(arguments_, runId)
+		await runCanary(arguments_, runId)
 	} catch (error) {
 		const failure =
 			error instanceof CanaryError
