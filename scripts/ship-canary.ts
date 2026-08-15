@@ -590,17 +590,20 @@ function resolveTransportIdentity(
 		const knownHostsOption = knownHostsFile
 			? ["-o", `UserKnownHostsFile=${knownHostsFile}`, "-o", "GlobalKnownHostsFile=/dev/null"]
 			: []
-		const result = commandRunner.run([
-			"ssh",
-			"-T",
-			"-o",
-			"BatchMode=yes",
-			"-o",
-			"StrictHostKeyChecking=yes",
-			...identityOptions,
-			...knownHostsOption,
-			`${transport.user || "git"}@${transport.host}`,
-		], { workingDirectory: workingRoot })
+		const result = commandRunner.run(
+			[
+				"ssh",
+				"-T",
+				"-o",
+				"BatchMode=yes",
+				"-o",
+				"StrictHostKeyChecking=yes",
+				...identityOptions,
+				...knownHostsOption,
+				`${transport.user || "git"}@${transport.host}`,
+			],
+			{ workingDirectory: workingRoot, environment },
+		)
 		const greeting = `${result.stdout}\n${result.stderr}`
 		const identity = /Hi (?<identity>[A-Za-z0-9-]+)!/.exec(greeting)?.groups?.identity
 		if ((result.exitCode !== 0 && result.exitCode !== 1) || !identity) {
@@ -1615,6 +1618,7 @@ export function preflight(
  * @param options - Base, head, and rendering preference selected by the caller
  * @param commandRunner - Command adapter used to read the NUL-delimited Git diff
  * @param workingRoot - Trusted repository containing the selected refs
+ * @param environment - Explicit process environment supplied by the qualification dependencies
  * @returns Structured classification without writing output
  * @throws {CanaryError} When Git cannot prove the requested diff
  *
@@ -1627,6 +1631,7 @@ export function classifyCanaryChanges(
 	options: ClassifyOptions,
 	commandRunner: CommandRunner = bunCommandRunner,
 	workingRoot = root,
+	environment: NodeJS.ProcessEnv = process.env,
 ): {
 	ok: true
 	action: "classified"
@@ -1647,7 +1652,7 @@ export function classifyCanaryChanges(
 		"--diff-filter=ACMRTD",
 		"--no-renames",
 		`${options.base}...${options.head}`,
-	], { workingDirectory: workingRoot, trimOutput: false })
+	], { workingDirectory: workingRoot, environment, trimOutput: false })
 	if (command.exitCode !== 0) {
 		throw new CanaryError(
 			"command_failed",
@@ -1741,7 +1746,12 @@ export async function runCanary(
 	if (options.mode === "classify") {
 		emitClassification(
 			options,
-			classifyCanaryChanges(options, dependencies.commandRunner, dependencies.root),
+			classifyCanaryChanges(
+				options,
+				dependencies.commandRunner,
+				dependencies.root,
+				dependencies.environment,
+			),
 		)
 		return
 	}

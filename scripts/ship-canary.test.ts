@@ -473,6 +473,14 @@ test("SSH identity proof reuses the old trusted workflow known-hosts option", ()
 	expect(ssh?.command).toContain("GlobalKnownHostsFile=/dev/null")
 })
 
+test("SSH identity proof receives the injected environment", () => {
+	const environment = recordingCanaryEnvironment({ CANARY_SENTINEL: "ssh-injected" })
+	const { runner } = runRecordingPreflight(recordingCanaryFixture(), {}, environment)
+
+	const ssh = runner.commands.find((record) => record.command[0] === "ssh")
+	expect(ssh?.options.environment).toEqual(environment)
+})
+
 test("SSH identity proof binds the explicit hosted key without agent fallback", () => {
 	const identityFile = "/tmp/canary-identity"
 	const knownHostsFile = "/tmp/canary-known-hosts"
@@ -573,6 +581,27 @@ test("classify diff filter includes deleted and type-changed publishing-system p
 		],
 		options: { workingDirectory: root, trimOutput: false },
 	})
+})
+
+test("classification receives the injected environment", async () => {
+	const environment = recordingCanaryEnvironment({ CANARY_SENTINEL: "classification-injected" })
+	const runner = new RecordingCommandRunner()
+	const dependencies = createQualificationDependencies(runner, environment, root)
+	const log = spyOn(console, "log").mockImplementation(() => undefined)
+	try {
+		await runCanary(
+			["--classify", "--base", "base", "--head", "head", "--json"],
+			"test-run-id",
+			dependencies,
+		)
+	} finally {
+		log.mockRestore()
+	}
+
+	const classification = runner.commands.find(
+		(record) => record.command[0] === "git" && record.command.includes("diff"),
+	)
+	expect(classification?.options.environment).toEqual(environment)
 })
 
 test("classify includes a publishing path renamed into documentation", () => {
