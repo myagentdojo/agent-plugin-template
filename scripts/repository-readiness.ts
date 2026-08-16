@@ -1,6 +1,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import { loadPluginConfig } from "./plugin-config"
+
 const root = resolve(import.meta.dir, "..")
 const tagRulesetRepair =
 	"Settings > Rules > Rulesets > New tag ruleset: target tags matching v*, enable Restrict deletions and Restrict updates, no bypass actors"

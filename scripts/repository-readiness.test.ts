@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { describe, expect, test } from "bun:test"
@@ -25,6 +26,113 @@ import {
 const root = resolve(import.meta.dir, "..")
 const tagRulesetRepair =
 	"Settings > Rules > Rulesets > New tag ruleset: target tags matching v*, enable Restrict deletions and Restrict updates, no bypass actors"
+
+test("public readiness process reaches the configured hosted-canary success path", () => {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "repository-readiness-process-"))
+	const fakeGhPath = join(fixtureRoot, "gh")
+	const repository = "myagentdojo/my-second-brain"
+	const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICanary"
+	const responses: Record<string, unknown> = {
+		[`repos/${repository}`]: {
+			default_branch: "main",
+			allow_squash_merge: true,
+			allow_merge_commit: true,
+		},
+		[`repos/${repository}/rulesets?includes_parents=true&per_page=100`]: [
+			[
+				{ id: 17, target: "tag" },
+				{ id: 18, target: "branch" },
+			],
+		],
+		[`repos/${repository}/rulesets/17?includes_parents=true`]: {
+			id: 17,
+			name: "Immutable version tags",
+			target: "tag",
+			enforcement: "active",
+			bypass_actors: [],
+			conditions: { ref_name: { include: ["refs/tags/v*"], exclude: [] } },
+			rules: [{ type: "deletion" }, { type: "update" }],
+		},
+		[`repos/${repository}/rulesets/18?includes_parents=true`]: {
+			id: 18,
+			name: "Protected main",
+			target: "branch",
+			enforcement: "active",
+			bypass_actors: [],
+			conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+			rules: [{ type: "pull_request" }, { type: "non_fast_forward" }],
+		},
+		[`repos/${repository}/branches/main/protection`]: {},
+		[`repos/${repository}/rules/branches/main`]: [{ type: "required_status_checks" }],
+		[`repos/${repository}/actions/permissions`]: { enabled: true, allowed_actions: "all" },
+		[`repos/${repository}/actions/secrets`]: {
+			secrets: [{ name: "RELEASE_PLEASE_TOKEN" }],
+		},
+		[`repos/${repository}/actions/variables`]: {
+			variables: [{ name: "RELEASE_PLEASE_AUTOMATION_LOGIN", value: "myagentdojo" }],
+		},
+		[`repos/${repository}/branches/main/protection/required_status_checks`]: {
+			contexts: REQUIRED_STATUS_CHECKS,
+		},
+		[`repos/${repository}/environments/release`]: {
+			protection_rules: [
+				{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "owner" } }] },
+			],
+		},
+		[`repos/${repository}/environments/hosted-canary-qualification`]: {
+			name: "hosted-canary-qualification",
+		},
+		[`repos/${repository}/environments/hosted-canary-qualification/secrets`]: {
+			secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })),
+		},
+		"users/myagentdojo/keys?per_page=100": [[{ key: publicKey }]],
+		[`repos/${repository}/actions/variables?per_page=100`]: [
+			{ variables: [{ name: "CANARY_SSH_PUBLIC_KEY", value: publicKey }] },
+		],
+	}
+	const fakeGhSource = `#!/usr/bin/env bun
+const responses = ${JSON.stringify(responses)}
+const endpoint = process.argv.at(-1)
+if (typeof endpoint !== "string" || !Object.hasOwn(responses, endpoint)) {
+  console.error(\`unexpected gh endpoint: \${String(endpoint)}\`)
+  process.exit(1)
+}
+console.log(JSON.stringify(responses[endpoint]))
+`
+
+	try {
+		writeFileSync(fakeGhPath, fakeGhSource, { mode: 0o755 })
+		chmodSync(fakeGhPath, 0o755)
+		const environment = {
+			...process.env,
+			PATH: `${fixtureRoot}:${process.env.PATH ?? ""}`,
+			GH_TOKEN: undefined,
+			GITHUB_TOKEN: undefined,
+		}
+		const result = Bun.spawnSync({
+			cmd: [
+				process.execPath,
+				"run",
+				"scripts/repository-readiness.ts",
+				"--repo",
+				repository,
+				"--json",
+			],
+			cwd: root,
+			env: environment,
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		expect(result.exitCode).toBe(0)
+		expect(result.stderr.toString()).toBe("")
+		const output = JSON.parse(result.stdout.toString())
+		expect(output).toMatchObject({ ok: true, repository, sideEffects: "none" })
+		expect(output.checks.every((check: { status?: string }) => check.status === "ready")).toBe(true)
+	} finally {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+	}
+})
 
 function immutableTagRuleset(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
