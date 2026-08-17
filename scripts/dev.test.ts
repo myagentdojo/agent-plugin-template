@@ -7,6 +7,8 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -33,9 +35,12 @@ interface FakePlugin {
 
 interface FakeMarketplace {
 	name: string
-	source: "directory"
-	path: string
-	installLocation: string
+	source: "directory" | "git" | "github" | "url"
+	path?: string
+	repo?: string
+	url?: string
+	ref?: string
+	installLocation?: string
 }
 
 interface FakeState {
@@ -70,12 +75,14 @@ function fakeProfile(
 		marketplaces?: FakeMarketplace[]
 		failCommands?: string[]
 		failAfterCommands?: string[]
+		failBuildAfter?: number
 	} = {},
 ) {
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "claude-development-test-"))
 	const profileRoot = join(temporaryRoot, "claude")
 	const binaryRoot = join(temporaryRoot, "bin")
 	const statePath = join(temporaryRoot, "state.json")
+	const buildCountPath = join(temporaryRoot, "build-count")
 	const productionMarketplaceRoot = join(temporaryRoot, "production-marketplace")
 	mkdirSync(join(productionMarketplaceRoot, ".claude-plugin"), {
 		recursive: true,
@@ -99,7 +106,20 @@ function fakeProfile(
 	)
 	writeExecutable(
 		join(binaryRoot, "bun"),
-		`#!/bin/sh\nif [ "$1" = "run" ] && [ "$2" = "build" ]; then exit 0; fi\nexec '${process.execPath}' "$@"\n`,
+		`#!/bin/sh
+if [ "$1" = "run" ] && [ "$2" = "build" ]; then
+	count=0
+	if [ -f '${buildCountPath}' ]; then count=$(cat '${buildCountPath}'); fi
+	count=$((count + 1))
+	printf '%s\n' "$count" > '${buildCountPath}'
+	if [ "$count" -gt '${options.failBuildAfter ?? 1_000_000}' ]; then
+		printf '%s\n' 'injected build failure' >&2
+		exit 70
+	fi
+	exit 0
+fi
+exec '${process.execPath}' "$@"
+`,
 	)
 	const production = options.production ?? false
 	const productionMarketplace = production || (options.productionMarketplaceOnly ?? false)
@@ -149,6 +169,8 @@ function fakeProfile(
 		productionMarketplaceRoot,
 		environment,
 		snapshotPath,
+		readBuildCount: () =>
+			existsSync(buildCountPath) ? Number(readFileSync(buildCountPath, "utf8").trim()) : 0,
 		readState: () => JSON.parse(readFileSync(statePath, "utf8")) as FakeState,
 		writeState: (nextState: FakeState) =>
 			writeFileSync(statePath, `${JSON.stringify(nextState, null, 2)}\n`),
@@ -161,6 +183,18 @@ function fakeProfile(
 
 function jsonOutput(result: ReturnType<typeof run>): any {
 	return JSON.parse(result.stdout.toString())
+}
+
+async function waitFor(
+	condition: () => boolean,
+	description: string,
+	timeoutMilliseconds = 10_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMilliseconds
+	while (!condition()) {
+		if (Date.now() >= deadline) throw new Error(`timed out waiting for ${description}`)
+		await Bun.sleep(25)
+	}
 }
 
 test("Claude development help exposes persistent lifecycle actions", () => {
@@ -249,6 +283,61 @@ test("Claude development watches workspace, runtime, manifest, and lock inputs",
 	}
 })
 
+test("a failed rebuild reports the error and keeps watching", async () => {
+	const profile = fakeProfile({ failBuildAfter: 2 })
+	const watchedPath = join(root, "plugin.config.json")
+	const originalTimes = statSync(watchedPath)
+	const installed = run(
+		["claude", "install", "--apply", "--json", "--no-input"],
+		profile.environment,
+	)
+	expect(installed.exitCode).toBe(0)
+
+	const child = Bun.spawn({
+		cmd: [process.execPath, "scripts/dev.ts", "claude", "watch", "--json", "--no-input"],
+		cwd: root,
+		env: profile.environment,
+		stdout: "pipe",
+		stderr: "pipe",
+	})
+	let stderr = ""
+	const decoder = new TextDecoder()
+	const stderrReader = child.stderr.getReader()
+	const stderrPump = (async () => {
+		while (true) {
+			const { done, value } = await stderrReader.read()
+			if (done) break
+			stderr += decoder.decode(value, { stream: true })
+		}
+		stderr += decoder.decode()
+	})()
+	let exitCode: number | undefined
+	try {
+		await waitFor(() => profile.readBuildCount() >= 2, "the initial watch build")
+		await Bun.sleep(100)
+		utimesSync(watchedPath, originalTimes.atime, new Date(originalTimes.mtimeMs + 1_000))
+		await waitFor(
+			() => stderr.includes("Rebuild failed: Plugin Payload rebuild failed"),
+			"the rebuild failure diagnostic",
+		)
+		expect(child.exitCode).toBeNull()
+		expect(stderr).toContain("Watching for the next change.")
+	} finally {
+		utimesSync(watchedPath, originalTimes.atime, originalTimes.mtime)
+		child.kill("SIGTERM")
+		exitCode = await child.exited
+		await stderrPump
+		profile.cleanup()
+	}
+	const stdout = await new Response(child.stdout).text()
+	expect(exitCode).toBe(0)
+	expect(JSON.parse(stdout)).toMatchObject({
+		ok: true,
+		operation: "watch",
+		transactionState: "ready",
+	})
+}, 20_000)
+
 test("Claude check generates a link-mode command source for the canonical payload", () => {
 	const profile = fakeProfile()
 	try {
@@ -271,6 +360,42 @@ test("Claude check generates a link-mode command source for the canonical payloa
 			},
 		})
 		expect(marketplace.plugins[0].source.command).toContain(join(root, "plugin"))
+	} finally {
+		profile.cleanup()
+	}
+})
+
+test("an unparsable production Marketplace URL blocks before profile mutation", () => {
+	const profile = fakeProfile({
+		marketplaces: [
+			{
+				name: pluginName,
+				source: "url",
+				url: "https://user:password@",
+			},
+		],
+	})
+	try {
+		const result = run(
+			["claude", "install", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+
+		expect(result.exitCode).toBe(1)
+		expect(jsonOutput(result)).toMatchObject({
+			changed: false,
+			transactionState: "blocked",
+			error: { code: "PRODUCTION_SOURCE_UNRESTORABLE" },
+		})
+		const state = profile.readState()
+		expect(state.marketplaces).toHaveLength(1)
+		expect(state.marketplaces[0].url).toBe("https://user:password@")
+		expect(
+			state.commands.some((command) => /plugin (install|uninstall|enable|disable)/.test(command.join(" "))),
+		).toBe(false)
+		expect(
+			state.commands.some((command) => command.slice(0, 3).join(" ") === "plugin marketplace remove"),
+		).toBe(false)
 	} finally {
 		profile.cleanup()
 	}
@@ -346,6 +471,37 @@ test("install and restore preserve an originally absent production state", () =>
 	}
 })
 
+test("restore succeeds when the checkout can no longer build", () => {
+	const profile = fakeProfile({ production: true, failBuildAfter: 1 })
+	try {
+		const installed = run(
+			["claude", "install", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+		expect(installed.exitCode).toBe(0)
+		expect(profile.readBuildCount()).toBe(1)
+
+		const restored = run(
+			["claude", "restore", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+
+		expect(restored.exitCode).toBe(0)
+		expect(jsonOutput(restored)).toMatchObject({
+			changed: true,
+			transactionState: "restored",
+			current: {
+				production: "installed",
+				development: "absent",
+				singleSource: true,
+			},
+		})
+		expect(profile.readBuildCount()).toBe(1)
+	} finally {
+		profile.cleanup()
+	}
+})
+
 test("install and restore preserve a production Marketplace without an installed plugin", () => {
 	const profile = fakeProfile({ productionMarketplaceOnly: true })
 	try {
@@ -412,6 +568,35 @@ test("isolated profile snapshots cannot overwrite each other's restore state", (
 	} finally {
 		productionProfile.cleanup()
 		absentProfile.cleanup()
+	}
+})
+
+test("a snapshot without prior state reports a typed mismatch", () => {
+	const profile = fakeProfile()
+	try {
+		const installed = run(
+			["claude", "install", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+		expect(installed.exitCode).toBe(0)
+		const snapshot = JSON.parse(readFileSync(profile.snapshotPath, "utf8"))
+		delete snapshot.prior
+		writeFileSync(profile.snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
+
+		const restored = run(
+			["claude", "restore", "--json", "--no-input"],
+			profile.environment,
+		)
+
+		expect(restored.exitCode).toBe(1)
+		expect(jsonOutput(restored)).toMatchObject({
+			changed: false,
+			transactionState: "blocked",
+			retrySafety: "inspect_required",
+			error: { code: "RESTORATION_SNAPSHOT_MISMATCH" },
+		})
+	} finally {
+		profile.cleanup()
 	}
 })
 

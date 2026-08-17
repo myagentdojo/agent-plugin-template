@@ -103,7 +103,7 @@ bun run dev:claude
 
 `install` builds the Plugin Payload, generates an ignored local Marketplace that uses Claude Code's official command source with `mode: "link"`, and previews the profile transition. `--apply` captures the exact prior production or absent state, removes the production source with plugin data preserved, then installs and enables one user-scoped Development Installation linked to this checkout. It fails closed if Claude reports another scope, an unknown identity, the wrong development checkout, or production and development together.
 
-The installation persists across ordinary Claude sessions started from unrelated directories. `bun run dev:claude` builds once and watches runtime source, skills, hooks, assets, manifests, and lock inputs. It does not launch Claude or change profile state. After a successful rebuild, run `/reload-plugins` in each open Claude session.
+The installation persists across ordinary Claude sessions started from unrelated directories. After `install --apply` succeeds, `bun run dev:claude` builds once and watches runtime source, skills, hooks, assets, manifests, and lock inputs. It fails closed if no enabled live-linked Development Installation exists. It does not launch Claude or change profile state. After a successful rebuild, run `/reload-plugins` in each open Claude session.
 
 Restore the captured production enabled state and Marketplace source, a Marketplace-only state, or the exact prior absent state through the same preview gate. Restore snapshots are atomic, profile-keyed, ignored repository state and reject Marketplace sources containing inline credentials:
 

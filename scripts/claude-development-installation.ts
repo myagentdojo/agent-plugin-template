@@ -331,13 +331,13 @@ function restorableMarketplace(entry: ClaudeMarketplaceListEntry): RestorableMar
 		case "git":
 		case "url": {
 			if (!entry.url) break
-			let url: URL | undefined
+			let url: URL
 			try {
 				url = new URL(entry.url)
 			} catch {
-				url = undefined
+				break
 			}
-			if (url?.username || url?.password) {
+			if (url.username || url.password) {
 				throw new ClaudeDevelopmentInstallationError(
 					"PRODUCTION_SOURCE_CONTAINS_CREDENTIALS",
 					"The production Marketplace source contains inline credentials and cannot be persisted safely",
@@ -585,7 +585,13 @@ function readSnapshot(input: ClaudeDevelopmentInstallationInput): RestorationSna
 		)
 	}
 	if (
+		typeof snapshot !== "object" ||
+		snapshot === null ||
+		Array.isArray(snapshot) ||
 		snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION ||
+		typeof snapshot.prior !== "object" ||
+		snapshot.prior === null ||
+		Array.isArray(snapshot.prior) ||
 		snapshot.profileRoot !== profileRoot(input.environment) ||
 		snapshot.repositoryRoot !== realpathSync(input.repositoryRoot) ||
 		snapshot.pluginName !== loadPluginConfig(input.repositoryRoot).name ||
@@ -865,33 +871,35 @@ function inspectStateForRecovery(
 }
 
 function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunner): InspectedState {
-	command(runner, ["bun", "run", "build"], {
-		repositoryRoot: input.repositoryRoot,
-		environment: input.environment,
-		code: "BUILD_FAILED",
-		label: "Plugin Payload build",
-		timeout: 120_000,
-	})
-	const root = prepareMarketplace(input.repositoryRoot)
-	const versionOutput = command(runner, ["claude", "--version"], {
-		repositoryRoot: input.repositoryRoot,
-		environment: input.environment,
-		code: "CLAUDE_UNAVAILABLE",
-		label: "Claude Code version inspection",
-	})
-	if (!versionAtLeast(parseVersion(versionOutput), MINIMUM_COMMAND_SOURCE_VERSION)) {
-		throw new ClaudeDevelopmentInstallationError(
-			"CLAUDE_VERSION_UNSUPPORTED",
-			"Claude Code 2.1.229 or later is required for command-source link mode",
-			{ action: "FIX_INPUT", errorFamily: "runtime" },
-		)
+	if (input.operation !== "restore") {
+		command(runner, ["bun", "run", "build"], {
+			repositoryRoot: input.repositoryRoot,
+			environment: input.environment,
+			code: "BUILD_FAILED",
+			label: "Plugin Payload build",
+			timeout: 120_000,
+		})
+		const root = prepareMarketplace(input.repositoryRoot)
+		const versionOutput = command(runner, ["claude", "--version"], {
+			repositoryRoot: input.repositoryRoot,
+			environment: input.environment,
+			code: "CLAUDE_UNAVAILABLE",
+			label: "Claude Code version inspection",
+		})
+		if (!versionAtLeast(parseVersion(versionOutput), MINIMUM_COMMAND_SOURCE_VERSION)) {
+			throw new ClaudeDevelopmentInstallationError(
+				"CLAUDE_VERSION_UNSUPPORTED",
+				"Claude Code 2.1.229 or later is required for command-source link mode",
+				{ action: "FIX_INPUT", errorFamily: "runtime" },
+			)
+		}
+		command(runner, ["claude", "plugin", "validate", root], {
+			repositoryRoot: input.repositoryRoot,
+			environment: input.environment,
+			code: "DEVELOPMENT_MARKETPLACE_INVALID",
+			label: "Claude development Marketplace validation",
+		})
 	}
-	command(runner, ["claude", "plugin", "validate", root], {
-		repositoryRoot: input.repositoryRoot,
-		environment: input.environment,
-		code: "DEVELOPMENT_MARKETPLACE_INVALID",
-		label: "Claude development Marketplace validation",
-	})
 	const state =
 		input.operation === "restore"
 			? inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
@@ -1124,14 +1132,19 @@ async function runWatch(
 		watch(join(input.repositoryRoot, relativePath), { recursive }, () => {
 			if (rebuildTimer) clearTimeout(rebuildTimer)
 			rebuildTimer = setTimeout(() => {
-				command(runner, ["bun", "run", "build"], {
-					repositoryRoot: input.repositoryRoot,
-					environment: input.environment,
-					code: "BUILD_FAILED",
-					label: "Plugin Payload rebuild",
-					timeout: 120_000,
-				})
-				process.stderr.write("Build complete. Run /reload-plugins in Claude Code.\n")
+				try {
+					command(runner, ["bun", "run", "build"], {
+						repositoryRoot: input.repositoryRoot,
+						environment: input.environment,
+						code: "BUILD_FAILED",
+						label: "Plugin Payload rebuild",
+						timeout: 120_000,
+					})
+					process.stderr.write("Build complete. Run /reload-plugins in Claude Code.\n")
+				} catch (error) {
+					const message = error instanceof Error ? error.message : "rebuild failed"
+					process.stderr.write(`Rebuild failed: ${message}. Watching for the next change.\n`)
+				}
 			}, 100)
 		}),
 	)
