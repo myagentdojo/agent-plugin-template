@@ -1,12 +1,14 @@
-import {
-	mkdirSync,
-	readFileSync,
-	rmSync,
-	watch,
-	writeFileSync,
-} from "node:fs"
+import { randomUUID } from "node:crypto"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 
+import {
+	ClaudeDevelopmentInstallationError,
+	claudeWatchSources,
+	runClaudeDevelopmentInstallation,
+	type ClaudeDevelopmentErrorAction,
+	type ClaudeDevelopmentOperation,
+} from "./claude-development-installation"
 import {
 	HARNESS_IDENTITIES,
 	QUALIFICATION_CLIENT_HARNESSES,
@@ -15,92 +17,151 @@ import {
 import { copyPluginPayload } from "./plugin-files"
 import { loadPluginConfig } from "./plugin-config"
 
+export { claudeWatchSources }
+
 const root = resolve(import.meta.dir, "..")
-const pluginRoot = join(root, "plugin")
 const pluginConfig = loadPluginConfig(root)
 const pluginName = pluginConfig.name
-const productionPluginId = `${pluginName}@${pluginName}`
-const claudeSessionSettings = JSON.stringify({
-	enabledPlugins: { [productionPluginId]: false },
-})
 const developmentMarketplaceName = `${pluginName}-dev`
 const developmentRoot = join(root, ".dev", "codex-marketplace")
 const stagedPluginRoot = join(developmentRoot, "plugins", pluginName)
 
-export const claudeWatchSources = [
-	{ relativePath: "runtime", recursive: true },
-	{ relativePath: "packages", recursive: true },
-	{ relativePath: "plugin/skills", recursive: true },
-	{ relativePath: "plugin/hooks", recursive: true },
-	{ relativePath: "plugin/assets", recursive: true },
-	{ relativePath: "plugin/.claude-plugin", recursive: true },
-	{ relativePath: "plugin/.codex-plugin", recursive: true },
-	{ relativePath: "package.json", recursive: false },
-	{ relativePath: "bun.lock", recursive: false },
-	{ relativePath: "bunfig.toml", recursive: false },
-	{ relativePath: "plugin.config.json", recursive: false },
-] as const
+const topLevelHelp = `Develop the complete Plugin Payload through each native harness.
 
-const help = `Usage: bun run dev -- <command> [options]
+Usage:
+  bun run dev -- claude <check|install|restore|watch> [options]
+  bun run dev -- codex [--check] [--no-launch] [--dry-run] [--json]
+  bun run dev -- --help
 
 Commands:
-  claude              Build, watch, and launch Claude against this checkout
-  codex               Build, stage, reinstall, and launch Codex
+  claude              Manage one persistent live-linked Claude Development Installation
+  codex               Build, stage, reinstall, and optionally launch Codex
+
+Run \`bun run dev -- claude --help\` for the Claude lifecycle and safety contract.
+`
+
+const claudeHelp = `Manage one persistent live-linked Claude Code Development Installation.
+
+Usage:
+  bun run dev -- claude check [--json] [--no-input]
+  bun run dev -- claude install [--apply] [--json] [--no-input]
+  bun run dev -- claude restore [--apply] [--json] [--no-input]
+  bun run dev -- claude watch [--json] [--no-input]
+
+Actions:
+  check               Build, validate, and inspect without changing Claude profile state
+  install             Preview production-to-development replacement; --apply executes it
+  restore             Preview exact prior-state restoration; --apply executes it
+  watch               Build once, then watch sources; never launches Claude
 
 Options:
-  --check             Build and stage only; do not change harness state
-  --no-launch         Prepare the harness but do not launch it
+  --apply              Authorize the previewed install or restore mutation
+  --json               Emit one stable machine result on stdout
+  --no-input           Assert the non-interactive path; this command never prompts
+  -h, --help           Show this help
+
+Examples:
+  bun run dev -- claude check --json --no-input
+  bun run dev -- claude install
+  bun run dev -- claude install --apply
+  bun run dev:claude
+  bun run dev -- claude restore --apply
+
+Safety:
+  Production and development identities are never retained together. Install and
+  restore fail closed on ambiguous or non-user state. Persistent mutations require
+  --apply. Build and watch write repository output but do not change Claude settings.
+`
+
+const codexHelp = `Usage: bun run dev -- codex [options]
+
+Options:
+  --check             Build and stage only; do not change Codex profile state
+  --no-launch         Prepare Codex but do not launch it
   --dry-run           Print the plan without writes or harness commands
   --json              Emit the dry-run plan as JSON
   -h, --help          Show this help
-
-Examples:
-  bun run dev:claude
-  bun run dev:codex
-  bun run dev -- codex --check
-  bun run dev -- claude --dry-run --json
 `
 
-interface Options {
-	harness: HarnessId
+interface ClaudeInvocation {
+	harness: "claude"
+	operation: ClaudeDevelopmentOperation
+	apply: boolean
+	json: boolean
+	noInput: boolean
+}
+
+interface CodexInvocation {
+	harness: "codex"
 	check: boolean
 	launch: boolean
 	dryRun: boolean
 	json: boolean
 }
 
-function fail(message: string): never {
-	console.error(`Error: ${message}`)
-	console.error("Run `bun run dev -- --help` for usage.")
-	process.exit(2)
+type Invocation = ClaudeInvocation | CodexInvocation
+
+class UsageError extends Error {}
+
+function parseClaude(arguments_: string[]): ClaudeInvocation {
+	const operation = arguments_[0] as ClaudeDevelopmentOperation | undefined
+	if (!operation || !["check", "install", "restore", "watch"].includes(operation)) {
+		throw new UsageError("claude requires check, install, restore, or watch")
+	}
+	let apply = false
+	let json = false
+	let noInput = false
+	const seen = new Set<string>()
+	for (const argument of arguments_.slice(1)) {
+		if (seen.has(argument)) throw new UsageError(`${argument} may be provided once`)
+		seen.add(argument)
+		switch (argument) {
+			case "--apply":
+				apply = true
+				break
+			case "--json":
+				json = true
+				break
+			case "--no-input":
+				noInput = true
+				break
+			default:
+				throw new UsageError(`unknown Claude option: ${argument}`)
+		}
+	}
+	if (apply && !["install", "restore"].includes(operation)) {
+		throw new UsageError("--apply is supported only by claude install and claude restore")
+	}
+	return { harness: "claude", operation, apply, json, noInput }
 }
 
-function parseOptions(arguments_: string[]): Options | null {
-	if (arguments_.length === 0 || arguments_.includes("--help") || arguments_.includes("-h")) {
-		console.log(help)
-		return null
-	}
-
-	const harness = arguments_[0] as HarnessId
-	if (!Object.hasOwn(HARNESS_IDENTITIES, harness)) fail(`unknown command: ${harness}`)
-
-	const flags = new Set(arguments_.slice(1))
+function parseCodex(arguments_: string[]): CodexInvocation {
+	const flags = new Set(arguments_)
 	for (const flag of flags) {
 		if (!["--check", "--no-launch", "--dry-run", "--json"].includes(flag)) {
-			fail(`unknown option: ${flag}`)
+			throw new UsageError(`unknown Codex option: ${flag}`)
 		}
 	}
 	if (flags.has("--json") && !flags.has("--dry-run")) {
-		fail("--json requires --dry-run")
+		throw new UsageError("Codex --json requires --dry-run")
 	}
-
 	return {
-		harness,
+		harness: "codex",
 		check: flags.has("--check"),
 		launch: !flags.has("--no-launch") && !flags.has("--check"),
 		dryRun: flags.has("--dry-run"),
 		json: flags.has("--json"),
 	}
+}
+
+function parseInvocation(arguments_: string[]): Invocation {
+	const harness = arguments_[0] as HarnessId | undefined
+	if (!harness || !Object.hasOwn(HARNESS_IDENTITIES, harness)) {
+		throw new UsageError("expected the claude or codex harness")
+	}
+	return harness === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]
+		? parseClaude(arguments_.slice(1))
+		: parseCodex(arguments_.slice(1))
 }
 
 function run(command: string[], environment = process.env): void {
@@ -175,47 +236,7 @@ function codexMarketplaceExists(): boolean {
 	return true
 }
 
-async function runClaude(options: Options): Promise<void> {
-	build()
-	if (options.check) {
-		console.log("Claude development check passed: canonical plugin build is current.")
-		return
-	}
-	if (!options.launch) {
-		console.log(
-			`Claude source is ready. Launch with: claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`,
-		)
-		return
-	}
-
-	let rebuildTimer: ReturnType<typeof setTimeout> | undefined
-	const watchers = claudeWatchSources.map(({ relativePath, recursive }) =>
-		watch(join(root, relativePath), { recursive }, () => {
-			if (rebuildTimer) clearTimeout(rebuildTimer)
-			rebuildTimer = setTimeout(() => {
-				console.error("\nPlugin source changed. Rebuilding portable distribution...")
-				build()
-				console.error("Build complete. Run /reload-plugins in Claude Code.\n")
-			}, 100)
-		}),
-	)
-
-	const claude = Bun.spawn(
-		["claude", "--settings", claudeSessionSettings, "--plugin-dir", pluginRoot],
-		{
-			cwd: root,
-			env: process.env,
-			stdin: "inherit",
-			stdout: "inherit",
-			stderr: "inherit",
-		},
-	)
-	const exitCode = await claude.exited
-	for (const watcher of watchers) watcher.close()
-	process.exitCode = exitCode
-}
-
-function runCodex(options: Options): void {
+function runCodex(options: CodexInvocation): void {
 	build()
 	const version = stageCodexPlugin()
 	console.log(`Staged complete plugin ${version}`)
@@ -233,32 +254,128 @@ function runCodex(options: Options): void {
 	if (options.launch) run(["codex"])
 }
 
-async function main(): Promise<void> {
-	const options = parseOptions(process.argv.slice(2))
-	if (!options) return
-
-	if (options.dryRun) {
-		const isClaude = options.harness === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]
-		const plan = {
-			harness: options.harness,
-			build: "bun run build",
-			source: isClaude ? pluginRoot : stagedPluginRoot,
-			install:
-				isClaude
-					? `claude --settings ${JSON.stringify(claudeSessionSettings)} --plugin-dir ${JSON.stringify(pluginRoot)}`
-					: `codex plugin add ${pluginName}@${developmentMarketplaceName}`,
-			reload:
-				isClaude
-					? "Run /reload-plugins after the watcher rebuilds"
-					: "Start a fresh Codex task after reinstall",
-		}
-		if (options.json) console.log(JSON.stringify(plan))
-		else console.log(Object.values(plan).join("\n"))
-	} else if (options.harness === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]) {
-		await runClaude(options)
-	} else {
-		runCodex(options)
+function developmentFailure(
+	runId: string,
+	invocation: ClaudeInvocation,
+	error: ClaudeDevelopmentInstallationError,
+): Record<string, unknown> {
+	const action: ClaudeDevelopmentErrorAction = error.action
+	return {
+		schemaVersion: 1,
+		contractId: "plugin.development-installation",
+		runId,
+		ok: false,
+		harness: "claude",
+		operation: invocation.operation,
+		mode:
+			invocation.operation === "check"
+				? "inspect"
+				: invocation.operation === "watch"
+					? "watch"
+					: invocation.apply
+						? "apply"
+						: "preview",
+		changed: error.changed,
+		transactionState: error.transactionState,
+		retrySafety: error.retrySafety,
+		sideEffects: error.sideEffects,
+		error: {
+			name: error.name,
+			code: error.code,
+			action,
+			retryable: error.retrySafety === "safe",
+			errorFamily: error.errorFamily,
+			hintVersion: 1,
+			severity: error.transactionState === "unknown" ? "critical" : "error",
+			recoverability:
+				error.transactionState === "unknown"
+					? "inspect"
+					: error.retrySafety === "safe"
+						? "retry"
+						: "manual",
+			safeToRetrySameInput: error.retrySafety === "safe",
+		},
+		message: error.message,
+		nextAction: error.nextAction,
 	}
 }
 
-if (import.meta.main) await main()
+async function main(arguments_: string[]): Promise<number> {
+	if (arguments_.length === 0 || arguments_[0] === "--help" || arguments_[0] === "-h") {
+		process.stdout.write(topLevelHelp)
+		return 0
+	}
+	if (
+		arguments_[0] === QUALIFICATION_CLIENT_HARNESSES["claude-cli"] &&
+		(arguments_.length === 1 || arguments_.includes("--help") || arguments_.includes("-h"))
+	) {
+		process.stdout.write(claudeHelp)
+		return 0
+	}
+	if (
+		arguments_[0] === QUALIFICATION_CLIENT_HARNESSES["codex-cli"] &&
+		(arguments_.includes("--help") || arguments_.includes("-h"))
+	) {
+		process.stdout.write(codexHelp)
+		return 0
+	}
+
+	const runId = randomUUID()
+	let invocation: Invocation
+	try {
+		invocation = parseInvocation(arguments_)
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "invalid command usage"
+		process.stderr.write(`dev: ${message}\n`)
+		return 2
+	}
+
+	if (invocation.harness === QUALIFICATION_CLIENT_HARNESSES["claude-cli"]) {
+		try {
+			const output = await runClaudeDevelopmentInstallation({
+				operation: invocation.operation,
+				apply: invocation.apply,
+				runId,
+				repositoryRoot: root,
+				environment: process.env,
+			})
+			if (invocation.json) process.stdout.write(`${JSON.stringify(output)}\n`)
+			else process.stdout.write(`${output.transactionState}: ${output.nextAction}\n`)
+			return 0
+		} catch (error) {
+			const failure =
+				error instanceof ClaudeDevelopmentInstallationError
+					? error
+					: new ClaudeDevelopmentInstallationError(
+							"INTERNAL_FAILURE",
+							"Unexpected development lifecycle failure; native state was not proven",
+							{
+								action: "ESCALATE",
+								errorFamily: "internal",
+								retrySafety: "inspect_required",
+							},
+						)
+			if (invocation.json)
+				process.stdout.write(`${JSON.stringify(developmentFailure(runId, invocation, failure))}\n`)
+			process.stderr.write(`dev: ${failure.code}: ${failure.message} [run ${runId}]\n`)
+			return 1
+		}
+	}
+
+	if (invocation.dryRun) {
+		const plan = {
+			harness: invocation.harness,
+			build: "bun run build",
+			source: stagedPluginRoot,
+			install: `codex plugin add ${pluginName}@${developmentMarketplaceName}`,
+			reload: "Start a fresh Codex task after reinstall",
+		}
+		if (invocation.json) console.log(JSON.stringify(plan))
+		else console.log(Object.values(plan).join("\n"))
+		return 0
+	}
+	runCodex(invocation)
+	return 0
+}
+
+if (import.meta.main) process.exit(await main(process.argv.slice(2)))

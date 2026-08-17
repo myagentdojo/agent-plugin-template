@@ -16,7 +16,7 @@
     "release:validate": "bun run scripts/release-validate.ts",
     "build": "bun run generate:check && bun run scripts/build.ts",
     "dev": "bun run scripts/dev.ts",
-    "dev:claude": "bun run scripts/dev.ts claude",
+    "dev:claude": "bun run scripts/dev.ts claude watch",
     "dev:codex": "bun run scripts/dev.ts codex",
     "ship:canary": "bun run scripts/ship-canary.ts",
     "readiness": "bun run scripts/repository-readiness.ts",

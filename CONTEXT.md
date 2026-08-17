@@ -33,7 +33,7 @@ Consumer-executable plugin behavior that does not depend on the contributor tool
 _Avoid_: Bun runtime, generated script
 
 **Development Installation**:
-A temporary Plugin Installation containing local or unreleased changes.
+A harness-managed installation for local or unreleased changes. Claude Code uses one persistent user-scoped command-source link to the live Plugin Payload and keeps it mutually exclusive with the production Plugin Installation. Codex uses a staged cached installation.
 _Avoid_: Release, development marketplace
 
 **Marketplace**:
