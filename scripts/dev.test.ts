@@ -293,6 +293,7 @@ test("a failed rebuild reports the error and keeps watching", async () => {
 		profile.environment,
 	)
 	expect(installed.exitCode).toBe(0)
+	const commandCountBeforeWatch = profile.readState().commands.length
 
 	const child = Bun.spawn({
 		cmd: [process.execPath, "scripts/dev.ts", "claude", "watch", "--json", "--no-input"],
@@ -314,7 +315,12 @@ test("a failed rebuild reports the error and keeps watching", async () => {
 	})()
 	let exitCode: number | undefined
 	try {
-		await waitFor(() => profile.readBuildCount() >= 2, "the initial watch build")
+		await waitFor(
+			() =>
+				profile.readBuildCount() >= 2 &&
+				profile.readState().commands.length >= commandCountBeforeWatch + 4,
+			"watch preparation to finish",
+		)
 		await Bun.sleep(100)
 		utimesSync(watchedPath, originalTimes.atime, new Date(originalTimes.mtimeMs + 1_000))
 		await waitFor(
