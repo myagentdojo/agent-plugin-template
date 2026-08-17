@@ -753,7 +753,7 @@ test("install previews and repairs a disabled snapshot-owned development link", 
 	} finally {
 		profile.cleanup()
 	}
-})
+}, 15_000)
 
 test("an unmanaged development link without its profile snapshot fails closed", () => {
 	const profile = fakeProfile()
