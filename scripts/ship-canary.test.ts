@@ -1333,7 +1333,7 @@ test("untrusted PR workflow always reports without canary credentials", () => {
 	expect(workflow).not.toContain("CANARY_SSH_PRIVATE_KEY")
 	expect(workflow).not.toContain("environment: hosted-canary-qualification")
 	expect(workflow).toContain("bun run generate:check")
-	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
+	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.229")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("bun run prove:harness-install -- --require-native")
 })
@@ -1358,7 +1358,7 @@ test("privileged canary workflow executes trusted code and treats the PR checkou
 		/Check out candidate as data[\s\S]*?persist-credentials: false[\s\S]*?fetch-depth: 0/,
 	)
 	expect(workflow).not.toContain("bun run generate:check")
-	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
+	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.229")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("environment: hosted-canary-qualification")
 	expect(workflow).toContain("CANARY_QUALIFIED_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}")

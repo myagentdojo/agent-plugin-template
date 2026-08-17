@@ -783,7 +783,7 @@ test("release workflow is pinned and publishes proven assets after validation", 
 	expect(releaseCreate).toBeGreaterThan(replayStepStart + replayPublicationAdmission)
 	expect(releaseCreate).toBeGreaterThan(replayStepStart + replayRepairAdmission)
 	expect(workflow).toContain("bun run prove:all")
-	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.222")
+	expect(workflow).toContain("@anthropic-ai/claude-code@2.1.229")
 	expect(workflow).toContain("@openai/codex@0.146.1")
 	expect(workflow).toContain("SOURCE_COMMIT")
 	expect(workflow).toContain("canonicalGitHubRepositoryIdentity")

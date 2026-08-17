@@ -715,7 +715,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install pinned native marketplace CLIs
-        run: bun add --global "@anthropic-ai/claude-code@2.1.222" "@openai/codex@0.146.1"
+        run: bun add --global "@anthropic-ai/claude-code@2.1.229" "@openai/codex@0.146.1"
       - name: Download the platform-proven release candidate
         env:
           GH_TOKEN: ${{ github.token }}
