@@ -741,12 +741,26 @@ function restoreFromSnapshot(
 		nativeMutation(
 			input,
 			runner,
-			["plugin", "install", productionId, "--scope", "user"],
+			["plugin", "install", productionId, "--scope", "user", "--yes"],
 			"Claude production Plugin restoration",
 			"production_plugin_restored",
 			snapshot,
 		)
 		state = inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
+		if (state.productionPlugin?.version !== snapshot.prior.plugin.version) {
+			throw new ClaudeDevelopmentInstallationError(
+				"PRODUCTION_VERSION_UNAVAILABLE",
+				"Claude restored a production Plugin version that differs from the captured version",
+				{
+					action: "INSPECT_STATE",
+					errorFamily: "recovery",
+					changed: true,
+					transactionState: "unknown",
+					retrySafety: "inspect_required",
+					sideEffects: snapshot.sideEffects,
+				},
+			)
+		}
 	}
 	if (snapshot.prior.plugin && state.productionPlugin?.enabled !== snapshot.prior.plugin.enabled) {
 		nativeMutation(
@@ -1128,28 +1142,43 @@ async function runWatch(
 		)
 	}
 	let rebuildTimer: ReturnType<typeof setTimeout> | undefined
-	const watchers = claudeWatchSources.map(({ relativePath, recursive }) =>
-		watch(join(input.repositoryRoot, relativePath), { recursive }, () => {
-			if (rebuildTimer) clearTimeout(rebuildTimer)
-			rebuildTimer = setTimeout(() => {
-				try {
-					command(runner, ["bun", "run", "build"], {
-						repositoryRoot: input.repositoryRoot,
-						environment: input.environment,
-						code: "BUILD_FAILED",
-						label: "Plugin Payload rebuild",
-						timeout: 120_000,
-					})
-					process.stderr.write("Build complete. Run /reload-plugins in Claude Code.\n")
-				} catch (error) {
-					const message = error instanceof Error ? error.message : "rebuild failed"
-					process.stderr.write(`Rebuild failed: ${message}. Watching for the next change.\n`)
-				}
-			}, 100)
-		}),
-	)
-	const stop = () => {
+	const watchers: ReturnType<typeof watch>[] = []
+	const closeWatchers = () => {
 		for (const watcher_ of watchers) watcher_.close()
+	}
+	try {
+		for (const { relativePath, recursive } of claudeWatchSources) {
+			const target = join(input.repositoryRoot, relativePath)
+			if (!existsSync(target)) continue
+			watchers.push(
+				watch(target, { recursive }, () => {
+					if (rebuildTimer) clearTimeout(rebuildTimer)
+					rebuildTimer = setTimeout(() => {
+						try {
+							command(runner, ["bun", "run", "build"], {
+								repositoryRoot: input.repositoryRoot,
+								environment: input.environment,
+								code: "BUILD_FAILED",
+								label: "Plugin Payload rebuild",
+								timeout: 120_000,
+							})
+							process.stderr.write("Build complete. Run /reload-plugins in Claude Code.\n")
+						} catch (error) {
+							const message = error instanceof Error ? error.message : "rebuild failed"
+							process.stderr.write(
+								`Rebuild failed: ${message}. Watching for the next change.\n`,
+							)
+						}
+					}, 100)
+				}),
+			)
+		}
+	} catch (error) {
+		closeWatchers()
+		throw error
+	}
+	const stop = () => {
+		closeWatchers()
 	}
 	process.once("SIGINT", stop)
 	process.once("SIGTERM", stop)

@@ -22,6 +22,7 @@ interface FakeState {
 	commands: string[][]
 	failCommands?: string[]
 	failAfterCommands?: string[]
+	installVersions?: Record<string, string>
 }
 
 const statePath = process.env.FAKE_CLAUDE_STATE
@@ -75,7 +76,8 @@ function installPlugin(pluginId: string, scope: string): void {
 		readFileSync(join(sourceRoot, ".claude-plugin", "plugin.json"), "utf8"),
 	)
 	const linked = marketplaceName.endsWith("-dev")
-	const version = linked ? `${manifest.version}-fake-link` : manifest.version
+	const version =
+		state.installVersions?.[pluginId] ?? (linked ? `${manifest.version}-fake-link` : manifest.version)
 	const installPath = join(
 		process.env.CLAUDE_CONFIG_DIR!,
 		"plugins",

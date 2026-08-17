@@ -109,7 +109,9 @@ function proveClaudeDevelopmentInstallation(): void {
 			initial.current.development !== "absent" ||
 			!initial.current.singleSource
 		) {
-			throw new Error("fresh isolated Claude profile was not empty")
+			throw new Error(
+				"isolated Claude profile did not start from one enabled production installation",
+			)
 		}
 
 		const installed = runClaudeLifecycle("install", environment, true)

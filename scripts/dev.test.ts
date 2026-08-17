@@ -49,6 +49,7 @@ interface FakeState {
 	commands: string[][]
 	failCommands?: string[]
 	failAfterCommands?: string[]
+	installVersions?: Record<string, string>
 }
 
 function run(arguments_: string[], environment = process.env) {
@@ -401,6 +402,35 @@ test("an unparsable production Marketplace URL blocks before profile mutation", 
 	}
 })
 
+test("a production Marketplace URL with inline credentials blocks before profile mutation", () => {
+	const profile = fakeProfile({
+		marketplaces: [
+			{
+				name: pluginName,
+				source: "url",
+				url: "https://user:password@example.com/marketplace.git",
+			},
+		],
+	})
+	try {
+		const result = run(
+			["claude", "install", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+
+		expect(result.exitCode).toBe(1)
+		expect(jsonOutput(result)).toMatchObject({
+			changed: false,
+			transactionState: "blocked",
+			error: { code: "PRODUCTION_SOURCE_CONTAINS_CREDENTIALS" },
+		})
+		const commands = profile.readState().commands.map((command) => command.join(" "))
+		expect(commands.some((command) => command.includes("marketplace remove"))).toBe(false)
+	} finally {
+		profile.cleanup()
+	}
+})
+
 test("install preview reports the transition without changing Claude profile state", () => {
 	const profile = fakeProfile({ production: true })
 	try {
@@ -497,6 +527,42 @@ test("restore succeeds when the checkout can no longer build", () => {
 			},
 		})
 		expect(profile.readBuildCount()).toBe(1)
+	} finally {
+		profile.cleanup()
+	}
+})
+
+test("restore reports when the captured production version is unavailable", () => {
+	const profile = fakeProfile({ production: true })
+	try {
+		const installed = run(
+			["claude", "install", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+		expect(installed.exitCode).toBe(0)
+		const state = profile.readState()
+		state.installVersions = { [productionId]: "0.0.0-unavailable" }
+		profile.writeState(state)
+
+		const restored = run(
+			["claude", "restore", "--apply", "--json", "--no-input"],
+			profile.environment,
+		)
+
+		expect(restored.exitCode).toBe(1)
+		expect(jsonOutput(restored)).toMatchObject({
+			changed: true,
+			transactionState: "unknown",
+			retrySafety: "inspect_required",
+			error: { code: "PRODUCTION_VERSION_UNAVAILABLE" },
+		})
+		const finalState = profile.readState()
+		expect(finalState.plugins[0].version).toBe("0.0.0-unavailable")
+		expect(
+			finalState.commands.some(
+				(command) => command.join(" ") === `plugin install ${productionId} --scope user --yes`,
+			),
+		).toBe(true)
 	} finally {
 		profile.cleanup()
 	}
@@ -650,13 +716,15 @@ for (const productionEnabled of [true, false]) {
 			let state = profile.readState()
 			expect(state.plugins.map((plugin) => plugin.id)).toEqual([developmentId])
 			const commandTexts = state.commands.map((command) => command.join(" "))
-			expect(
-				commandTexts.indexOf(`plugin uninstall ${productionId} --keep-data --scope user`),
-			).toBeLessThan(
-				commandTexts.indexOf(
-					`plugin marketplace add ${join(root, ".dev", "claude", "marketplace")} --scope user`,
-				),
+			const uninstallIndex = commandTexts.indexOf(
+				`plugin uninstall ${productionId} --keep-data --scope user`,
 			)
+			const marketplaceAddIndex = commandTexts.indexOf(
+				`plugin marketplace add ${join(root, ".dev", "claude", "marketplace")} --scope user`,
+			)
+			expect(uninstallIndex).toBeGreaterThanOrEqual(0)
+			expect(marketplaceAddIndex).toBeGreaterThanOrEqual(0)
+			expect(uninstallIndex).toBeLessThan(marketplaceAddIndex)
 
 			const restored = run(
 				["claude", "restore", "--apply", "--json", "--no-input"],
