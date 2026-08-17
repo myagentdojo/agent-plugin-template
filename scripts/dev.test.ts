@@ -183,23 +183,28 @@ test("invalid Claude lifecycle usage exits with the input-error status", () => {
 })
 
 test("Claude check has one non-interactive JSON process contract", () => {
-	const result = run(["claude", "check", "--json", "--no-input"])
+	const profile = fakeProfile()
+	try {
+		const result = run(["claude", "check", "--json", "--no-input"], profile.environment)
 
-	expect(result.exitCode).toBe(0)
-	expect(result.stderr.toString()).toBe("")
-	const output = JSON.parse(result.stdout.toString())
-	expect(output).toMatchObject({
-		schemaVersion: 1,
-		contractId: "plugin.development-installation",
-		ok: true,
-		harness: "claude",
-		operation: "check",
-		mode: "inspect",
-		changed: false,
-		retrySafety: "safe",
-	})
-	expect(output.runId).toBeString()
-	expect(output.nextAction).toBeString()
+		expect(result.exitCode).toBe(0)
+		expect(result.stderr.toString()).toBe("")
+		const output = JSON.parse(result.stdout.toString())
+		expect(output).toMatchObject({
+			schemaVersion: 1,
+			contractId: "plugin.development-installation",
+			ok: true,
+			harness: "claude",
+			operation: "check",
+			mode: "inspect",
+			changed: false,
+			retrySafety: "safe",
+		})
+		expect(output.runId).toBeString()
+		expect(output.nextAction).toBeString()
+	} finally {
+		profile.cleanup()
+	}
 })
 
 test("dev:claude is the build-only watch shortcut", () => {
@@ -245,25 +250,30 @@ test("Claude development watches workspace, runtime, manifest, and lock inputs",
 })
 
 test("Claude check generates a link-mode command source for the canonical payload", () => {
-	const result = run(["claude", "check", "--json", "--no-input"])
-	expect(result.exitCode).toBe(0)
-	const marketplace = JSON.parse(
-		readFileSync(
-			join(root, ".dev", "claude", "marketplace", ".claude-plugin", "marketplace.json"),
-			"utf8",
-		),
-	)
-	expect(marketplace.name).toBe(developmentMarketplaceName)
-	expect(marketplace.plugins).toHaveLength(1)
-	expect(marketplace.plugins[0]).toMatchObject({
-		name: pluginName,
-		defaultEnabled: false,
-		source: {
-			source: "command",
-			mode: "link",
-		},
-	})
-	expect(marketplace.plugins[0].source.command).toContain(join(root, "plugin"))
+	const profile = fakeProfile()
+	try {
+		const result = run(["claude", "check", "--json", "--no-input"], profile.environment)
+		expect(result.exitCode).toBe(0)
+		const marketplace = JSON.parse(
+			readFileSync(
+				join(root, ".dev", "claude", "marketplace", ".claude-plugin", "marketplace.json"),
+				"utf8",
+			),
+		)
+		expect(marketplace.name).toBe(developmentMarketplaceName)
+		expect(marketplace.plugins).toHaveLength(1)
+		expect(marketplace.plugins[0]).toMatchObject({
+			name: pluginName,
+			defaultEnabled: false,
+			source: {
+				source: "command",
+				mode: "link",
+			},
+		})
+		expect(marketplace.plugins[0].source.command).toContain(join(root, "plugin"))
+	} finally {
+		profile.cleanup()
+	}
 })
 
 test("install preview reports the transition without changing Claude profile state", () => {
