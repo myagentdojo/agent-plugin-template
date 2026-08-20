@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -212,4 +220,104 @@ test("a failing command reports its first output line as the cause", async () =>
 
 	await expect(run).rejects.toThrow(/-y\/--yes is ignored inside a Claude Code session/)
 	await expect(run).rejects.not.toThrow(/run it in your own terminal/)
+})
+
+/**
+ * A version bump leaves the previous cache directory behind. Claude Code marks
+ * it with `.orphaned_at` and stops listing it, so it becomes files nothing
+ * reads inside the profile this lifecycle owns.
+ *
+ * Detection above runs only when Claude lists no installation, so the common
+ * case — a superseded directory sitting beside the installed one — reported a
+ * clean profile. The orphan is defined by its registration, not by its links:
+ * every link in a superseded directory still resolves, because both versions
+ * point at the same live payload.
+ */
+function installedVersionDirectory(profile: string, version: string): string {
+	const directory = join(
+		profile,
+		"plugins",
+		"cache",
+		`${pluginName}-dev`,
+		pluginName,
+		version,
+	)
+	mkdirSync(directory, { recursive: true })
+	// A foreign payload keeps the fixture off this checkout's restoration
+	// snapshot, which lives in the checkout that captured it. The superseded
+	// directory is defined by its registration, not by where its links point.
+	const payload = join(profile, "other-checkout", "plugin")
+	mkdirSync(join(payload, "skills"), { recursive: true })
+	writeFileSync(join(directory, ".claude-plugin-link"), JSON.stringify({ target: payload }))
+	symlinkSync(join(payload, "skills"), join(directory, "skills"))
+	return directory
+}
+
+function listedRunner(installPath: string): CommandRunner {
+	const plugins = [
+		{
+			id: `${pluginName}@${pluginName}-dev`,
+			version: "0.2.0",
+			scope: "user",
+			enabled: true,
+			installPath,
+		},
+	]
+	const marketplaces = [
+		{ name: `${pluginName}-dev`, source: "directory", path: join(repositoryRoot, ".dev", "claude", "marketplace") },
+	]
+	return {
+		run(commandArguments: readonly string[]) {
+			const line = commandArguments.join(" ")
+			if (line.includes("--version")) return { exitCode: 0, stdout: "2.1.233", stderr: "" }
+			if (line.includes("marketplace list"))
+				return { exitCode: 0, stdout: JSON.stringify(marketplaces), stderr: "" }
+			if (line.includes("plugin list"))
+				return { exitCode: 0, stdout: JSON.stringify(plugins), stderr: "" }
+			return { exitCode: 0, stdout: "[]", stderr: "" }
+		},
+	}
+}
+
+async function codeFromRunner(
+	operation: "check" | "install",
+	profile: string,
+	runner: CommandRunner,
+): Promise<string> {
+	try {
+		await runClaudeDevelopmentInstallation({
+			operation,
+			apply: false,
+			repositoryRoot,
+			environment: { CLAUDE_CONFIG_DIR: profile, HOME: profile, PATH: process.env.PATH },
+			runner,
+		})
+	} catch (error) {
+		if (error instanceof ClaudeDevelopmentInstallationError) return error.code
+		throw error
+	}
+	return "NO_ERROR"
+}
+
+test("check names a superseded version directory beside the installed one", async () => {
+	const profile = profileRoot()
+	const installed = installedVersionDirectory(profile, "0.2.0-fake")
+	const superseded = installedVersionDirectory(profile, "0.1.2-fake")
+	// Claude Code's own marker for a cache it has stopped listing.
+	writeFileSync(join(superseded, ".orphaned_at"), String(Date.now()))
+
+	const code = await codeFromRunner("check", profile, listedRunner(installed))
+
+	expect(code).toBe("DEVELOPMENT_CACHE_SUPERSEDED")
+})
+
+test("check stays silent when the installed version stands alone", async () => {
+	const profile = profileRoot()
+	const installed = installedVersionDirectory(profile, "0.2.0-fake")
+
+	const code = await codeFromRunner("check", profile, listedRunner(installed))
+
+	// The link points at a foreign payload, so the mismatch is the expected
+	// outcome here. What matters is that no superseded directory is reported.
+	expect(code).toBe("DEVELOPMENT_LINK_MISMATCH")
 })

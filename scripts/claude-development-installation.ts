@@ -7,6 +7,7 @@ import {
 	readFileSync,
 	readdirSync,
 	realpathSync,
+	statSync,
 	renameSync,
 	rmSync,
 	watch,
@@ -101,6 +102,7 @@ interface InspectedState {
 	developmentMarketplace?: ClaudeMarketplaceListEntry
 	linkedToCanonicalPayload: boolean
 	orphanedCache?: OrphanedDevelopmentCache
+	supersededCacheVersions: string[]
 }
 
 export interface ClaudeDevelopmentInstallationInput {
@@ -328,6 +330,63 @@ function describeOrphanedDevelopmentCache(
 	}
 	walk(cacheRoot, 0)
 	return { cacheRoot, danglingLinks, unreadablePaths, depthExceededPaths, recordedTargets }
+}
+
+/**
+ * A version bump leaves the previous cache directory behind. Claude Code stops
+ * listing it and marks it with `.orphaned_at`, so it becomes files nothing
+ * reads inside the profile this lifecycle owns.
+ *
+ * `describeOrphanedDevelopmentCache` cannot see this: it runs only when Claude
+ * lists no installation, and it defines an orphan by a dangling link. A
+ * superseded directory dangles nothing, because it points at the same live
+ * payload as the installed one. Registration is the discriminator, so this
+ * compares the directories on disk against the path Claude reports.
+ *
+ * Claude Code marks such a directory with `.orphaned_at` and later collects it
+ * on its own schedule. That marker is deliberately not the test here: it is an
+ * undocumented internal file, and gating on it would miss any directory left
+ * behind without one. Absence from `plugin list` is the property this
+ * lifecycle can state.
+ */
+function describeSupersededCacheVersions(
+	pluginName: string,
+	environment: Record<string, string | undefined>,
+	installPath: string,
+): string[] {
+	const pluginRoot = join(
+		profileRoot(environment),
+		"plugins",
+		"cache",
+		`${pluginName}-dev`,
+		pluginName,
+	)
+	let entries: string[]
+	try {
+		entries = readdirSync(pluginRoot)
+	} catch {
+		// An unreadable root is reported by the orphan walk above rather than
+		// counted as clean here; staying silent avoids two codes for one cause.
+		return []
+	}
+	let installed: string
+	try {
+		installed = realpathSync(installPath)
+	} catch {
+		return []
+	}
+	const superseded: string[] = []
+	for (const entry of entries) {
+		const candidate = join(pluginRoot, entry)
+		try {
+			if (realpathSync(candidate) === installed) continue
+			if (!statSync(candidate).isDirectory()) continue
+		} catch {
+			continue
+		}
+		superseded.push(candidate)
+	}
+	return superseded.sort()
 }
 
 /**
@@ -662,6 +721,14 @@ function inspectState(
 			developmentPlugin === undefined
 				? describeOrphanedDevelopmentCache(pluginName, environment)
 				: undefined,
+		supersededCacheVersions:
+			developmentPlugin === undefined
+				? []
+				: describeSupersededCacheVersions(
+						pluginName,
+						environment,
+						developmentPlugin.installPath,
+					),
 	}
 }
 
@@ -1537,6 +1604,25 @@ export async function runClaudeDevelopmentInstallation(
 		!servesThisCheckout(state.orphanedCache, input.repositoryRoot)
 	) {
 		throw orphanedCacheError(state.orphanedCache)
+	}
+	// A superseded directory is inert until the next install reuses the name,
+	// so `restore` and `watch` stay reachable while it stands. `check` and
+	// `install` refuse, because reporting a profile clean while it holds files
+	// nothing reads is the silent result this detection exists to end.
+	if (
+		state.supersededCacheVersions.length > 0 &&
+		(input.operation === "check" || input.operation === "install")
+	) {
+		throw new ClaudeDevelopmentInstallationError(
+			"DEVELOPMENT_CACHE_SUPERSEDED",
+			`The profile holds ${state.supersededCacheVersions.length} development cache version(s) Claude no longer lists, so they are files nothing reads (${namePaths(state.supersededCacheVersions)})`,
+			{
+				action: "INSPECT_STATE",
+				errorFamily: "conflict",
+				retrySafety: "inspect_required",
+				nextAction: `Remove ${state.supersededCacheVersions[0]} after confirming the path, then rerun \`bun run dev -- claude check\`.`,
+			},
+		)
 	}
 	switch (input.operation) {
 		case "check":
