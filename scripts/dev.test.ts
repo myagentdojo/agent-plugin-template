@@ -1028,6 +1028,9 @@ test("failed installation and failed rollback report inspect-required unknown st
 				safeToRetrySameInput: false,
 			},
 		})
+		const { message } = jsonOutput(result) as { message: string }
+		expect(message).toContain("Installation cause:")
+		expect(message).toContain("Restoration cause:")
 	} finally {
 		profile.cleanup()
 	}

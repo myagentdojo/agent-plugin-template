@@ -35,6 +35,8 @@ import {
 } from "./plugin-config"
 
 const root = resolve(import.meta.dir, "..")
+const pluginName = (JSON.parse(readFileSync(join(root, "plugin.config.json"), "utf8")) as PluginConfig)
+	.name
 let proof: ReturnType<typeof proveHarnessInstall>
 const claudeNativeTest = Bun.which("claude") ? test : test.skip
 const codexNativeTest = Bun.which("codex") ? test : test.skip
@@ -369,6 +371,7 @@ test("automated install evidence binds bytes without claiming native activation"
 				"skill-b",
 				"runtime-custody",
 				"capability-tour",
+				"dev-mode",
 			],
 		})
 	}
@@ -841,7 +844,7 @@ test("managed or non-removable Codex state blocks with administrator handoff", (
 
 codexNativeTest("Codex JSON records native state (Codex CLI required; fallback proves bytes)", () => {
 	expect(proof.codex.mode).toBe("native-local-marketplace")
-	expect(proof.codex.marketplaceIdentity).toBe("harness-native-plugin-prototype")
+	expect(proof.codex.marketplaceIdentity).toBe(pluginName)
 	expect(proof.codex.configuredRef).toBe(proof.preflight.requestedRef)
 	expect(proof.codex.installedMarketplaceRoot).toBeTruthy()
 	expect(proof.codex.installedPath).toBeTruthy()

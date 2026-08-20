@@ -39,5 +39,5 @@ Return these ordered groups. Keep raw paths, hashes, handler JSON, and reviewer 
 
 1. `Overall verdict`: one line with `healthy` or `non-healthy` plus installed name and version. Include the active client only alongside a validated `native-subagent-via-skill` delivery.
 2. `Evidence matrix`: a compact table with rows in this order: declaration, direct handler, `currentSessionHook`, external candidate qualification, delegation delivery. State `observed`, `passed`, `qualified`, `unknown`, or the precise non-healthy result without merging evidence layers.
-3. `Available portable skills`: list `hello-world`, `skill-a`, `skill-b`, `runtime-custody`, and `capability-tour`, marking the first three Bun-backed and the last two model-only.
+3. `Available portable skills`: list `hello-world`, `skill-a`, `skill-b`, `capability-tour`, `dev-mode`, and `runtime-custody`, marking the first three Bun-backed and the last three model-only.
 4. `Next action`: include only for an untrusted hook, lifecycle fixture failure, failed delegation, or another non-healthy state. Give one concrete recovery action. Omit this group when healthy.

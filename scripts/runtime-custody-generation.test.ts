@@ -95,6 +95,7 @@ test("runtime custody sources generate one thin launcher and checked shell proje
 	).sort()
 	expect(installedSkills).toEqual([
 		"capability-tour",
+		"dev-mode",
 		"hello-world",
 		"runtime-custody",
 		"skill-a",

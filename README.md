@@ -145,7 +145,7 @@ Local proof completes when the current worktree contains only the intended diff 
 plugin/
 ├── .claude-plugin/plugin.json
 ├── .codex-plugin/plugin.json
-├── skills/{capability-tour,hello-world,runtime-custody,skill-a,skill-b}/SKILL.md
+├── skills/{capability-tour,dev-mode,hello-world,runtime-custody,skill-a,skill-b}/SKILL.md
 ├── bin/{hello-world,skill-a,skill-b}
 ├── THIRD-PARTY-NOTICES.md
 └── runtime/
