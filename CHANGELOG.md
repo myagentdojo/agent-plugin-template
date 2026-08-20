@@ -6,7 +6,6 @@
 ### Features
 
 * add safe immutable Codex updates ([7ee948c](https://github.com/myagentdojo/agent-plugin-template/commit/7ee948ce184a6c821b79bb90799de08494f81b3d))
-* add safe immutable Codex updates ([4b4c838](https://github.com/myagentdojo/agent-plugin-template/commit/4b4c838b9275f6ffdfc6399a88c7b174eaac4f3c))
 * **dev:** add persistent Claude development installation ([#50](https://github.com/myagentdojo/agent-plugin-template/issues/50)) ([e9e83d1](https://github.com/myagentdojo/agent-plugin-template/commit/e9e83d1abcde24809e8a16655320930e87dfec72))
 * **release:** add pre-tag recovery for stranded proven candidates ([#43](https://github.com/myagentdojo/agent-plugin-template/issues/43)) ([0ecba71](https://github.com/myagentdojo/agent-plugin-template/commit/0ecba71e14f15917be4d61e31f0511b1c8dfbf1e))
 
