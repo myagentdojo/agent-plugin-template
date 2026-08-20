@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/myagentdojo/agent-plugin-template/compare/v0.4.0...v0.4.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **dev:** backport the second wave of development lifecycle work ([#55](https://github.com/myagentdojo/agent-plugin-template/issues/55)) ([e89770a](https://github.com/myagentdojo/agent-plugin-template/commit/e89770aecc280fb5c3e47b27a17f81e7ca274606))
+
 ## [0.4.0](https://github.com/myagentdojo/agent-plugin-template/compare/v0.3.0...v0.4.0) (2026-08-20)
 
 
