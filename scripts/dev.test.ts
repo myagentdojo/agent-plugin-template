@@ -62,6 +62,16 @@ function run(arguments_: string[], environment = process.env) {
 	})
 }
 
+/**
+ * Every `dev.ts` invocation here spawns the CLI, and the lifecycle rebuilds the
+ * payload before it inspects anything, so one measures ~940ms. The cases that
+ * carry several run at 2.5s to 4.2s against Bun's 5s default. The 4.2s case has
+ * timed out in isolation, and the margin on the rest does not survive a loaded
+ * runner. The budget is stated where the cost is spent, so adding an invocation
+ * visibly spends it.
+ */
+const lifecycleSuiteTimeoutMs = 30_000
+
 function writeExecutable(path: string, contents: string): void {
 	writeFileSync(path, contents)
 	chmodSync(path, 0o755)
@@ -667,38 +677,42 @@ test("install and restore preserve a production Marketplace without an installed
 	}
 })
 
-test("isolated profile snapshots cannot overwrite each other's restore state", () => {
-	const productionProfile = fakeProfile({ production: true, productionEnabled: false })
-	const absentProfile = fakeProfile()
-	try {
-		for (const profile of [productionProfile, absentProfile]) {
-			const installed = run(
-				["claude", "install", "--apply", "--json", "--no-input"],
-				profile.environment,
+test(
+	"isolated profile snapshots cannot overwrite each other's restore state",
+	() => {
+		const productionProfile = fakeProfile({ production: true, productionEnabled: false })
+		const absentProfile = fakeProfile()
+		try {
+			for (const profile of [productionProfile, absentProfile]) {
+				const installed = run(
+					["claude", "install", "--apply", "--json", "--no-input"],
+					profile.environment,
+				)
+				expect(installed.exitCode).toBe(0)
+			}
+
+			const productionRestored = run(
+				["claude", "restore", "--apply", "--json", "--no-input"],
+				productionProfile.environment,
 			)
-			expect(installed.exitCode).toBe(0)
+			expect(productionRestored.exitCode).toBe(0)
+			expect(jsonOutput(productionRestored).current.production).toBe("installed")
+			expect(productionProfile.readState().plugins[0].enabled).toBe(false)
+
+			const absentRestored = run(
+				["claude", "restore", "--apply", "--json", "--no-input"],
+				absentProfile.environment,
+			)
+			expect(absentRestored.exitCode).toBe(0)
+			expect(jsonOutput(absentRestored).current.production).toBe("absent")
+			expect(absentProfile.readState().plugins).toHaveLength(0)
+		} finally {
+			productionProfile.cleanup()
+			absentProfile.cleanup()
 		}
-
-		const productionRestored = run(
-			["claude", "restore", "--apply", "--json", "--no-input"],
-			productionProfile.environment,
-		)
-		expect(productionRestored.exitCode).toBe(0)
-		expect(jsonOutput(productionRestored).current.production).toBe("installed")
-		expect(productionProfile.readState().plugins[0].enabled).toBe(false)
-
-		const absentRestored = run(
-			["claude", "restore", "--apply", "--json", "--no-input"],
-			absentProfile.environment,
-		)
-		expect(absentRestored.exitCode).toBe(0)
-		expect(jsonOutput(absentRestored).current.production).toBe("absent")
-		expect(absentProfile.readState().plugins).toHaveLength(0)
-	} finally {
-		productionProfile.cleanup()
-		absentProfile.cleanup()
-	}
-})
+	},
+	lifecycleSuiteTimeoutMs,
+)
 
 test("a snapshot without prior state reports a typed mismatch", () => {
 	const profile = fakeProfile()
@@ -838,76 +852,80 @@ test("install is idempotent when the exact development link is already active", 
 	}
 })
 
-test("install previews and repairs a disabled snapshot-owned development link", () => {
-	const profile = fakeProfile({ production: true, productionEnabled: false })
-	try {
-		const installed = run(
-			["claude", "install", "--apply", "--json", "--no-input"],
-			profile.environment,
-		)
-		expect(installed.exitCode).toBe(0)
-		const disabled = profile.readState()
-		disabled.plugins[0].enabled = false
-		profile.writeState(disabled)
+test(
+	"install previews and repairs a disabled snapshot-owned development link",
+	() => {
+		const profile = fakeProfile({ production: true, productionEnabled: false })
+		try {
+			const installed = run(
+				["claude", "install", "--apply", "--json", "--no-input"],
+				profile.environment,
+			)
+			expect(installed.exitCode).toBe(0)
+			const disabled = profile.readState()
+			disabled.plugins[0].enabled = false
+			profile.writeState(disabled)
 
-		const preview = run(["claude", "install", "--json", "--no-input"], profile.environment)
-		expect(preview.exitCode).toBe(0)
-		expect(jsonOutput(preview)).toMatchObject({
-			changed: false,
-			transactionState: "previewed",
-			current: { development: "installed", linkedToCanonicalPayload: true },
-		})
-		expect(profile.readState().plugins[0].enabled).toBe(false)
+			const preview = run(["claude", "install", "--json", "--no-input"], profile.environment)
+			expect(preview.exitCode).toBe(0)
+			expect(jsonOutput(preview)).toMatchObject({
+				changed: false,
+				transactionState: "previewed",
+				current: { development: "installed", linkedToCanonicalPayload: true },
+			})
+			expect(profile.readState().plugins[0].enabled).toBe(false)
 
-		const repaired = run(
-			["claude", "install", "--apply", "--json", "--no-input"],
-			profile.environment,
-		)
-		expect(repaired.exitCode).toBe(0)
-		expect(jsonOutput(repaired)).toMatchObject({
-			changed: true,
-			transactionState: "installed",
-			current: { development: "installed", linkedToCanonicalPayload: true },
-		})
-		expect(profile.readState().plugins[0].enabled).toBe(true)
+			const repaired = run(
+				["claude", "install", "--apply", "--json", "--no-input"],
+				profile.environment,
+			)
+			expect(repaired.exitCode).toBe(0)
+			expect(jsonOutput(repaired)).toMatchObject({
+				changed: true,
+				transactionState: "installed",
+				current: { development: "installed", linkedToCanonicalPayload: true },
+			})
+			expect(profile.readState().plugins[0].enabled).toBe(true)
 
-		const restored = run(
-			["claude", "restore", "--apply", "--json", "--no-input"],
-			profile.environment,
-		)
-		expect(restored.exitCode).toBe(0)
-		expect(profile.readState().plugins[0]).toMatchObject({
-			id: productionId,
-			version: pluginVersion,
-			enabled: false,
-		})
-	} finally {
-		profile.cleanup()
-	}
-}, 15_000)
+			const restored = run(
+				["claude", "restore", "--apply", "--json", "--no-input"],
+				profile.environment,
+			)
+			expect(restored.exitCode).toBe(0)
+			expect(profile.readState().plugins[0]).toMatchObject({
+				id: productionId,
+				version: pluginVersion,
+				enabled: false,
+			})
+		} finally {
+			profile.cleanup()
+		}
+	}, 15_000)
 
-test("an unmanaged development link without its profile snapshot fails closed", () => {
-	const profile = fakeProfile()
-	try {
-		const installed = run(
-			["claude", "install", "--apply", "--json", "--no-input"],
-			profile.environment,
-		)
-		expect(installed.exitCode).toBe(0)
-		rmSync(profile.snapshotPath, { force: true })
+	test("an unmanaged development link without its profile snapshot fails closed", () => {
+		const profile = fakeProfile()
+		try {
+			const installed = run(
+				["claude", "install", "--apply", "--json", "--no-input"],
+				profile.environment,
+			)
+			expect(installed.exitCode).toBe(0)
+			rmSync(profile.snapshotPath, { force: true })
 
-		const checked = run(["claude", "check", "--json", "--no-input"], profile.environment)
-		expect(checked.exitCode).toBe(1)
-		expect(jsonOutput(checked)).toMatchObject({
-			ok: false,
-			changed: false,
-			retrySafety: "inspect_required",
-			error: { code: "RESTORATION_SNAPSHOT_MISSING", action: "INSPECT_STATE" },
-		})
-	} finally {
-		profile.cleanup()
-	}
-})
+			const checked = run(["claude", "check", "--json", "--no-input"], profile.environment)
+			expect(checked.exitCode).toBe(1)
+			expect(jsonOutput(checked)).toMatchObject({
+				ok: false,
+				changed: false,
+				retrySafety: "inspect_required",
+				error: { code: "RESTORATION_SNAPSHOT_MISSING", action: "INSPECT_STATE" },
+			})
+		} finally {
+			profile.cleanup()
+		}
+	},
+	lifecycleSuiteTimeoutMs,
+)
 
 test("non-user plugin scope blocks before any profile mutation", () => {
 	const profile = fakeProfile({
