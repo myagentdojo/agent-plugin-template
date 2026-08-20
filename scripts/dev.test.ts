@@ -465,6 +465,63 @@ test("install preview reports the transition without changing Claude profile sta
 	}
 })
 
+/**
+ * The preview is the only disclosure before a profile write, and `--apply`
+ * uninstalls the production Plugin Installation before it installs the
+ * development one. A fixed sentence that reads the same whether or not
+ * production is present asks for consent to an action it never names.
+ */
+test("install preview names the production installation it will replace", () => {
+	const profile = fakeProfile({ production: true })
+	try {
+		const result = run(["claude", "install", "--json", "--no-input"], profile.environment)
+
+		const nextAction = jsonOutput(result).nextAction
+		expect(nextAction).toContain("uninstall")
+		expect(nextAction).toContain(productionId)
+		// `--keep-data` is why the replacement is recoverable, so the preview
+		// says it rather than leaving the reader to assume data loss.
+		expect(nextAction).toContain("--keep-data")
+		// Bare `restore` previews, so naming it as the recovery would send a
+		// reader into a no-op and call the production state restored.
+		expect(nextAction).toContain("claude restore --apply")
+	} finally {
+		profile.cleanup()
+	}
+})
+
+test("install preview names a Marketplace-only production state", () => {
+	const profile = fakeProfile({ productionMarketplaceOnly: true })
+	try {
+		const result = run(["claude", "install", "--json", "--no-input"], profile.environment)
+
+		const nextAction = jsonOutput(result).nextAction
+		// No Plugin Installation exists to uninstall, so naming one would
+		// describe a mutation `--apply` never makes.
+		expect(nextAction).not.toContain("uninstall")
+		expect(nextAction).toContain("remove the")
+		expect(nextAction).toContain("Marketplace")
+	} finally {
+		profile.cleanup()
+	}
+})
+
+test("install preview claims no replacement when production is absent", () => {
+	const profile = fakeProfile()
+	try {
+		const result = run(["claude", "install", "--json", "--no-input"], profile.environment)
+
+		// Asserting the absence of "uninstall" alone passed against the fixed
+		// string this replaced, so it pinned nothing. The sentence itself is
+		// the assertion.
+		expect(jsonOutput(result).nextAction).toBe(
+			"Review the planned development installation, then rerun with `--apply`.",
+		)
+	} finally {
+		profile.cleanup()
+	}
+})
+
 test("install and restore preserve an originally absent production state", () => {
 	const profile = fakeProfile()
 	try {

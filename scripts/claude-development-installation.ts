@@ -97,6 +97,14 @@ interface OrphanedDevelopmentCache {
 }
 
 interface InspectedState {
+	/**
+	 * The plugin name both inspectors already resolved to read the profile.
+	 *
+	 * Carrying it means a consumer of this state names the same plugin the
+	 * inspection named, instead of re-reading plugin.config.json and being
+	 * able to disagree with the state it was handed.
+	 */
+	pluginName: string
 	productionPlugin?: ClaudePluginListEntry
 	developmentPlugin?: ClaudePluginListEntry
 	productionMarketplace?: ClaudeMarketplaceListEntry
@@ -590,7 +598,7 @@ function inspectState(
 	runner: CommandRunner,
 ): InspectedState {
 	const pluginName = loadPluginConfig(repositoryRoot).name
-	const productionId = `${pluginName}@${pluginName}`
+	const productionId = productionPluginId(pluginName)
 	const developmentMarketplaceName = `${pluginName}-dev`
 	const developmentId = `${pluginName}@${developmentMarketplaceName}`
 	const plugins = jsonCommand<ClaudePluginListEntry[]>(
@@ -724,6 +732,7 @@ function inspectState(
 		)
 	}
 	return {
+		pluginName,
 		productionPlugin,
 		developmentPlugin,
 		productionMarketplace,
@@ -747,6 +756,17 @@ function inspectState(
 						developmentPlugin.installPath,
 					),
 	}
+}
+
+/**
+ * The Plugin Installation id Claude lists for the production Marketplace.
+ *
+ * The id is one concept the glossary names, so the sites that need it read it
+ * from here rather than reassembling the same interpolation apart from one
+ * another.
+ */
+function productionPluginId(pluginName: string): string {
+	return `${pluginName}@${pluginName}`
 }
 
 function installationState(
@@ -774,6 +794,40 @@ function readyNextAction(freshness: Freshness, ready: string): string {
 		return `${freshness.reason} Run \`/reload-plugins\` so this session serves the current payload.`
 	}
 	return freshness.reason
+}
+
+/**
+ * What `--apply` will do to the profile, named rather than summarized.
+ *
+ * `--apply` uninstalls the production Plugin Installation when one exists, and
+ * removes the production Marketplace when that exists, before installing the
+ * development one. A Marketplace can stand without its Plugin Installation,
+ * though the reverse throws `PRODUCTION_MARKETPLACE_MISSING` before reaching
+ * here, so the sentence names only the mutations this profile will see.
+ *
+ * The preview is the only disclosure before that write, so a sentence that
+ * reads the same whether or not production is present asks for consent to an
+ * action it never names.
+ *
+ * The replacement is disclosed, not instructed. `nextAction` carries one
+ * command, matching every other producer here, so an agent dispatching on it
+ * reads a single next step rather than choosing between two.
+ */
+function installPreviewNextAction(state: InspectedState): string {
+	const pluginName = state.pluginName
+	const replacements: string[] = []
+	if (state.productionPlugin) {
+		replacements.push(`uninstall \`${productionPluginId(pluginName)}\` with \`--keep-data\``)
+	}
+	if (state.productionMarketplace) {
+		replacements.push(`remove the \`${pluginName}\` Marketplace`)
+	}
+	if (replacements.length === 0) {
+		return "Review the planned development installation, then rerun with `--apply`."
+	}
+	// `restore` previews by default like every operation here, so naming it
+	// without `--apply` would describe a no-op as the recovery.
+	return `\`--apply\` will ${replacements.join(" and ")}, then install development mode. \`bun run dev -- claude restore --apply\` puts that production state back. Review the named replacement, then rerun with \`--apply\`.`
 }
 
 function result(
@@ -964,7 +1018,7 @@ function restoreFromSnapshot(
 	const pluginName = snapshot.pluginName
 	const developmentMarketplaceName = `${pluginName}-dev`
 	const developmentId = `${pluginName}@${developmentMarketplaceName}`
-	const productionId = `${pluginName}@${pluginName}`
+	const productionId = productionPluginId(pluginName)
 	let state = inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
 	if (state.developmentPlugin) {
 		nativeMutation(
@@ -1174,7 +1228,8 @@ function inspectStateForRecovery(
 				},
 			)
 			return {
-				productionPlugin: plugins.find((entry) => entry.id === `${pluginName}@${pluginName}`),
+				pluginName,
+				productionPlugin: plugins.find((entry) => entry.id === productionPluginId(pluginName)),
 				developmentPlugin: plugins.find((entry) => entry.id === `${pluginName}@${pluginName}-dev`),
 				productionMarketplace: marketplaces.find((entry) => entry.name === pluginName),
 				developmentMarketplace: marketplaces.find((entry) => entry.name === `${pluginName}-dev`),
@@ -1337,12 +1392,12 @@ function install(
 			mode: "preview",
 			changed: false,
 			transactionState: "previewed",
-			nextAction: "Review the captured production state, then rerun with `--apply`.",
+			nextAction: installPreviewNextAction(state),
 		})
 	}
 	const snapshot = capturePriorState(input, state)
 	const pluginName = snapshot.pluginName
-	const productionId = `${pluginName}@${pluginName}`
+	const productionId = productionPluginId(pluginName)
 	const developmentMarketplaceName = `${pluginName}-dev`
 	const developmentId = `${pluginName}@${developmentMarketplaceName}`
 	try {

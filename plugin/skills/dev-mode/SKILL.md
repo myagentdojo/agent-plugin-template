@@ -69,6 +69,15 @@ develop from that checkout instead.
 Installation mutates the user profile, so run `bun run dev -- claude install`
 to preview it, show the user that preview, and get explicit approval.
 
+The preview's `nextAction` names what `--apply` will replace, and it names only
+what this profile holds. A production Plugin Installation is uninstalled with
+`--keep-data`. A production Marketplace is removed. A Marketplace can stand
+without its Plugin Installation, so the preview may name only the Marketplace,
+and with neither present it names no replacement at all.
+
+Quote that sentence to the user rather than summarizing it: the replacement is
+what the approval is for.
+
 Only after approval, run `bun run dev -- claude install --apply`.
 
 Inside a Claude Code session this fails and restores the prior state. That is
