@@ -20,6 +20,11 @@ import { loadPluginConfig } from "./plugin-config"
 
 const MINIMUM_COMMAND_SOURCE_VERSION = [2, 1, 229] as const
 const SNAPSHOT_SCHEMA_VERSION = 1 as const
+const LINK_MARKER_FILE = ".claude-plugin-link"
+// Links sit at cache/<name>-dev/<plugin>/<version>/<entry>. A deeper tree is
+// recorded as unreadable rather than walked, so a layout change surfaces as an
+// unverifiable cache instead of a silent clean result.
+const MAXIMUM_CACHE_WALK_DEPTH = 3
 
 export const claudeWatchSources = [
 	{ relativePath: "runtime", recursive: true },
@@ -81,12 +86,21 @@ interface RestorationSnapshot {
 	sideEffects: string[]
 }
 
+interface OrphanedDevelopmentCache {
+	cacheRoot: string
+	danglingLinks: string[]
+	unreadablePaths: string[]
+	depthExceededPaths: string[]
+	recordedTargets: string[]
+}
+
 interface InspectedState {
 	productionPlugin?: ClaudePluginListEntry
 	developmentPlugin?: ClaudePluginListEntry
 	productionMarketplace?: ClaudeMarketplaceListEntry
 	developmentMarketplace?: ClaudeMarketplaceListEntry
 	linkedToCanonicalPayload: boolean
+	orphanedCache?: OrphanedDevelopmentCache
 }
 
 export interface ClaudeDevelopmentInstallationInput {
@@ -142,10 +156,13 @@ export class ClaudeDevelopmentInstallationError extends Error {
 			transactionState?: "blocked" | "restored" | "unknown"
 			retrySafety?: "safe" | "unsafe" | "inspect_required"
 			sideEffects?: string[]
-			nextAction?: string
-		} = {},
+			// Required: a default here would silently name one command as the
+			// recovery for every failure, including that command's own.
+			nextAction: string
+			cause?: unknown
+		},
 	) {
-		super(message)
+		super(message, options.cause === undefined ? undefined : { cause: options.cause })
 		this.name = "ClaudeDevelopmentInstallationError"
 		this.code = code
 		this.action = options.action ?? "INSPECT_STATE"
@@ -154,8 +171,36 @@ export class ClaudeDevelopmentInstallationError extends Error {
 		this.transactionState = options.transactionState ?? "blocked"
 		this.retrySafety = options.retrySafety ?? "safe"
 		this.sideEffects = options.sideEffects ?? []
-		this.nextAction = options.nextAction ?? "Run `bun run dev -- claude check --json --no-input`."
+		this.nextAction = options.nextAction
 	}
+}
+
+/**
+ * Take the first meaningful line of captured output, bounded for one message.
+ */
+function firstReportedLine(output: string | undefined): string | undefined {
+	const line = (output ?? "")
+		.split("\n")
+		.map((candidate) => candidate.trim())
+		.find((candidate) => candidate.length > 0)
+	if (!line) return undefined
+	// A source URL may carry userinfo, and this file already refuses to persist
+	// one; surfacing it through a failure message would defeat that guard.
+	const redacted = line.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1<redacted>@")
+	return redacted.length > 200 ? `${redacted.slice(0, 200)}...` : redacted
+}
+
+/**
+ * Name the source that owns a Marketplace entry.
+ *
+ * Only a directory source carries `path`, so a `github`, `git`, or `url` entry
+ * would otherwise report as anonymous while the field naming it sits unread. A
+ * URL may carry userinfo, which this file refuses to persist elsewhere.
+ */
+function describeMarketplaceSource(entry: ClaudeMarketplaceListEntry): string {
+	const named = entry.path ?? entry.repo ?? entry.url
+	if (!named) return `another ${entry.source} source`
+	return firstReportedLine(named) ?? `another ${entry.source} source`
 }
 
 function command(
@@ -166,6 +211,7 @@ function command(
 		environment: Record<string, string | undefined>
 		code: string
 		label: string
+		nextAction: string
 		timeout?: number
 	},
 ): string {
@@ -180,15 +226,21 @@ function command(
 		throw new ClaudeDevelopmentInstallationError(options.code, `${options.label} could not start`, {
 			errorFamily: "runtime",
 			action: "FIX_INPUT",
+			nextAction: options.nextAction,
 		})
 	}
 	if (result.exitCode !== 0) {
+		// The refusal a Claude session raises for an unaccepted command source
+		// only appears here, so dropping it leaves the caller unable to tell a
+		// review gate from a broken payload.
+		const reported = firstReportedLine(result.stderr) ?? firstReportedLine(result.stdout)
 		throw new ClaudeDevelopmentInstallationError(
 			options.code,
-			`${options.label} failed without proving the requested state`,
+			`${options.label} failed without proving the requested state${reported ? `: ${reported}` : ""}`,
 			{
 				errorFamily: result.exitCode === 124 ? "timeout" : "runtime",
 				action: result.exitCode === 124 ? "INSPECT_STATE" : "FIX_INPUT",
+				nextAction: options.nextAction,
 			},
 		)
 	}
@@ -207,7 +259,7 @@ function jsonCommand<T>(
 		throw new ClaudeDevelopmentInstallationError(
 			options.code,
 			`${options.label} returned unreadable JSON`,
-			{ errorFamily: "protocol", action: "INSPECT_STATE" },
+			{ errorFamily: "protocol", action: "INSPECT_STATE", nextAction: options.nextAction },
 		)
 	}
 }
@@ -218,6 +270,80 @@ function profileRoot(environment: Record<string, string | undefined>): string {
 
 function developmentRoot(repositoryRoot: string): string {
 	return join(repositoryRoot, ".dev", "claude")
+}
+
+/**
+ * Describe a development cache the Claude CLI no longer lists.
+ *
+ * Deregistering the Marketplace makes the installation invisible to
+ * `plugin list`, so every CLI-driven check reports it identically to a profile
+ * that never installed. The cache root outliving that registration is itself
+ * the orphan; dangling links and recorded link targets are the detail that
+ * explains it, never the trigger. Requiring the detail would report a cache
+ * whose links still resolve as a clean absence, which is the defect this
+ * function exists to end.
+ *
+ * A directory the walk cannot read is recorded rather than skipped, so an
+ * unreadable tree stays distinguishable from a tree proven clean.
+ */
+function describeOrphanedDevelopmentCache(
+	pluginName: string,
+	environment: Record<string, string | undefined>,
+): OrphanedDevelopmentCache | undefined {
+	const cacheRoot = join(profileRoot(environment), "plugins", "cache", `${pluginName}-dev`)
+	if (!existsSync(cacheRoot)) return undefined
+	const danglingLinks: string[] = []
+	const unreadablePaths: string[] = []
+	const depthExceededPaths: string[] = []
+	const recordedTargets: string[] = []
+	const walk = (directory: string, depth: number): void => {
+		if (depth > MAXIMUM_CACHE_WALK_DEPTH) {
+			depthExceededPaths.push(directory)
+			return
+		}
+		let entries: string[]
+		try {
+			entries = readdirSync(directory)
+		} catch {
+			unreadablePaths.push(directory)
+			return
+		}
+		for (const entry of entries) {
+			const entryPath = join(directory, entry)
+			let stats
+			try {
+				stats = lstatSync(entryPath)
+			} catch {
+				unreadablePaths.push(entryPath)
+				continue
+			}
+			if (stats.isSymbolicLink()) {
+				if (!existsSync(entryPath)) danglingLinks.push(entryPath)
+			} else if (entry === LINK_MARKER_FILE) {
+				recordedTargets.push(readRecordedLinkTarget(entryPath) ?? entryPath)
+			} else if (stats.isDirectory()) {
+				walk(entryPath, depth + 1)
+			}
+		}
+	}
+	walk(cacheRoot, 0)
+	return { cacheRoot, danglingLinks, unreadablePaths, depthExceededPaths, recordedTargets }
+}
+
+/**
+ * Read the payload path a linked cache entry recorded at install time.
+ *
+ * The marker survives a payload whose links still resolve, so it is the only
+ * evidence that separates a cache serving this checkout from one serving a
+ * checkout that has since moved or been replaced.
+ */
+function readRecordedLinkTarget(markerPath: string): string | undefined {
+	try {
+		const parsed = JSON.parse(readFileSync(markerPath, "utf8")) as { target?: unknown }
+		return typeof parsed.target === "string" ? parsed.target : undefined
+	} catch {
+		return undefined
+	}
 }
 
 function marketplaceRoot(repositoryRoot: string): string {
@@ -303,7 +429,11 @@ function parseVersion(value: string): [number, number, number] {
 		throw new ClaudeDevelopmentInstallationError(
 			"CLAUDE_VERSION_UNREADABLE",
 			"Claude Code returned an unreadable version",
-			{ errorFamily: "runtime", action: "FIX_INPUT" },
+			{
+				errorFamily: "runtime",
+				action: "FIX_INPUT",
+				nextAction: "Confirm `claude --version` runs and prints a version.",
+			},
 		)
 	}
 	return [Number(match[1]), Number(match[2]), Number(match[3])]
@@ -341,7 +471,12 @@ function restorableMarketplace(entry: ClaudeMarketplaceListEntry): RestorableMar
 				throw new ClaudeDevelopmentInstallationError(
 					"PRODUCTION_SOURCE_CONTAINS_CREDENTIALS",
 					"The production Marketplace source contains inline credentials and cannot be persisted safely",
-					{ action: "ASK_ADMIN", errorFamily: "auth" },
+					{
+						action: "ASK_ADMIN",
+						errorFamily: "auth",
+						nextAction:
+							"Re-add the production Marketplace from a source that carries no credentials, then retry.",
+					},
 				)
 			}
 			return {
@@ -353,7 +488,12 @@ function restorableMarketplace(entry: ClaudeMarketplaceListEntry): RestorableMar
 	throw new ClaudeDevelopmentInstallationError(
 		"PRODUCTION_SOURCE_UNRESTORABLE",
 		"The production Marketplace source cannot be reconstructed through the supported Claude CLI",
-		{ action: "ASK_ADMIN", errorFamily: "state" },
+		{
+			action: "ASK_ADMIN",
+			errorFamily: "state",
+			nextAction:
+				"Re-add the production Marketplace from a supported source before installing development mode.",
+		},
 	)
 }
 
@@ -384,6 +524,7 @@ function inspectState(
 			repositoryRoot,
 			environment,
 			code: "PLUGIN_STATE_UNREADABLE",
+			nextAction: "Confirm `claude plugin list --json` runs and prints JSON.",
 			label: "Claude Plugin Installation inspection",
 		},
 	)
@@ -394,6 +535,7 @@ function inspectState(
 			repositoryRoot,
 			environment,
 			code: "MARKETPLACE_STATE_UNREADABLE",
+			nextAction: "Confirm `claude plugin marketplace list --json` runs and prints JSON.",
 			label: "Claude Marketplace inspection",
 		},
 	)
@@ -405,14 +547,22 @@ function inspectState(
 		throw new ClaudeDevelopmentInstallationError(
 			"UNKNOWN_PLUGIN_IDENTITY",
 			"Claude reports an unowned plugin identity with the same plugin name",
-			{ action: "ASK_ADMIN", errorFamily: "state" },
+			{
+				action: "ASK_ADMIN",
+				errorFamily: "state",
+				nextAction: "Inspect `claude plugin list` and remove the installation this repository does not own.",
+			},
 		)
 	}
 	if (relatedPlugins.some((entry) => entry.scope !== "user")) {
 		throw new ClaudeDevelopmentInstallationError(
 			"NON_USER_PLUGIN_IDENTITY",
 			"A project or local plugin identity must be removed by its owning scope before global development installation",
-			{ action: "ASK_ADMIN", errorFamily: "scope" },
+			{
+				action: "ASK_ADMIN",
+				errorFamily: "scope",
+				nextAction: "Remove the project or local installation with `claude plugin uninstall --scope <scope>`.",
+			},
 		)
 	}
 	const productionPlugins = relatedPlugins.filter((entry) => entry.id === productionId)
@@ -421,7 +571,11 @@ function inspectState(
 		throw new ClaudeDevelopmentInstallationError(
 			"AMBIGUOUS_PLUGIN_IDENTITY",
 			"Claude reports more than one installation for a known plugin identity",
-			{ action: "ASK_ADMIN", errorFamily: "state" },
+			{
+				action: "ASK_ADMIN",
+				errorFamily: "state",
+				nextAction: "Inspect `claude plugin list` and remove installations until one remains.",
+			},
 		)
 	}
 	const productionMarketplace = marketplaces.find((entry) => entry.name === pluginName)
@@ -438,22 +592,34 @@ function inspectState(
 	) {
 		throw new ClaudeDevelopmentInstallationError(
 			"DEVELOPMENT_MARKETPLACE_MISMATCH",
-			"The development Marketplace name is owned by another source",
-			{ action: "INSPECT_STATE", errorFamily: "conflict" },
+			`The development Marketplace name is owned by ${describeMarketplaceSource(developmentMarketplace)} rather than ${marketplaceRoot(repositoryRoot)}`,
+			{
+				action: "INSPECT_STATE",
+				errorFamily: "conflict",
+				nextAction: `Develop from the checkout that owns it, or release the name with \`bun run dev -- claude restore\` there.`,
+			},
 		)
 	}
 	if (productionPlugin && !productionMarketplace) {
 		throw new ClaudeDevelopmentInstallationError(
 			"PRODUCTION_MARKETPLACE_MISSING",
 			"The production Plugin Installation has no matching Marketplace",
-			{ action: "ASK_ADMIN", errorFamily: "state" },
+			{
+				action: "ASK_ADMIN",
+				errorFamily: "state",
+				nextAction: "Reinstall or remove the production Plugin Installation through `claude plugin`, then rerun this check.",
+			},
 		)
 	}
 	if (developmentPlugin && !developmentMarketplace) {
 		throw new ClaudeDevelopmentInstallationError(
 			"DEVELOPMENT_MARKETPLACE_MISSING",
 			"The development Plugin Installation has no matching Marketplace",
-			{ action: "INSPECT_STATE", errorFamily: "state" },
+			{
+				action: "INSPECT_STATE",
+				errorFamily: "state",
+				nextAction: "Run `bun run dev -- claude restore` to remove the installation left without its Marketplace.",
+			},
 		)
 	}
 	if (!developmentPlugin && developmentMarketplace) {
@@ -492,6 +658,10 @@ function inspectState(
 				realpathSync(join(repositoryRoot, "plugin")),
 				developmentPlugin.installPath,
 			),
+		orphanedCache:
+			developmentPlugin === undefined
+				? describeOrphanedDevelopmentCache(pluginName, environment)
+				: undefined,
 	}
 }
 
@@ -581,6 +751,8 @@ function readSnapshot(input: ClaudeDevelopmentInstallationInput): RestorationSna
 				action: "INSPECT_STATE",
 				errorFamily: "recovery",
 				retrySafety: "inspect_required",
+				nextAction:
+					"Inspect the profile with `claude plugin list`; this checkout holds no snapshot to restore from.",
 			},
 		)
 	}
@@ -604,6 +776,8 @@ function readSnapshot(input: ClaudeDevelopmentInstallationInput): RestorationSna
 				action: "INSPECT_STATE",
 				errorFamily: "recovery",
 				retrySafety: "inspect_required",
+				nextAction:
+					"Run restore from the checkout that captured the snapshot; this one did not.",
 			},
 		)
 	}
@@ -647,6 +821,8 @@ function restorationConflict(message: string, sideEffects: string[]): never {
 		transactionState: "unknown",
 		retrySafety: "inspect_required",
 		sideEffects,
+		nextAction:
+			"Inspect `claude plugin list` and reconcile it with the snapshot before retrying restore.",
 	})
 }
 
@@ -669,6 +845,7 @@ function nativeMutation(
 		repositoryRoot: input.repositoryRoot,
 		environment: input.environment,
 		code: "CLAUDE_MUTATION_FAILED",
+		nextAction: "Read the reported cause, resolve it, then rerun this operation.",
 		label,
 	})
 	snapshot.sideEffects.push(sideEffect)
@@ -758,6 +935,8 @@ function restoreFromSnapshot(
 					transactionState: "unknown",
 					retrySafety: "inspect_required",
 					sideEffects: snapshot.sideEffects,
+					nextAction:
+						"Inspect `claude plugin list` and reconcile it with the snapshot before retrying restore.",
 				},
 			)
 		}
@@ -794,6 +973,8 @@ function restoreFromSnapshot(
 				transactionState: "unknown",
 				retrySafety: "inspect_required",
 				sideEffects: snapshot.sideEffects,
+				nextAction:
+					"Compare `claude plugin list` against the snapshot and reconcile the difference by hand.",
 			},
 		)
 	}
@@ -802,19 +983,27 @@ function restoreFromSnapshot(
 	return restored
 }
 
+function describeCause(cause: unknown): string {
+	if (cause instanceof ClaudeDevelopmentInstallationError) return `${cause.code}: ${cause.message}`
+	if (cause instanceof Error) return cause.message
+	return String(cause)
+}
+
 function failInstallAfterRestoration(
 	input: ClaudeDevelopmentInstallationInput,
 	runner: CommandRunner,
 	snapshot: RestorationSnapshot,
+	cause: unknown,
 ): never {
+	const causeDescription = describeCause(cause)
 	try {
 		restoreFromSnapshot(input, runner, snapshot)
-	} catch {
+	} catch (restorationCause) {
 		snapshot.transactionState = "unknown"
 		persistSnapshot(input, snapshot)
 		throw new ClaudeDevelopmentInstallationError(
 			"INSTALL_AND_RESTORATION_FAILED",
-			"Development installation failed and exact production restoration could not be verified",
+			`Development installation failed and exact production restoration could not be verified. Installation cause: ${causeDescription}. Restoration cause: ${describeCause(restorationCause)}`,
 			{
 				action: "INSPECT_STATE",
 				errorFamily: "recovery",
@@ -822,12 +1011,15 @@ function failInstallAfterRestoration(
 				transactionState: "unknown",
 				retrySafety: "inspect_required",
 				sideEffects: snapshot.sideEffects,
+				cause,
+				nextAction:
+					"Inspect `claude plugin list`; neither the installation nor the prior state is proven.",
 			},
 		)
 	}
 	throw new ClaudeDevelopmentInstallationError(
 		"INSTALL_FAILED_RESTORED",
-		"Development installation failed and the exact prior production state was restored",
+		`Development installation failed and the exact prior production state was restored. Cause: ${causeDescription}`,
 		{
 			action: "FIX_INPUT",
 			errorFamily: "recovery",
@@ -835,6 +1027,9 @@ function failInstallAfterRestoration(
 			transactionState: "restored",
 			retrySafety: "safe",
 			sideEffects: snapshot.sideEffects,
+			cause,
+			nextAction:
+				"Read the cause in this message, resolve it, then rerun install.",
 		},
 	)
 }
@@ -859,6 +1054,7 @@ function inspectStateForRecovery(
 					repositoryRoot,
 					environment,
 					code: "PLUGIN_STATE_UNREADABLE",
+					nextAction: "Confirm `claude plugin list --json` runs and prints JSON.",
 					label: "Claude Plugin Installation recovery inspection",
 				},
 			)
@@ -869,6 +1065,7 @@ function inspectStateForRecovery(
 					repositoryRoot,
 					environment,
 					code: "MARKETPLACE_STATE_UNREADABLE",
+					nextAction: "Confirm `claude plugin marketplace list --json` runs and prints JSON.",
 					label: "Claude Marketplace recovery inspection",
 				},
 			)
@@ -890,6 +1087,7 @@ function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunne
 			repositoryRoot: input.repositoryRoot,
 			environment: input.environment,
 			code: "BUILD_FAILED",
+			nextAction: "Run `bun run build` and fix the reported build failure.",
 			label: "Plugin Payload build",
 			timeout: 120_000,
 		})
@@ -898,19 +1096,26 @@ function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunne
 			repositoryRoot: input.repositoryRoot,
 			environment: input.environment,
 			code: "CLAUDE_UNAVAILABLE",
+			nextAction: "Confirm `claude` is on PATH and `claude --version` runs.",
 			label: "Claude Code version inspection",
 		})
 		if (!versionAtLeast(parseVersion(versionOutput), MINIMUM_COMMAND_SOURCE_VERSION)) {
 			throw new ClaudeDevelopmentInstallationError(
 				"CLAUDE_VERSION_UNSUPPORTED",
 				"Claude Code 2.1.229 or later is required for command-source link mode",
-				{ action: "FIX_INPUT", errorFamily: "runtime" },
+				{
+					action: "FIX_INPUT",
+					errorFamily: "runtime",
+					nextAction:
+						"Update Claude Code to 2.1.229 or later, the first release with command-source link mode.",
+				},
 			)
 		}
 		command(runner, ["claude", "plugin", "validate", root], {
 			repositoryRoot: input.repositoryRoot,
 			environment: input.environment,
 			code: "DEVELOPMENT_MARKETPLACE_INVALID",
+			nextAction: "Run `claude plugin validate` on the development Marketplace and fix what it reports.",
 			label: "Claude development Marketplace validation",
 		})
 	}
@@ -918,7 +1123,19 @@ function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunne
 		input.operation === "restore"
 			? inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
 			: inspectState(input.repositoryRoot, input.environment, runner)
-	if (state.developmentPlugin && input.operation !== "restore") readSnapshot(input)
+	// An installation linked to this checkout's payload is one this checkout
+	// created, so a missing snapshot means its production state can no longer
+	// be restored: fail closed. An installation linked elsewhere was never this
+	// checkout's to restore, and the snapshot lives inside the checkout that
+	// captured it, so demanding one would make a healthy profile unreadable
+	// from a fresh clone or a second checkout.
+	if (
+		state.developmentPlugin &&
+		input.operation !== "restore" &&
+		state.linkedToCanonicalPayload
+	) {
+		readSnapshot(input)
+	}
 	return state
 }
 
@@ -961,7 +1178,12 @@ function install(
 				throw new ClaudeDevelopmentInstallationError(
 					"DEVELOPMENT_VERIFICATION_FAILED",
 					"Claude did not report one enabled live-linked Development Installation",
-					{ action: "RUN_RESTORE", errorFamily: "verification" },
+					{
+						action: "RUN_RESTORE",
+						errorFamily: "verification",
+						nextAction:
+							"Run `bun run dev -- claude restore` to clear the unverified installation, then install again.",
+					},
 				)
 			}
 			snapshot.transactionState = "development_installed"
@@ -974,15 +1196,20 @@ function install(
 				nextAction:
 					"Run `bun run dev:claude`, then use ordinary Claude sessions and `/reload-plugins`.",
 			})
-		} catch {
-			failInstallAfterRestoration(input, runner, snapshot)
+		} catch (error) {
+			failInstallAfterRestoration(input, runner, snapshot, error)
 		}
 	}
 	if (state.developmentPlugin && !state.linkedToCanonicalPayload) {
 		throw new ClaudeDevelopmentInstallationError(
 			"DEVELOPMENT_LINK_MISMATCH",
 			"The development Plugin Installation is not linked to this checkout's canonical payload",
-			{ action: "RUN_RESTORE", errorFamily: "conflict" },
+			{
+				action: "RUN_RESTORE",
+				errorFamily: "conflict",
+				nextAction:
+					"Run `bun run dev -- claude restore` from the checkout the link resolves to, or develop from that checkout instead.",
+			},
 		)
 	}
 	if (!input.apply) {
@@ -1048,7 +1275,12 @@ function install(
 			throw new ClaudeDevelopmentInstallationError(
 				"DEVELOPMENT_VERIFICATION_FAILED",
 				"Claude did not report one enabled live-linked Development Installation",
-				{ action: "RUN_RESTORE", errorFamily: "verification" },
+				{
+					action: "RUN_RESTORE",
+					errorFamily: "verification",
+					nextAction:
+						"Run `bun run dev -- claude restore` to clear the unverified installation, then install again.",
+				},
 			)
 		}
 		snapshot.transactionState = "development_installed"
@@ -1062,7 +1294,7 @@ function install(
 				"Run `bun run dev:claude`, then open ordinary Claude sessions outside this repository.",
 		})
 	} catch (error) {
-		failInstallAfterRestoration(input, runner, snapshot)
+		failInstallAfterRestoration(input, runner, snapshot, error)
 	}
 }
 
@@ -1120,6 +1352,8 @@ function restore(
 				transactionState: "unknown",
 				retrySafety: "inspect_required",
 				sideEffects: snapshot.sideEffects,
+				nextAction:
+					"Inspect `claude plugin list` and reconcile the profile with the snapshot by hand.",
 			},
 		)
 	}
@@ -1159,6 +1393,7 @@ async function runWatch(
 								repositoryRoot: input.repositoryRoot,
 								environment: input.environment,
 								code: "BUILD_FAILED",
+								nextAction: "Run `bun run build` and fix the reported build failure.",
 								label: "Plugin Payload rebuild",
 								timeout: 120_000,
 							})
@@ -1195,6 +1430,96 @@ async function runWatch(
 }
 
 /**
+ * Name the first few paths so the reader can act, bounded for one message.
+ */
+function namePaths(paths: readonly string[]): string {
+	const shown = paths.slice(0, 3).join(", ")
+	return paths.length > 3 ? `${shown}, and ${paths.length - 3} more` : shown
+}
+
+/**
+ * Recognise a cache this checkout left behind rather than one it lost.
+ *
+ * `restore` uninstalls with `--keep-data`, so a clean exit leaves the cache
+ * root standing with its marker still naming this payload. Refusing that would
+ * lock the documented exit path out of its own next install. A cache whose
+ * marker is missing, unreadable, or names another payload stays an orphan: the
+ * checkout that owned it is the one that cannot answer for it.
+ */
+function servesThisCheckout(cache: OrphanedDevelopmentCache, repositoryRoot: string): boolean {
+	if (cache.unreadablePaths.length > 0 || cache.depthExceededPaths.length > 0) return false
+	if (cache.danglingLinks.length > 0 || cache.recordedTargets.length === 0) return false
+	let payload: string
+	try {
+		payload = realpathSync(join(repositoryRoot, "plugin"))
+	} catch {
+		return false
+	}
+	return cache.recordedTargets.every((target) => {
+		try {
+			return realpathSync(target) === payload
+		} catch {
+			return false
+		}
+	})
+}
+
+/**
+ * Separate a cache proven orphaned from one the walk could not read.
+ *
+ * Restoration reads a snapshot under the linked checkout, and an orphan is the
+ * case where that checkout is gone, so `RUN_RESTORE` would send a caller into
+ * `RESTORATION_SNAPSHOT_MISSING`. Removing the cache root is the recovery that
+ * actually applies.
+ */
+function orphanedCacheError(cache: OrphanedDevelopmentCache): ClaudeDevelopmentInstallationError {
+	if (cache.unreadablePaths.length > 0) {
+		return new ClaudeDevelopmentInstallationError(
+			"DEVELOPMENT_CACHE_UNVERIFIABLE",
+			`A development cache at ${cache.cacheRoot} could not be inspected: ${cache.unreadablePaths.length} path(s) were unreadable, so its state is unproven (${namePaths(cache.unreadablePaths)})`,
+			{
+				action: "INSPECT_STATE",
+				errorFamily: "verification",
+				retrySafety: "inspect_required",
+				nextAction: `Inspect ${cache.cacheRoot} and its permissions, then rerun \`bun run dev -- claude check\`.`,
+			},
+		)
+	}
+	if (cache.depthExceededPaths.length > 0) {
+		return new ClaudeDevelopmentInstallationError(
+			"DEVELOPMENT_CACHE_UNVERIFIABLE",
+			`A development cache at ${cache.cacheRoot} nests deeper than this inspection walks, so its state is unproven (${namePaths(cache.depthExceededPaths)})`,
+			{
+				action: "ESCALATE",
+				errorFamily: "verification",
+				retrySafety: "inspect_required",
+				nextAction:
+					"The cache layout changed. Raise the inspection depth in `scripts/claude-development-installation.ts` to match it.",
+			},
+		)
+	}
+	const parts = [
+		...(cache.danglingLinks.length > 0 ? [`${cache.danglingLinks.length} dangling link(s)`] : []),
+		...(cache.recordedTargets.length > 0
+			? [`recorded payload target ${cache.recordedTargets[0]}`]
+			: []),
+	]
+	const detail =
+		parts.length > 0
+			? parts.join(", ")
+			: "the cache root stands while Claude lists no installation"
+	return new ClaudeDevelopmentInstallationError(
+		"DEVELOPMENT_CACHE_ORPHANED",
+		`A development cache at ${cache.cacheRoot} outlived its registration (${detail}), and Claude no longer lists the installation`,
+		{
+			action: "FIX_INPUT",
+			errorFamily: "state",
+			nextAction: `Remove ${cache.cacheRoot}, then run \`bun run dev -- claude install\` from the checkout you want to develop.`,
+		},
+	)
+}
+
+/**
  * Own one Claude Code development-installation lifecycle behind the repository dev front door.
  */
 export async function runClaudeDevelopmentInstallation(
@@ -1202,8 +1527,33 @@ export async function runClaudeDevelopmentInstallation(
 ): Promise<ClaudeDevelopmentInstallationResult> {
 	const runner = input.runner ?? bunCommandRunner
 	const state = prepare(input, runner)
+	// `restore` owns snapshot recovery and `watch` only rebuilds, so both stay
+	// reachable while a stale cache is present. `restore` also uninstalls with
+	// `--keep-data`, so a cache this checkout still owns is its own residue and
+	// must not lock the next install out of the profile.
+	if (
+		state.orphanedCache &&
+		(input.operation === "check" || input.operation === "install") &&
+		!servesThisCheckout(state.orphanedCache, input.repositoryRoot)
+	) {
+		throw orphanedCacheError(state.orphanedCache)
+	}
 	switch (input.operation) {
 		case "check":
+			// `install` refuses this state, so reporting it as ready would leave
+			// check the only operation calling a mismatched link healthy.
+			if (state.developmentPlugin && !state.linkedToCanonicalPayload) {
+				throw new ClaudeDevelopmentInstallationError(
+					"DEVELOPMENT_LINK_MISMATCH",
+					"The development Plugin Installation is not linked to this checkout's canonical payload",
+					{
+						action: "RUN_RESTORE",
+						errorFamily: "conflict",
+						nextAction:
+							"Run `bun run dev -- claude restore` from the checkout the link resolves to, or develop from that checkout instead.",
+					},
+				)
+			}
 			return result(input, state, {
 				mode: "inspect",
 				changed: false,

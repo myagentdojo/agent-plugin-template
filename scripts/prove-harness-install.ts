@@ -251,7 +251,14 @@ export interface InstalledCapabilityEvidence {
 		| { status: "not-proved"; receipt: null }
 		| { status: "proved"; receipt: NativeQualificationEvidence }
 		| { status: "failed"; receipt: NativeQualificationEvidence }
-	portableSkillsWithoutHooks: ["hello-world", "skill-a", "skill-b", "runtime-custody", "capability-tour"]
+	portableSkillsWithoutHooks: [
+		"hello-world",
+		"skill-a",
+		"skill-b",
+		"runtime-custody",
+		"capability-tour",
+		"dev-mode",
+	]
 }
 
 /** Hash-only conclusions that may be promoted from a private fresh-client receipt. */
@@ -1281,6 +1288,7 @@ export function proveInstalledCapabilityEvidence(
 		.map((path) => path.slice("skills/".length, -"/SKILL.md".length))
 	const portableSkills = [
 		"capability-tour",
+		"dev-mode",
 		"hello-world",
 		"runtime-custody",
 		"skill-a",
@@ -1396,6 +1404,7 @@ export function proveInstalledCapabilityEvidence(
 			"skill-b",
 			"runtime-custody",
 			"capability-tour",
+			"dev-mode",
 		],
 	}
 }

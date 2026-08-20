@@ -353,6 +353,8 @@ async function main(arguments_: string[]): Promise<number> {
 								action: "ESCALATE",
 								errorFamily: "internal",
 								retrySafety: "inspect_required",
+								nextAction:
+									"Report this run id with the command that produced it; the lifecycle proved no native state.",
 							},
 						)
 			if (invocation.json)
