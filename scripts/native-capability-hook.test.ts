@@ -461,52 +461,67 @@ test("malformed SessionStart input fails open without a context marker", () => {
 	}
 })
 
-test("version metadata requires exactly one top-level strict semver", () => {
-	const invalidManifests = [
-		"{}\n",
-		'{"version":"v0.3.0"}\n',
-		'{"version":"01.2.3"}\n',
-		'{"version":"1.2"}\n',
-		'{"version":"1.2.3-01"}\n',
-		'{"version":"1.2.3+"}\n',
-		'{"version":"1.2.3+build+again"}\n',
-		'{"version":"0.3.0","version":"0.3.1"}\n',
-		'{"nested":{"version":"0.3.0"}}\n',
-		'{"version":"0.3.0"\n',
-	]
-	for (const manifest of invalidManifests) {
-		const fixture = installedPlugin()
-		writeFileSync(join(fixture.pluginRoot, ".claude-plugin", "plugin.json"), manifest)
-		const result = runHook(
-			fixture.handler,
-			"SessionStart",
-			"claude",
-			'{"source":"startup"}',
-		)
-		expect(result.exitCode).toBe(0)
-		expect(result.stdout.toString()).toBe("")
-		expect(result.stderr.toString()).toBe(warning)
-	}
+/**
+ * Each rejected manifest costs one hook subprocess, and this case carries the
+ * longest table in the file. Spawning dominates: 11 iterations measure ~2.2s
+ * locally, of which the fixture tree is ~13ms and the subprocesses the rest.
+ * That clears Bun's 5s default by too little to survive a loaded CI runner,
+ * where this test has already timed out. The budget is stated rather than
+ * inherited so the cost is visible next to the table that drives it; adding
+ * rows here spends it.
+ */
+const semverManifestTimeoutMs = 30_000
 
-	const valid = installedPlugin()
-	writeFileSync(
-		join(valid.pluginRoot, ".codex-plugin", "plugin.json"),
-		'{"version":"1.2.3-rc.1+build.7"}\n',
-	)
-	const result = runHook(
-		valid.handler,
-		"SessionStart",
-		"codex",
-		'{"source":"resume"}',
-	)
-	expect(result.stderr.toString()).toBe("")
-	expect(JSON.parse(result.stdout.toString())).toMatchObject({
-		hookSpecificOutput: {
-			additionalContext:
-				"Harness Plugin Prototype v1.2.3-rc.1+build.7 | codex | SessionStart:resume",
-		},
-	})
-})
+test(
+	"version metadata requires exactly one top-level strict semver",
+	() => {
+		const invalidManifests = [
+			"{}\n",
+			'{"version":"v0.3.0"}\n',
+			'{"version":"01.2.3"}\n',
+			'{"version":"1.2"}\n',
+			'{"version":"1.2.3-01"}\n',
+			'{"version":"1.2.3+"}\n',
+			'{"version":"1.2.3+build+again"}\n',
+			'{"version":"0.3.0","version":"0.3.1"}\n',
+			'{"nested":{"version":"0.3.0"}}\n',
+			'{"version":"0.3.0"\n',
+		]
+		for (const manifest of invalidManifests) {
+			const fixture = installedPlugin()
+			writeFileSync(join(fixture.pluginRoot, ".claude-plugin", "plugin.json"), manifest)
+			const result = runHook(
+				fixture.handler,
+				"SessionStart",
+				"claude",
+				'{"source":"startup"}',
+			)
+			expect(result.exitCode).toBe(0)
+			expect(result.stdout.toString()).toBe("")
+			expect(result.stderr.toString()).toBe(warning)
+		}
+
+		const valid = installedPlugin()
+		writeFileSync(
+			join(valid.pluginRoot, ".codex-plugin", "plugin.json"),
+			'{"version":"1.2.3-rc.1+build.7"}\n',
+		)
+		const result = runHook(
+			valid.handler,
+			"SessionStart",
+			"codex",
+			'{"source":"resume"}',
+		)
+		expect(result.stderr.toString()).toBe("")
+		expect(JSON.parse(result.stdout.toString())).toMatchObject({
+			hookSpecificOutput: {
+				additionalContext:
+					"Harness Plugin Prototype v1.2.3-rc.1+build.7 | codex | SessionStart:resume",
+			},
+		})
+	},
+	semverManifestTimeoutMs,
+)
 
 test("missing or unreadable proof files and unavailable comparison fail open", () => {
 	const missing = installedPlugin()
