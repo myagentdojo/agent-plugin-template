@@ -1123,7 +1123,19 @@ function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunne
 		input.operation === "restore"
 			? inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
 			: inspectState(input.repositoryRoot, input.environment, runner)
-	if (state.developmentPlugin && input.operation !== "restore") readSnapshot(input)
+	// An installation linked to this checkout's payload is one this checkout
+	// created, so a missing snapshot means its production state can no longer
+	// be restored: fail closed. An installation linked elsewhere was never this
+	// checkout's to restore, and the snapshot lives inside the checkout that
+	// captured it, so demanding one would make a healthy profile unreadable
+	// from a fresh clone or a second checkout.
+	if (
+		state.developmentPlugin &&
+		input.operation !== "restore" &&
+		state.linkedToCanonicalPayload
+	) {
+		readSnapshot(input)
+	}
 	return state
 }
 

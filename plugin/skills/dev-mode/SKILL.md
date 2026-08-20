@@ -26,14 +26,13 @@ and sends the next step into a command the lifecycle refuses.
      [Marketplace owned elsewhere](#marketplace-owned-elsewhere).
    - `DEVELOPMENT_LINK_MISMATCH` —
      [Installed, linked elsewhere](#installed-linked-elsewhere).
+   - `DEVELOPMENT_STATE_INCOMPLETE` — the Marketplace is registered without its
+     Plugin Installation. `bun run dev -- claude restore` owns that recovery.
    - Anything else — report the code, its `message`, and its `nextAction`
      rather than guessing a branch.
 2. `current.development` is `installed` and `current.linkedToCanonicalPayload`
    is true — [Installed and linked](#installed-and-linked).
-3. `current.development` is `marketplace-only` — the Marketplace is registered
-   without its Plugin Installation. `bun run dev -- claude restore` owns that
-   recovery.
-4. `current.development` is `absent` — [Absent](#absent).
+3. `current.development` is `absent` — [Absent](#absent).
 
 ## Installed and linked
 
@@ -101,9 +100,11 @@ exact command before running it.
 `DEVELOPMENT_MARKETPLACE_MISMATCH` means another checkout holds the development
 Marketplace name. One name exists per plugin, so worktrees compete for it.
 
-Install from the checkout that should own development mode, and reach other
-branches by checking them out there. Reserve `restore` for releasing the name
-deliberately.
+The message names both the owning source and this checkout, so read it rather
+than guessing which one holds the name.
+
+Develop from the owning checkout and reach other branches by checking them out
+there. Reserve `restore` for releasing the name deliberately.
 
 ## Leaving
 
