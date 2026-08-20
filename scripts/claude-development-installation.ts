@@ -7,6 +7,7 @@ import {
 	readFileSync,
 	readdirSync,
 	realpathSync,
+	statSync,
 	renameSync,
 	rmSync,
 	watch,
@@ -16,6 +17,7 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 import { bunCommandRunner, type CommandRunner } from "./command-runner"
+import { evaluateFreshness, type Freshness } from "./build-receipt"
 import { loadPluginConfig } from "./plugin-config"
 
 const MINIMUM_COMMAND_SOURCE_VERSION = [2, 1, 229] as const
@@ -95,12 +97,30 @@ interface OrphanedDevelopmentCache {
 }
 
 interface InspectedState {
+	/**
+	 * The plugin name both inspectors already resolved to read the profile.
+	 *
+	 * Carrying it means a consumer of this state names the same plugin the
+	 * inspection named, instead of re-reading plugin.config.json and being
+	 * able to disagree with the state it was handed.
+	 */
+	pluginName: string
 	productionPlugin?: ClaudePluginListEntry
 	developmentPlugin?: ClaudePluginListEntry
 	productionMarketplace?: ClaudeMarketplaceListEntry
 	developmentMarketplace?: ClaudeMarketplaceListEntry
 	linkedToCanonicalPayload: boolean
 	orphanedCache?: OrphanedDevelopmentCache
+	supersededCacheVersions: string[]
+	/**
+	 * Freshness read before the lifecycle rebuilt anything.
+	 *
+	 * `prepare` is its only writer. Evaluating it after the build would compare
+	 * the payload against the receipt that same build just wrote, so every answer
+	 * would be `fresh` and a payload edited since the last reload would report as
+	 * ready.
+	 */
+	freshness?: Freshness
 }
 
 export interface ClaudeDevelopmentInstallationInput {
@@ -128,6 +148,13 @@ export interface ClaudeDevelopmentInstallationResult {
 		development: "absent" | "marketplace-only" | "installed"
 		singleSource: boolean
 		linkedToCanonicalPayload: boolean
+		/**
+		 * Whether the live payload came from the last successful build.
+		 *
+		 * Added without a schemaVersion bump: every field consumers already read
+		 * is unchanged, and a consumer that ignores this one behaves as before.
+		 */
+		freshness: Freshness
 	}
 	sideEffects: string[]
 	nextAction: string
@@ -331,6 +358,63 @@ function describeOrphanedDevelopmentCache(
 }
 
 /**
+ * A version bump leaves the previous cache directory behind. Claude Code stops
+ * listing it and marks it with `.orphaned_at`, so it becomes files nothing
+ * reads inside the profile this lifecycle owns.
+ *
+ * `describeOrphanedDevelopmentCache` cannot see this: it runs only when Claude
+ * lists no installation, and it defines an orphan by a dangling link. A
+ * superseded directory dangles nothing, because it points at the same live
+ * payload as the installed one. Registration is the discriminator, so this
+ * compares the directories on disk against the path Claude reports.
+ *
+ * Claude Code marks such a directory with `.orphaned_at` and later collects it
+ * on its own schedule. That marker is deliberately not the test here: it is an
+ * undocumented internal file, and gating on it would miss any directory left
+ * behind without one. Absence from `plugin list` is the property this
+ * lifecycle can state.
+ */
+function describeSupersededCacheVersions(
+	pluginName: string,
+	environment: Record<string, string | undefined>,
+	installPath: string,
+): string[] {
+	const pluginRoot = join(
+		profileRoot(environment),
+		"plugins",
+		"cache",
+		`${pluginName}-dev`,
+		pluginName,
+	)
+	let entries: string[]
+	try {
+		entries = readdirSync(pluginRoot)
+	} catch {
+		// An unreadable root is reported by the orphan walk above rather than
+		// counted as clean here; staying silent avoids two codes for one cause.
+		return []
+	}
+	let installed: string
+	try {
+		installed = realpathSync(installPath)
+	} catch {
+		return []
+	}
+	const superseded: string[] = []
+	for (const entry of entries) {
+		const candidate = join(pluginRoot, entry)
+		try {
+			if (realpathSync(candidate) === installed) continue
+			if (!statSync(candidate).isDirectory()) continue
+		} catch {
+			continue
+		}
+		superseded.push(candidate)
+	}
+	return superseded.sort()
+}
+
+/**
  * Read the payload path a linked cache entry recorded at install time.
  *
  * The marker survives a payload whose links still resolve, so it is the only
@@ -514,7 +598,7 @@ function inspectState(
 	runner: CommandRunner,
 ): InspectedState {
 	const pluginName = loadPluginConfig(repositoryRoot).name
-	const productionId = `${pluginName}@${pluginName}`
+	const productionId = productionPluginId(pluginName)
 	const developmentMarketplaceName = `${pluginName}-dev`
 	const developmentId = `${pluginName}@${developmentMarketplaceName}`
 	const plugins = jsonCommand<ClaudePluginListEntry[]>(
@@ -648,6 +732,7 @@ function inspectState(
 		)
 	}
 	return {
+		pluginName,
 		productionPlugin,
 		developmentPlugin,
 		productionMarketplace,
@@ -662,7 +747,26 @@ function inspectState(
 			developmentPlugin === undefined
 				? describeOrphanedDevelopmentCache(pluginName, environment)
 				: undefined,
+		supersededCacheVersions:
+			developmentPlugin === undefined
+				? []
+				: describeSupersededCacheVersions(
+						pluginName,
+						environment,
+						developmentPlugin.installPath,
+					),
 	}
+}
+
+/**
+ * The Plugin Installation id Claude lists for the production Marketplace.
+ *
+ * The id is one concept the glossary names, so the sites that need it read it
+ * from here rather than reassembling the same interpolation apart from one
+ * another.
+ */
+function productionPluginId(pluginName: string): string {
+	return `${pluginName}@${pluginName}`
 }
 
 function installationState(
@@ -671,6 +775,59 @@ function installationState(
 ): "absent" | "marketplace-only" | "installed" {
 	if (plugin) return "installed"
 	return marketplace ? "marketplace-only" : "absent"
+}
+
+/**
+ * Say what to do next, letting an unproven or stale payload speak first.
+ *
+ * A healthy installation still serves whatever bytes were loaded at the last
+ * `/reload-plugins`, so reporting the profile as ready while the payload has
+ * moved on is the exact silence this contract exists to break.
+ *
+ * `stale` is the one status a reload alone resolves. A failed or unproven build
+ * must be fixed first, because reloading there serves known-bad or unknown
+ * bytes.
+ */
+function readyNextAction(freshness: Freshness, ready: string): string {
+	if (freshness.status === "fresh") return ready
+	if (freshness.status === "stale") {
+		return `${freshness.reason} Run \`/reload-plugins\` so this session serves the current payload.`
+	}
+	return freshness.reason
+}
+
+/**
+ * What `--apply` will do to the profile, named rather than summarized.
+ *
+ * `--apply` uninstalls the production Plugin Installation when one exists, and
+ * removes the production Marketplace when that exists, before installing the
+ * development one. A Marketplace can stand without its Plugin Installation,
+ * though the reverse throws `PRODUCTION_MARKETPLACE_MISSING` before reaching
+ * here, so the sentence names only the mutations this profile will see.
+ *
+ * The preview is the only disclosure before that write, so a sentence that
+ * reads the same whether or not production is present asks for consent to an
+ * action it never names.
+ *
+ * The replacement is disclosed, not instructed. `nextAction` carries one
+ * command, matching every other producer here, so an agent dispatching on it
+ * reads a single next step rather than choosing between two.
+ */
+function installPreviewNextAction(state: InspectedState): string {
+	const pluginName = state.pluginName
+	const replacements: string[] = []
+	if (state.productionPlugin) {
+		replacements.push(`uninstall \`${productionPluginId(pluginName)}\` with \`--keep-data\``)
+	}
+	if (state.productionMarketplace) {
+		replacements.push(`remove the \`${pluginName}\` Marketplace`)
+	}
+	if (replacements.length === 0) {
+		return "Review the planned development installation, then rerun with `--apply`."
+	}
+	// `restore` previews by default like every operation here, so naming it
+	// without `--apply` would describe a no-op as the recovery.
+	return `\`--apply\` will ${replacements.join(" and ")}, then install development mode. \`bun run dev -- claude restore --apply\` puts that production state back. Review the named replacement, then rerun with \`--apply\`.`
 }
 
 function result(
@@ -703,6 +860,7 @@ function result(
 				(state.developmentPlugin || state.developmentMarketplace)
 			),
 			linkedToCanonicalPayload: state.linkedToCanonicalPayload,
+			freshness: state.freshness ?? evaluateFreshness(input.repositoryRoot),
 		},
 		sideEffects: options.sideEffects ?? [],
 		nextAction: options.nextAction,
@@ -860,7 +1018,7 @@ function restoreFromSnapshot(
 	const pluginName = snapshot.pluginName
 	const developmentMarketplaceName = `${pluginName}-dev`
 	const developmentId = `${pluginName}@${developmentMarketplaceName}`
-	const productionId = `${pluginName}@${pluginName}`
+	const productionId = productionPluginId(pluginName)
 	let state = inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
 	if (state.developmentPlugin) {
 		nativeMutation(
@@ -1070,7 +1228,8 @@ function inspectStateForRecovery(
 				},
 			)
 			return {
-				productionPlugin: plugins.find((entry) => entry.id === `${pluginName}@${pluginName}`),
+				pluginName,
+				productionPlugin: plugins.find((entry) => entry.id === productionPluginId(pluginName)),
 				developmentPlugin: plugins.find((entry) => entry.id === `${pluginName}@${pluginName}-dev`),
 				productionMarketplace: marketplaces.find((entry) => entry.name === pluginName),
 				developmentMarketplace: marketplaces.find((entry) => entry.name === `${pluginName}-dev`),
@@ -1082,6 +1241,11 @@ function inspectStateForRecovery(
 }
 
 function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunner): InspectedState {
+	// Read freshness before the build below rewrites the receipt. Afterwards the
+	// payload always matches the receipt that build just wrote, so every answer
+	// would be `fresh` and a payload edited since the last reload would report as
+	// ready. What the session has been serving is the question worth answering.
+	const freshness = evaluateFreshness(input.repositoryRoot)
 	if (input.operation !== "restore") {
 		command(runner, ["bun", "run", "build"], {
 			repositoryRoot: input.repositoryRoot,
@@ -1123,6 +1287,7 @@ function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunne
 		input.operation === "restore"
 			? inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
 			: inspectState(input.repositoryRoot, input.environment, runner)
+	state.freshness = freshness
 	// An installation linked to this checkout's payload is one this checkout
 	// created, so a missing snapshot means its production state can no longer
 	// be restored: fail closed. An installation linked elsewhere was never this
@@ -1151,8 +1316,10 @@ function install(
 				mode: input.apply ? "apply" : "preview",
 				changed: false,
 				transactionState: "no_op",
-				nextAction:
+				nextAction: readyNextAction(
+					state.freshness ?? evaluateFreshness(input.repositoryRoot),
 					"Run `bun run dev:claude`, then use ordinary Claude sessions and `/reload-plugins`.",
+				),
 			})
 		}
 		if (!input.apply) {
@@ -1174,6 +1341,12 @@ function install(
 				snapshot,
 			)
 			const enabled = inspectState(input.repositoryRoot, input.environment, runner)
+			// Re-inspection reads the profile again, not the receipt, so it must
+			// carry the pre-build snapshot forward. Letting `result` re-evaluate
+			// here would compare the payload against the receipt this run just
+			// wrote and report `fresh` beside a `nextAction` describing the
+			// state before it, which is the masking this feature exists to end.
+			enabled.freshness = state.freshness
 			if (!enabled.developmentPlugin?.enabled || !enabled.linkedToCanonicalPayload) {
 				throw new ClaudeDevelopmentInstallationError(
 					"DEVELOPMENT_VERIFICATION_FAILED",
@@ -1193,8 +1366,10 @@ function install(
 				changed: true,
 				transactionState: "installed",
 				sideEffects: snapshot.sideEffects,
-				nextAction:
+				nextAction: readyNextAction(
+					state.freshness ?? evaluateFreshness(input.repositoryRoot),
 					"Run `bun run dev:claude`, then use ordinary Claude sessions and `/reload-plugins`.",
+				),
 			})
 		} catch (error) {
 			failInstallAfterRestoration(input, runner, snapshot, error)
@@ -1217,12 +1392,12 @@ function install(
 			mode: "preview",
 			changed: false,
 			transactionState: "previewed",
-			nextAction: "Review the captured production state, then rerun with `--apply`.",
+			nextAction: installPreviewNextAction(state),
 		})
 	}
 	const snapshot = capturePriorState(input, state)
 	const pluginName = snapshot.pluginName
-	const productionId = `${pluginName}@${pluginName}`
+	const productionId = productionPluginId(pluginName)
 	const developmentMarketplaceName = `${pluginName}-dev`
 	const developmentId = `${pluginName}@${developmentMarketplaceName}`
 	try {
@@ -1538,6 +1713,25 @@ export async function runClaudeDevelopmentInstallation(
 	) {
 		throw orphanedCacheError(state.orphanedCache)
 	}
+	// A superseded directory is inert until the next install reuses the name,
+	// so `restore` and `watch` stay reachable while it stands. `check` and
+	// `install` refuse, because reporting a profile clean while it holds files
+	// nothing reads is the silent result this detection exists to end.
+	if (
+		state.supersededCacheVersions.length > 0 &&
+		(input.operation === "check" || input.operation === "install")
+	) {
+		throw new ClaudeDevelopmentInstallationError(
+			"DEVELOPMENT_CACHE_SUPERSEDED",
+			`The profile holds ${state.supersededCacheVersions.length} development cache version(s) Claude no longer lists, so they are files nothing reads (${namePaths(state.supersededCacheVersions)})`,
+			{
+				action: "INSPECT_STATE",
+				errorFamily: "conflict",
+				retrySafety: "inspect_required",
+				nextAction: `Remove ${state.supersededCacheVersions[0]} after confirming the path, then rerun \`bun run dev -- claude check\`.`,
+			},
+		)
+	}
 	switch (input.operation) {
 		case "check":
 			// `install` refuses this state, so reporting it as ready would leave
@@ -1559,7 +1753,10 @@ export async function runClaudeDevelopmentInstallation(
 				changed: false,
 				transactionState: "ready",
 				nextAction: state.developmentPlugin
-					? "Run `bun run dev:claude`, then use `/reload-plugins` after builds."
+					? readyNextAction(
+							state.freshness ?? evaluateFreshness(input.repositoryRoot),
+							"Run `bun run dev:claude`, then use `/reload-plugins` after builds.",
+						)
 					: "Run `bun run dev -- claude install` to preview persistent setup.",
 			})
 		case "install":

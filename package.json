@@ -14,7 +14,7 @@
     "generate": "bun run scripts/generate.ts",
     "generate:check": "bun run scripts/generate.ts --check",
     "release:validate": "bun run scripts/release-validate.ts",
-    "build": "bun run generate:check && bun run scripts/build.ts",
+    "build": "bun run scripts/build.ts",
     "dev": "bun run scripts/dev.ts",
     "dev:claude": "bun run scripts/dev.ts claude watch",
     "dev:codex": "bun run scripts/dev.ts codex",

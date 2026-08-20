@@ -13,6 +13,7 @@ import { builtinModules } from "node:module"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve } from "node:path"
 
+import { writeBuildReceipt } from "./build-receipt"
 import { HARNESS_IDENTITIES } from "./harness-identity"
 import { loadPluginConfig } from "./plugin-config"
 import { compareCodeUnits, pluginPayloadInventory } from "./plugin-files"
@@ -1881,6 +1882,21 @@ export function assertSuccessfulInstall(install: InstallResult): void {
 
 async function main(): Promise<void> {
 	const root = resolve(import.meta.dir, "..")
+	// Run the generated-drift check inside the receipt's guard. As a separate
+	// `&&` stage it failed before this script ran, leaving the previous build's
+	// receipt in place to be read as proof that the payload is current.
+	const generated = Bun.spawnSync({
+		cmd: [process.execPath, "run", join(import.meta.dir, "generate.ts"), "--check"],
+		cwd: root,
+		// Build stdout is exactly one JSON line that agents parse, so the check's
+		// own reporting goes to stderr rather than joining it.
+		stdout: "pipe",
+		stderr: "inherit",
+	})
+	if (generated.exitCode !== 0) {
+		process.stderr.write(generated.stdout.toString())
+		throw new Error("generated files differ from their sources; run `bun run generate`")
+	}
 	const pluginConfig = loadPluginConfig(root)
 	for (const manifestPath of [
 		"plugin/.claude-plugin/plugin.json",
@@ -1914,4 +1930,16 @@ async function main(): Promise<void> {
 	)
 }
 
-if (import.meta.main) await main()
+if (import.meta.main) {
+	const root = resolve(import.meta.dir, "..")
+	try {
+		await main()
+	} catch (error) {
+		// A failed build must leave a trace. Its message scrolls past in a terminal
+		// nobody watches, /reload-plugins then serves the previous build, and the
+		// session debugs code that is not on screen.
+		writeBuildReceipt(root, "failed", error instanceof Error ? error.message : String(error))
+		throw error
+	}
+	writeBuildReceipt(root, "succeeded")
+}
