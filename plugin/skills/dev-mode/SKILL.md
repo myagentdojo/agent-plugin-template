@@ -43,6 +43,19 @@ Source edits need a build. Model-only skill prose is already inside the payload,
 so `/reload-plugins` alone loads it. Bun-backed changes need
 `bun run dev:claude` first.
 
+Read `current.freshness` before calling the session ready. A linked
+installation still serves whatever bytes loaded at the last `/reload-plugins`,
+so linked and current are different claims.
+
+Only `fresh` is ready. On `stale`, `build-failed`, or `unproven`, show
+`freshness.reason` verbatim as the finding and stop short of ready: it names
+the cause and the exact recovery, and composing a replacement is how the wrong
+remedy gets reported.
+
+`stale` is the one status `/reload-plugins` alone resolves. `build-failed` and
+`unproven` need the cause fixed first, because reloading there serves
+known-bad or unknown bytes.
+
 ## Installed, linked elsewhere
 
 `DEVELOPMENT_LINK_MISMATCH` means an installation exists but its link resolves

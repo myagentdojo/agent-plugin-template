@@ -17,6 +17,7 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 import { bunCommandRunner, type CommandRunner } from "./command-runner"
+import { evaluateFreshness, type Freshness } from "./build-receipt"
 import { loadPluginConfig } from "./plugin-config"
 
 const MINIMUM_COMMAND_SOURCE_VERSION = [2, 1, 229] as const
@@ -103,6 +104,15 @@ interface InspectedState {
 	linkedToCanonicalPayload: boolean
 	orphanedCache?: OrphanedDevelopmentCache
 	supersededCacheVersions: string[]
+	/**
+	 * Freshness read before the lifecycle rebuilt anything.
+	 *
+	 * `prepare` is its only writer. Evaluating it after the build would compare
+	 * the payload against the receipt that same build just wrote, so every answer
+	 * would be `fresh` and a payload edited since the last reload would report as
+	 * ready.
+	 */
+	freshness?: Freshness
 }
 
 export interface ClaudeDevelopmentInstallationInput {
@@ -130,6 +140,13 @@ export interface ClaudeDevelopmentInstallationResult {
 		development: "absent" | "marketplace-only" | "installed"
 		singleSource: boolean
 		linkedToCanonicalPayload: boolean
+		/**
+		 * Whether the live payload came from the last successful build.
+		 *
+		 * Added without a schemaVersion bump: every field consumers already read
+		 * is unchanged, and a consumer that ignores this one behaves as before.
+		 */
+		freshness: Freshness
 	}
 	sideEffects: string[]
 	nextAction: string
@@ -740,6 +757,25 @@ function installationState(
 	return marketplace ? "marketplace-only" : "absent"
 }
 
+/**
+ * Say what to do next, letting an unproven or stale payload speak first.
+ *
+ * A healthy installation still serves whatever bytes were loaded at the last
+ * `/reload-plugins`, so reporting the profile as ready while the payload has
+ * moved on is the exact silence this contract exists to break.
+ *
+ * `stale` is the one status a reload alone resolves. A failed or unproven build
+ * must be fixed first, because reloading there serves known-bad or unknown
+ * bytes.
+ */
+function readyNextAction(freshness: Freshness, ready: string): string {
+	if (freshness.status === "fresh") return ready
+	if (freshness.status === "stale") {
+		return `${freshness.reason} Run \`/reload-plugins\` so this session serves the current payload.`
+	}
+	return freshness.reason
+}
+
 function result(
 	input: ClaudeDevelopmentInstallationInput,
 	state: InspectedState,
@@ -770,6 +806,7 @@ function result(
 				(state.developmentPlugin || state.developmentMarketplace)
 			),
 			linkedToCanonicalPayload: state.linkedToCanonicalPayload,
+			freshness: state.freshness ?? evaluateFreshness(input.repositoryRoot),
 		},
 		sideEffects: options.sideEffects ?? [],
 		nextAction: options.nextAction,
@@ -1149,6 +1186,11 @@ function inspectStateForRecovery(
 }
 
 function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunner): InspectedState {
+	// Read freshness before the build below rewrites the receipt. Afterwards the
+	// payload always matches the receipt that build just wrote, so every answer
+	// would be `fresh` and a payload edited since the last reload would report as
+	// ready. What the session has been serving is the question worth answering.
+	const freshness = evaluateFreshness(input.repositoryRoot)
 	if (input.operation !== "restore") {
 		command(runner, ["bun", "run", "build"], {
 			repositoryRoot: input.repositoryRoot,
@@ -1190,6 +1232,7 @@ function prepare(input: ClaudeDevelopmentInstallationInput, runner: CommandRunne
 		input.operation === "restore"
 			? inspectStateForRecovery(input.repositoryRoot, input.environment, runner)
 			: inspectState(input.repositoryRoot, input.environment, runner)
+	state.freshness = freshness
 	// An installation linked to this checkout's payload is one this checkout
 	// created, so a missing snapshot means its production state can no longer
 	// be restored: fail closed. An installation linked elsewhere was never this
@@ -1218,8 +1261,10 @@ function install(
 				mode: input.apply ? "apply" : "preview",
 				changed: false,
 				transactionState: "no_op",
-				nextAction:
+				nextAction: readyNextAction(
+					state.freshness ?? evaluateFreshness(input.repositoryRoot),
 					"Run `bun run dev:claude`, then use ordinary Claude sessions and `/reload-plugins`.",
+				),
 			})
 		}
 		if (!input.apply) {
@@ -1241,6 +1286,12 @@ function install(
 				snapshot,
 			)
 			const enabled = inspectState(input.repositoryRoot, input.environment, runner)
+			// Re-inspection reads the profile again, not the receipt, so it must
+			// carry the pre-build snapshot forward. Letting `result` re-evaluate
+			// here would compare the payload against the receipt this run just
+			// wrote and report `fresh` beside a `nextAction` describing the
+			// state before it, which is the masking this feature exists to end.
+			enabled.freshness = state.freshness
 			if (!enabled.developmentPlugin?.enabled || !enabled.linkedToCanonicalPayload) {
 				throw new ClaudeDevelopmentInstallationError(
 					"DEVELOPMENT_VERIFICATION_FAILED",
@@ -1260,8 +1311,10 @@ function install(
 				changed: true,
 				transactionState: "installed",
 				sideEffects: snapshot.sideEffects,
-				nextAction:
+				nextAction: readyNextAction(
+					state.freshness ?? evaluateFreshness(input.repositoryRoot),
 					"Run `bun run dev:claude`, then use ordinary Claude sessions and `/reload-plugins`.",
+				),
 			})
 		} catch (error) {
 			failInstallAfterRestoration(input, runner, snapshot, error)
@@ -1645,7 +1698,10 @@ export async function runClaudeDevelopmentInstallation(
 				changed: false,
 				transactionState: "ready",
 				nextAction: state.developmentPlugin
-					? "Run `bun run dev:claude`, then use `/reload-plugins` after builds."
+					? readyNextAction(
+							state.freshness ?? evaluateFreshness(input.repositoryRoot),
+							"Run `bun run dev:claude`, then use `/reload-plugins` after builds.",
+						)
 					: "Run `bun run dev -- claude install` to preview persistent setup.",
 			})
 		case "install":
