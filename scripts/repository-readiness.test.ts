@@ -1,4 +1,12 @@
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -27,11 +35,37 @@ const root = resolve(import.meta.dir, "..")
 const tagRulesetRepair =
 	"Settings > Rules > Rulesets > New tag ruleset: target tags matching v*, enable Restrict deletions and Restrict updates, no bypass actors"
 
-test("public readiness process reaches the configured hosted-canary success path", () => {
+function createReadinessProcessFixture() {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "repository-readiness-process-"))
 	const fakeGhPath = join(fixtureRoot, "gh")
-	const repository = "myagentdojo/my-second-brain"
+	const pluginConfigPath = join(fixtureRoot, "plugin.config.json")
+	const repository = "fixture-owner/fixture-repository"
 	const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICanary"
+	const pluginConfig = {
+		template: false,
+		name: "fixture-plugin",
+		displayName: "Fixture Plugin",
+		version: "1.0.0",
+		description: "Test-owned readiness fixture",
+		author: { name: "Fixture Author" },
+		repository: `https://github.com/${repository}`,
+		license: "MIT",
+		keywords: ["fixture"],
+		category: "Developer Tools",
+		shortDescription: "Test readiness isolation",
+		longDescription: "A synthetic checkout used only to prove repository readiness isolation.",
+		capabilities: ["Prove readiness isolation"],
+		defaultPrompts: ["Run the readiness fixture."],
+		brandColor: "#123456",
+		composerIcon: "./assets/composer-icon.svg",
+		logo: "./assets/logo.svg",
+		canary: {
+			owner: "fixture-owner",
+			actor: "fixture-canary-actor",
+			publicRepository: "fixture-canary-public",
+			privateRepository: "fixture-canary-private",
+		},
+	}
 	const responses: Record<string, unknown> = {
 		[`repos/${repository}`]: {
 			default_branch: "main",
@@ -85,7 +119,7 @@ test("public readiness process reaches the configured hosted-canary success path
 		[`repos/${repository}/environments/hosted-canary-qualification/secrets`]: {
 			secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })),
 		},
-		"users/myagentdojo/keys?per_page=100": [[{ key: publicKey }]],
+		[`users/${pluginConfig.canary.actor}/keys?per_page=100`]: [[{ key: publicKey }]],
 		[`repos/${repository}/actions/variables?per_page=100`]: [
 			{ variables: [{ name: "CANARY_SSH_PUBLIC_KEY", value: publicKey }] },
 		],
@@ -101,6 +135,23 @@ console.log(JSON.stringify(responses[endpoint]))
 `
 
 	try {
+		mkdirSync(join(fixtureRoot, "scripts"), { recursive: true })
+		for (const script of [
+			"repository-readiness.ts",
+			"plugin-config.ts",
+			"harness-identity.ts",
+		]) {
+			writeFileSync(
+				join(fixtureRoot, "scripts", script),
+				readFileSync(join(root, "scripts", script)),
+			)
+		}
+		writeFileSync(pluginConfigPath, `${JSON.stringify(pluginConfig, null, 2)}\n`)
+		mkdirSync(join(fixtureRoot, ".github", "workflows"), { recursive: true })
+		writeFileSync(
+			join(fixtureRoot, ".github", "workflows", "fixture.yml"),
+			"name: Fixture workflow\npermissions:\n  contents: read\n",
+		)
 		writeFileSync(fakeGhPath, fakeGhSource, { mode: 0o755 })
 		chmodSync(fakeGhPath, 0o755)
 		const environment = {
@@ -109,28 +160,92 @@ console.log(JSON.stringify(responses[endpoint]))
 			GH_TOKEN: undefined,
 			GITHUB_TOKEN: undefined,
 		}
-		const result = Bun.spawnSync({
-			cmd: [
-				process.execPath,
-				"run",
-				"scripts/repository-readiness.ts",
-				"--repo",
-				repository,
-				"--json",
-			],
-			cwd: root,
-			env: environment,
-			stdout: "pipe",
-			stderr: "pipe",
-		})
+		return {
+			pluginConfig,
+			pluginConfigPath,
+			repository,
+			run: () =>
+				Bun.spawnSync({
+					cmd: [
+						process.execPath,
+						"run",
+						"scripts/repository-readiness.ts",
+						"--repo",
+						repository,
+						"--json",
+					],
+					cwd: fixtureRoot,
+					env: environment,
+					stdout: "pipe",
+					stderr: "pipe",
+				}),
+			cleanup: () => rmSync(fixtureRoot, { recursive: true, force: true }),
+		}
+	} catch (error) {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+		throw error
+	}
+}
+
+test("public readiness process reaches the configured hosted-canary success path", () => {
+	const fixture = createReadinessProcessFixture()
+	try {
+		const result = fixture.run()
 
 		expect(result.exitCode).toBe(0)
 		expect(result.stderr.toString()).toBe("")
 		const output = JSON.parse(result.stdout.toString())
-		expect(output).toMatchObject({ ok: true, repository, sideEffects: "none" })
+		expect(output).toMatchObject({
+			ok: true,
+			repository: fixture.repository,
+			sideEffects: "none",
+		})
 		expect(output.checks.every((check: { status?: string }) => check.status === "ready")).toBe(true)
 	} finally {
-		rmSync(fixtureRoot, { recursive: true, force: true })
+		fixture.cleanup()
+	}
+})
+
+test("public readiness process retains repository identity when plugin configuration is invalid", () => {
+	const fixture = createReadinessProcessFixture()
+	try {
+		writeFileSync(
+			fixture.pluginConfigPath,
+			`${JSON.stringify(
+				{
+					...fixture.pluginConfig,
+					canary: { ...fixture.pluginConfig.canary, actor: "" },
+				},
+				null,
+				2,
+			)}\n`,
+		)
+		const result = fixture.run()
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toBe("")
+		const output = JSON.parse(result.stdout.toString())
+		expect(output).toMatchObject({
+			ok: false,
+			repository: fixture.repository,
+			sideEffects: "none",
+		})
+		expect(Array.isArray(output.checks)).toBe(true)
+		const hostedCanaryCheck = output.checks.find(
+			(check: { name?: string }) => check.name === "hosted-canary-configuration",
+		)
+		expect(hostedCanaryCheck).toMatchObject({
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: expect.stringContaining("plugin.config.json could not be loaded or validated"),
+			repair:
+				"Repair plugin.config.json so it contains valid plugin metadata and canary.actor, then rerun bun run readiness",
+		})
+		expect(
+			output.checks.some((check: { name?: string }) => check.name === "repository-resolution"),
+		).toBe(false)
+	} finally {
+		fixture.cleanup()
 	}
 })
 

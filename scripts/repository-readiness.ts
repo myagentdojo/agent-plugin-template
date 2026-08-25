@@ -29,6 +29,8 @@ const hostedCanaryKeyRotationRepair =
 	"rotate the canary key: generate a dedicated purpose key, register its public half on the canary actor account first, then update the CANARY_SSH_PUBLIC_KEY variable and the CANARY_SSH_PRIVATE_KEY and CANARY_SSH_KNOWN_HOSTS pair"
 const hostedCanaryKeyBindingRepair =
 	"Settings > Secrets and variables > Actions: add variable CANARY_SSH_PUBLIC_KEY holding the public half of CANARY_SSH_PRIVATE_KEY"
+const hostedCanaryPluginConfigRepair =
+	"Repair plugin.config.json so it contains valid plugin metadata and canary.actor, then rerun bun run readiness"
 
 const HOSTED_CANARY_ENVIRONMENT = "hosted-canary-qualification"
 export const REQUIRED_HOSTED_CANARY_SECRETS = [
@@ -1131,7 +1133,17 @@ function checkHostedCanaryConfiguration(repository: string): ReadinessCheck {
 	// A secret name proves a value exists, not that its public half survives.
 	// The credential belongs to the canary actor, not to this repository, so read
 	// that user's keys; repository deploy keys never carry it.
-	const actor = loadPluginConfig(root).canary.actor
+	let actor: string
+	try {
+		actor = loadPluginConfig(root).canary.actor
+	} catch (error) {
+		return {
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: `plugin.config.json could not be loaded or validated; the hosted canary actor is unproven: ${error instanceof Error ? error.message : String(error)}`,
+			repair: hostedCanaryPluginConfigRepair,
+		}
+	}
 	const actorKeys = readApi(`users/${actor}/keys?per_page=100`, true)
 	if (!actorKeys.ok) {
 		return apiFailure("hosted-canary-configuration", actorKeys, hostedCanaryKeyRotationRepair)
