@@ -1,4 +1,13 @@
-import { readdirSync, readFileSync } from "node:fs"
+import {
+	chmodSync,
+	mkdtempSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
 import { describe, expect, test } from "bun:test"
@@ -25,6 +34,220 @@ import {
 const root = resolve(import.meta.dir, "..")
 const tagRulesetRepair =
 	"Settings > Rules > Rulesets > New tag ruleset: target tags matching v*, enable Restrict deletions and Restrict updates, no bypass actors"
+
+function createReadinessProcessFixture() {
+	const fixtureRoot = mkdtempSync(join(tmpdir(), "repository-readiness-process-"))
+	const fakeGhPath = join(fixtureRoot, "gh")
+	const pluginConfigPath = join(fixtureRoot, "plugin.config.json")
+	const repository = "fixture-owner/fixture-repository"
+	const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICanary"
+	const pluginConfig = {
+		template: false,
+		name: "fixture-plugin",
+		displayName: "Fixture Plugin",
+		version: "1.0.0",
+		description: "Test-owned readiness fixture",
+		author: { name: "Fixture Author" },
+		repository: `https://github.com/${repository}`,
+		license: "MIT",
+		keywords: ["fixture"],
+		category: "Developer Tools",
+		shortDescription: "Test readiness isolation",
+		longDescription: "A synthetic checkout used only to prove repository readiness isolation.",
+		capabilities: ["Prove readiness isolation"],
+		defaultPrompts: ["Run the readiness fixture."],
+		brandColor: "#123456",
+		composerIcon: "./assets/composer-icon.svg",
+		logo: "./assets/logo.svg",
+		canary: {
+			owner: "fixture-owner",
+			actor: "fixture-canary-actor",
+			publicRepository: "fixture-canary-public",
+			privateRepository: "fixture-canary-private",
+		},
+	}
+	const responses: Record<string, unknown> = {
+		[`repos/${repository}`]: {
+			default_branch: "main",
+			allow_squash_merge: true,
+			allow_merge_commit: true,
+		},
+		[`repos/${repository}/rulesets?includes_parents=true&per_page=100`]: [
+			[
+				{ id: 17, target: "tag" },
+				{ id: 18, target: "branch" },
+			],
+		],
+		[`repos/${repository}/rulesets/17?includes_parents=true`]: {
+			id: 17,
+			name: "Immutable version tags",
+			target: "tag",
+			enforcement: "active",
+			bypass_actors: [],
+			conditions: { ref_name: { include: ["refs/tags/v*"], exclude: [] } },
+			rules: [{ type: "deletion" }, { type: "update" }],
+		},
+		[`repos/${repository}/rulesets/18?includes_parents=true`]: {
+			id: 18,
+			name: "Protected main",
+			target: "branch",
+			enforcement: "active",
+			bypass_actors: [],
+			conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+			rules: [{ type: "pull_request" }, { type: "non_fast_forward" }],
+		},
+		[`repos/${repository}/branches/main/protection`]: {},
+		[`repos/${repository}/rules/branches/main`]: [{ type: "required_status_checks" }],
+		[`repos/${repository}/actions/permissions`]: { enabled: true, allowed_actions: "all" },
+		[`repos/${repository}/actions/secrets`]: {
+			secrets: [{ name: "RELEASE_PLEASE_TOKEN" }],
+		},
+		[`repos/${repository}/actions/variables`]: {
+			variables: [{ name: "RELEASE_PLEASE_AUTOMATION_LOGIN", value: "myagentdojo" }],
+		},
+		[`repos/${repository}/branches/main/protection/required_status_checks`]: {
+			contexts: REQUIRED_STATUS_CHECKS,
+		},
+		[`repos/${repository}/environments/release`]: {
+			protection_rules: [
+				{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "owner" } }] },
+			],
+		},
+		[`repos/${repository}/environments/hosted-canary-qualification`]: {
+			name: "hosted-canary-qualification",
+		},
+		[`repos/${repository}/environments/hosted-canary-qualification/secrets`]: {
+			secrets: REQUIRED_HOSTED_CANARY_SECRETS.map((name) => ({ name })),
+		},
+		[`users/${pluginConfig.canary.actor}/keys?per_page=100`]: [[{ key: publicKey }]],
+		[`repos/${repository}/actions/variables?per_page=100`]: [
+			{ variables: [{ name: "CANARY_SSH_PUBLIC_KEY", value: publicKey }] },
+		],
+	}
+	const fakeGhSource = `#!/usr/bin/env bun
+const responses = ${JSON.stringify(responses)}
+const endpoint = process.argv.at(-1)
+if (typeof endpoint !== "string" || !Object.hasOwn(responses, endpoint)) {
+  console.error(\`unexpected gh endpoint: \${String(endpoint)}\`)
+  process.exit(1)
+}
+console.log(JSON.stringify(responses[endpoint]))
+`
+
+	try {
+		mkdirSync(join(fixtureRoot, "scripts"), { recursive: true })
+		for (const script of [
+			"repository-readiness.ts",
+			"plugin-config.ts",
+			"harness-identity.ts",
+		]) {
+			writeFileSync(
+				join(fixtureRoot, "scripts", script),
+				readFileSync(join(root, "scripts", script)),
+			)
+		}
+		writeFileSync(pluginConfigPath, `${JSON.stringify(pluginConfig, null, 2)}\n`)
+		mkdirSync(join(fixtureRoot, ".github", "workflows"), { recursive: true })
+		writeFileSync(
+			join(fixtureRoot, ".github", "workflows", "fixture.yml"),
+			"name: Fixture workflow\npermissions:\n  contents: read\n",
+		)
+		writeFileSync(fakeGhPath, fakeGhSource, { mode: 0o755 })
+		chmodSync(fakeGhPath, 0o755)
+		const environment = {
+			...process.env,
+			PATH: `${fixtureRoot}:${process.env.PATH ?? ""}`,
+			GH_TOKEN: undefined,
+			GITHUB_TOKEN: undefined,
+		}
+		return {
+			pluginConfig,
+			pluginConfigPath,
+			repository,
+			run: () =>
+				Bun.spawnSync({
+					cmd: [
+						process.execPath,
+						"run",
+						"scripts/repository-readiness.ts",
+						"--repo",
+						repository,
+						"--json",
+					],
+					cwd: fixtureRoot,
+					env: environment,
+					stdout: "pipe",
+					stderr: "pipe",
+				}),
+			cleanup: () => rmSync(fixtureRoot, { recursive: true, force: true }),
+		}
+	} catch (error) {
+		rmSync(fixtureRoot, { recursive: true, force: true })
+		throw error
+	}
+}
+
+test("public readiness process reaches the configured hosted-canary success path", () => {
+	const fixture = createReadinessProcessFixture()
+	try {
+		const result = fixture.run()
+
+		expect(result.exitCode).toBe(0)
+		expect(result.stderr.toString()).toBe("")
+		const output = JSON.parse(result.stdout.toString())
+		expect(output).toMatchObject({
+			ok: true,
+			repository: fixture.repository,
+			sideEffects: "none",
+		})
+		expect(output.checks.every((check: { status?: string }) => check.status === "ready")).toBe(true)
+	} finally {
+		fixture.cleanup()
+	}
+})
+
+test("public readiness process retains repository identity when plugin configuration is invalid", () => {
+	const fixture = createReadinessProcessFixture()
+	try {
+		writeFileSync(
+			fixture.pluginConfigPath,
+			`${JSON.stringify(
+				{
+					...fixture.pluginConfig,
+					canary: { ...fixture.pluginConfig.canary, actor: "" },
+				},
+				null,
+				2,
+			)}\n`,
+		)
+		const result = fixture.run()
+
+		expect(result.exitCode).toBe(1)
+		expect(result.stderr.toString()).toBe("")
+		const output = JSON.parse(result.stdout.toString())
+		expect(output).toMatchObject({
+			ok: false,
+			repository: fixture.repository,
+			sideEffects: "none",
+		})
+		expect(Array.isArray(output.checks)).toBe(true)
+		const hostedCanaryCheck = output.checks.find(
+			(check: { name?: string }) => check.name === "hosted-canary-configuration",
+		)
+		expect(hostedCanaryCheck).toMatchObject({
+			name: "hosted-canary-configuration",
+			status: "unavailable",
+			detail: expect.stringContaining("plugin.config.json could not be loaded or validated"),
+			repair:
+				"Repair plugin.config.json so it contains valid plugin metadata and canary.actor, then rerun bun run readiness",
+		})
+		expect(
+			output.checks.some((check: { name?: string }) => check.name === "repository-resolution"),
+		).toBe(false)
+	} finally {
+		fixture.cleanup()
+	}
+})
 
 function immutableTagRuleset(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
