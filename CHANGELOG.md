@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/myagentdojo/agent-plugin-template/compare/v0.4.1...v0.4.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* **release:** complete repository readiness checks ([#63](https://github.com/myagentdojo/agent-plugin-template/issues/63)) ([5b66533](https://github.com/myagentdojo/agent-plugin-template/commit/5b6653356fd876585736f8ee5cd24d47fa0b308e))
+
 ## [0.4.1](https://github.com/myagentdojo/agent-plugin-template/compare/v0.4.0...v0.4.1) (2026-08-20)
 
 
